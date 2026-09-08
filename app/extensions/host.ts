@@ -56,7 +56,7 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
   if(data.type==='event' && data.data?.event==='host-state') {const value=data.data;if(Array.isArray(value.notificationApps))hostState.notificationApps=value.notificationApps.slice(0,512);hostState.battery=value.battery??hostState.battery;hostState.weather=value.weather??hostState.weather;if(typeof value.screenOn==='boolean')hostState.screenOn=value.screenOn;if(['ui.launcher','ui.app-menu','ui.notifications'].includes(data.feature)){if(Array.isArray(value.windows))hostState.windows=value.windows.slice(0,256);if(Array.isArray(value.apps))(hostState as any).apps=value.apps.slice(0,256);if(typeof value.focusedWindowId==='string')hostState.focusedWindowId=value.focusedWindowId;}for(const listener of stateListeners)listener();}
   if(data.type==='event' && ['action-result','tool-result'].includes(data.data?.event)) {
    const value=data.data;const item=pending.get(value.callId);
-   if(item && item.feature===data.feature && item.generation===data.generation){pending.delete(value.callId);clearTimeout(item.timer);(value.event==='tool-result'||value.ok)?item.resolve(value.result??value):item.reject(new Error(typeof value.error==='string'?value.error:'HOST_ACTION_FAILED'));}
+   if(item && item.feature===data.feature && item.generation===data.generation){pending.delete(value.callId);clearTimeout(item.timer);(value.event==='tool-result'||value.ok||['sent','draft-saved','unknown','rejected'].includes(value.status))?item.resolve(value.result??value):item.reject(Object.assign(new Error(typeof value.error==='string'?value.error:'HOST_ACTION_FAILED'),{code:'HOST_ACTION_REJECTED'}));}
   }
  }
  for(const listener of events)listener(type,data);

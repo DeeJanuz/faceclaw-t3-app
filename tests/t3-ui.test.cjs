@@ -810,12 +810,14 @@ test('transition cache lays out a large session list once, rebuilds on new state
   const original = h.state.sessions[0]; h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Synthetic session ${i}` }));
   const rows = h.layer.rows.bind(h.layer); let layouts = 0; h.layer.rows = () => { layouts++; return rows(); };
   h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  assert.equal(layouts, 0, 'opening heading does not load the list');
+  clock.now = 1324; h.layer.paint(ctx);
   const oldContent = h.layer.motion.content, afterPrepare = layouts;
-  clock.now = 1040; h.layer.paint(ctx); clock.now = 1080; h.layer.paint(ctx);
+  clock.now = 1330; h.layer.paint(ctx); clock.now = 1340; h.layer.paint(ctx);
   assert.equal(layouts, afterPrepare, 'no session sorting/layout between cached frames');
   h.state.sessions = []; h.state.changed(); assert.equal(h.layer.motion.content, undefined);
   h.layer.paint(ctx); assert.notEqual(h.layer.motion.content, oldContent); assert.equal(layouts, afterPrepare + 1);
-  clock.now = 1120; await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx);
+  clock.now = 1345; await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx);
   assert.ok(h.layer.motion.content);
   h.state.changed(); assert.equal(h.layer.motion, null, 'outgoing snapshot must be released when its source state changes');
   const fresh = h.layer.paint(ctx); fresh.bakeDeferredDrawsInPlace();
@@ -841,37 +843,32 @@ test('resize, real input, overlays and removal end motion, while synthetic relea
   h.visibility.overlay = false; h.layer.go('sessions'); h.layer.paint(ctx); h.layer.onRemoved(); assert.equal(h.layer.motion, null);
 });
 
-test('progressive Sessions body keeps revealed pixels stationary and reduces animation changes', async () => {
+test('Sessions defers list layout and body pixels until 90% of expansion', async () => {
   const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  const { GrayImage } = load('app/graphics/image.ts', { './textwrap': {} });
   const movement = load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face });
   await h.state.refresh();
   const original = h.state.sessions[0];
-  h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Project ${i}: synthetic session with enough text` }));
+  h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Project ${i}: synthetic session` }));
+  const rows = h.layer.rows.bind(h.layer); let layouts = 0;
+  h.layer.rows = () => { layouts++; return rows(); };
   h.layer.selected = 'sessions'; h.layer.go('sessions');
-  let previous, previousMoving, changed = 0, movingChanged = 0;
-  for (let elapsed = 0; elapsed < 360; elapsed += 40) {
+  for (const elapsed of [0, 40, 180, 320, 323]) {
     clock.now = 1000 + elapsed;
     const image = h.layer.paint(ctx), motion = h.layer.motion;
     const rect = movement.cardRect(motion.from, motion.to, elapsed / 360);
-    const moving = new GrayImage(576, 452, 0); moving.pixels.set(motion.backdrop.pixels); face.paintCardFace(moving, rect);
-    // Previous implementation shifted the complete content raster every frame.
-    const w = Math.min(motion.to.width, rect.width) - 16, height = Math.min(motion.to.height, rect.height) - 16;
-    for (let row = 0; row < height; row++) {
-      const start = (motion.to.y + 8 + row) * 576 + motion.to.x + 8;
-      moving.pixels.set(motion.content.pixels.subarray(start, start + w), (rect.y + 8 + row) * 576 + rect.x + 8);
-    }
-    if (previous) for (let i = 0; i < image.pixels.length; i++) {
-      if (image.pixels[i] !== previous[i]) changed++;
-      if (moving.pixels[i] !== previousMoving[i]) movingChanged++;
-    }
-    // The body uses its final coordinates even while the frame is moving.
-    const left = Math.max(8, rect.x + 8), top = Math.max(42, rect.y + 42);
-    for (let y = top; y < rect.y + rect.height - 8; y++) for (let x = left; x < rect.x + rect.width - 8; x++)
-      assert.equal(image.pixels[y * 576 + x], motion.content.pixels[y * 576 + x]);
-    saveMotionFrame(`progressive-${elapsed}`, image); saveMotionFrame(`moving-${elapsed}`, moving);
-    previous = image.pixels; previousMoving = moving.pixels;
+    assert.ok(contentPixels(image, rect) > 20, 'heading stays visible');
+    assert.equal(layouts, 0, 'no sorting or list layout before 90%');
+    assert.equal(motion.content, undefined, 'no cached list raster before 90%');
+    for (let y = rect.y + 42; y < rect.y + rect.height - 8; y++)
+      for (let x = rect.x + 8; x < rect.x + rect.width - 8; x++)
+        assert.equal(image.pixels[y * 576 + x], 1, 'card body stays empty');
+    saveMotionFrame(`deferred-${elapsed}`, image);
   }
-  assert.ok(changed < movingChanged * .8, `progressive ${changed} vs moving ${movingChanged} changed pixels`);
-  if (process.env.T3_TRANSITION_ARTIFACT_DIR) fs.writeFileSync(`${process.env.T3_TRANSITION_ARTIFACT_DIR}/pixel-comparison.json`, JSON.stringify({ changed, movingChanged }, null, 2));
+  clock.now = 1324; const revealed = h.layer.paint(ctx);
+  assert.equal(layouts, 1); assert.ok(h.layer.motion.content);
+  assert.ok(contentPixels(revealed, { x: 0, y: 42, width: 571, height: 400 }) > 20, 'list appears at 90%');
+  saveMotionFrame('deferred-324', revealed);
+  clock.now = 1340; h.layer.paint(ctx); assert.equal(layouts, 1, 'last animation frames reuse the list');
+  clock.now = 1360; const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.motion, null); assert.ok(contentPixels(final, h.layer.fullRect()) > 20);
 });

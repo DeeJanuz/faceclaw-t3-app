@@ -70,7 +70,7 @@ export class T3Layer implements Layer {
   private transcriptSource: typeof state.transcript = null;
   private followResponse: Set<string> | null = null;
   private readerThread = '';
-  private motion: { from: CardRect; to: CardRect; started: number | null; closing: boolean; content?: GrayImage; backdrop?: GrayImage } | null = null;
+  private motion: { from: CardRect; to: CardRect; started: number | null; closing: boolean; content?: GrayImage; heading?: GrayImage; backdrop?: GrayImage } | null = null;
   private returnFocus = 'assistant';
   private pageCount = 1;
   private planIdentity = '';
@@ -87,7 +87,7 @@ export class T3Layer implements Layer {
   contentChanged(): void {
     if (!this.motion) return;
     if (this.motion.closing) this.motion = null;
-    else { this.motion.content = undefined; this.motion.backdrop = undefined; }
+    else { this.motion.content = undefined; this.motion.heading = undefined; this.motion.backdrop = undefined; }
   }
   backdropChanged(): void { if (this.motion) this.motion.backdrop = undefined; }
   onRemoved(): void { this.motion = null; }
@@ -193,7 +193,7 @@ export class T3Layer implements Layer {
     void reply.review(isCurrent).then(status => {
       this.notificationReviewPending=false;
       if (!isVisible()) return;
-      this.notificationNotice = { sent: 'Reply sent.', 'draft-saved': 'Draft saved in app. Open app to send.', unknown: 'Send outcome unknown. Check app before retrying.', rejected: 'Reply rejected or notification changed.' }[status];
+      this.notificationNotice = { sent: 'Reply sent.', 'draft-saved': 'Draft saved in app. Open app to send.', unknown: 'Send outcome unknown. Check app before retrying.', rejected: 'Reply unavailable. Nothing sent.' }[status];
       this.repaint();
     });
   }
@@ -472,9 +472,22 @@ export class T3Layer implements Layer {
     if (motion) {
       if (motion.started !== null && Date.now() - motion.started >= CARD_MOTION_MS) this.motion = null;
       else {
-        if (!motion.content) {
-          motion.content = this.paintStatic(false);
-          motion.content.bakeDeferredDrawsInPlace();
+        const deferList = !motion.closing && this.screen === 'sessions' &&
+          (motion.started === null || Date.now() - motion.started < CARD_MOTION_MS * .9);
+        let content: GrayImage;
+        if (deferList) {
+          // No session sorting, layout, or body pixels until the last 10%.
+          if (!motion.heading) {
+            motion.heading = this.paintStatic(false, true);
+            motion.heading.bakeDeferredDrawsInPlace();
+          }
+          content = motion.heading;
+        } else {
+          if (!motion.content) {
+            motion.content = this.paintStatic(false);
+            motion.content.bakeDeferredDrawsInPlace();
+          }
+          content = motion.content;
         }
         const image = new GrayImage(width, height, 0);
         this.paintMotionBackdrop(image, motion.closing ? this.selected : this.returnFocus, !motion.closing);
@@ -482,14 +495,14 @@ export class T3Layer implements Layer {
         if (motion.started === null) motion.started = Date.now();
         const rect = cardRect(motion.from, motion.to, (Date.now() - motion.started) / CARD_MOTION_MS);
         paintCardFace(image, rect);
-        paintCardContents(image, motion.content, motion.closing ? motion.from : motion.to, rect);
+        paintCardContents(image, content, motion.closing ? motion.from : motion.to, rect);
         return image;
       }
     }
     return this.paintStatic();
   }
 
-  private paintStatic(includeBackdrop = true): GrayImage {
+  private paintStatic(includeBackdrop = true, headingOnly = false): GrayImage {
     const width = this.viewWidth, height = this.viewHeight;
     const pending = state.plans.get(state.selectedThreadId);
     const image = new GrayImage(width, height, 0);
@@ -497,6 +510,11 @@ export class T3Layer implements Layer {
     if (this.screen === 'dashboard') {
       if (!this.rows().some(row => row.id === this.selected)) this.selected = 'assistant';
       return paintT3Dashboard(width, height, this.selected, visibleT3Alerts().length, state.demo ? 'Sample data' : state.status, weatherBridge.snapshot(), timeFormatSetting.get(), new Date(), shell.getBatteryLevels());
+    }
+    if (headingOnly) {
+      paintCardFace(image, this.fullRect());
+      image.drawText(font, 16, 10, this.title().toUpperCase(), CARD_TEXT_BRIGHTNESS);
+      return image;
     }
     const rows = this.rows();
     const x = 0, y = 0;

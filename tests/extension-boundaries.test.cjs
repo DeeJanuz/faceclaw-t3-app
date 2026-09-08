@@ -42,3 +42,13 @@ test('own System actions delegates to the host system menu without substituting 
  const api=load('app/runtime.ts',imports);await api.deliverInput('long-press');systemActions();
  assert.equal(requested,1);assert.equal(slept,0);assert.equal(pushed.length,1);
 });
+
+test('reply pre-dispatch rejection differs from a send with an unknown outcome',async()=>{
+ const b=boundary();b.configure(b.feature('ui.notifications'));
+ const rejected=b.host.requestHostAction('ui.notifications','notification-review-reply',{callId:'reject'});
+ b.event('ui.notifications',{event:'action-result',callId:'reject',ok:false,error:'A fresh feature gesture is required'});
+ await assert.rejects(rejected,error=>error.code==='HOST_ACTION_REJECTED');
+ const unknown=b.host.requestHostAction('ui.notifications','notification-review-reply',{callId:'unknown'});
+ b.event('ui.notifications',{event:'action-result',callId:'unknown',ok:false,status:'unknown'});
+ assert.equal((await unknown).status,'unknown');
+});

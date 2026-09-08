@@ -16,7 +16,7 @@ export function requestNotificationReply(key:string,version:number,actionIndex:n
  const check=()=>{if(!current())cancel();};
  activeReviews.add(cancel);
  const timer=setInterval(check,100);const off=onHostState(check);
- return requestHostAction('ui.notifications','notification-review-reply',{id:key,version,actionIndex,callId},180000).catch(error=>{cancel();throw error;}).finally(()=>{activeReviews.delete(cancel);clearInterval(timer);off();});
+ return requestHostAction('ui.notifications','notification-review-reply',{id:key,version,actionIndex,callId},180000).catch(error=>{cancel();if(error?.code==='HOST_ACTION_REJECTED')return {status:'rejected'};throw error;}).finally(()=>{activeReviews.delete(cancel);clearInterval(timer);off();});
 }
 let reviewSequence=0;
 const activeReviews=new Set<()=>void>();

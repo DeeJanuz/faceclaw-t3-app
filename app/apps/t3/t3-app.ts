@@ -3,7 +3,7 @@ import { paintActivityIndicator } from './activity-indicator';
 import { RenderingComparisonLayer } from "../developer/rendering-comparison";
 import { notificationCardRect, paintNotificationCard } from '../../ui/shell/notification-card';
 import { buildSessionRows, reflowDictationText, paginateMessageText, paginateText, paginateTranscriptWithLiveTurn, retainTranscriptPage, selectResponsePage, transcriptPageHeader, activeActivityMarker, extractActiveActivityLine, type TranscriptPage, type PageBox } from './hub-view-model';
-import { cardRect, paintCardFace, paintCardContents, paintSelectionChevron, CARD_FRAME_MS, CARD_MOTION_MS, type CardRect } from './card-motion';
+import { WindowMotion, cardRect, paintCardFace, paintCardContents, paintSelectionChevron, CARD_FRAME_MS, CARD_MOTION_MS, type CardRect } from './card-motion';
 import { openT3Alert, dismissT3Alert, visibleT3Alerts, findT3Alert, getT3NotificationReply, openT3NotificationApp } from "./notifications-ui";
 import { Frame } from '@nativescript/core';
 import { paintT3Dashboard, dashboardTargets } from './dashboard';
@@ -33,6 +33,7 @@ export function openT3Thread(threadId: string, returnWindowId?: string): void { 
 export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question-text", "choices", "plan-review", "proposed-plan", "plan-approve", "session-reasoning"].includes(activeLayer.screen)); }
 export function showT3AlertInCurrentConversation(alert: T3Alert): boolean { return activeLayer?.showAlertInCurrentConversation(alert) ?? false; }
 export function openT3Inbox(): void { activeLayer?.go('inbox'); }
+export function setT3NotificationOrigin(rect: CardRect): void { activeLayer?.setNotificationOrigin(rect); }
 export function openT3Notification(alertId?: string, returnWindowId?: string, returnToSleep = false): void { activeLayer?.openNotification(alertId, returnWindowId, returnToSleep); }
 
 export class T3Layer implements Layer {
@@ -70,7 +71,8 @@ export class T3Layer implements Layer {
   private transcriptSource: typeof state.transcript = null;
   private followResponse: Set<string> | null = null;
   private readerThread = '';
-  private motion: { from: CardRect; to: CardRect; started: number | null; closing: boolean; content?: GrayImage; heading?: GrayImage; backdrop?: GrayImage } | null = null;
+  private notificationOrigin: CardRect | undefined;
+  private motion: { model: WindowMotion; source: CardRect; from: CardRect; to: CardRect; started: number | null; closing: boolean; content?: GrayImage; heading?: GrayImage; backdrop?: GrayImage } | null = null;
   private returnFocus = 'assistant';
   private pageCount = 1;
   private planIdentity = '';
@@ -79,9 +81,14 @@ export class T3Layer implements Layer {
   needsAnimation(): boolean { return Boolean(this.motion) || (this.screen === 'reader' && Boolean(state.transcript?.liveActivity)); }
   private animate(from: CardRect, to: CardRect, closing = false): void {
     if (this.screen === 'compose' || !this.isBaseVisible() || shell.hasOverlay()) return;
-    const content = closing ? this.paintStatic(false) : undefined;
-    content?.bakeDeferredDrawsInPlace();
-    this.motion = { from, to, started: null, closing, content };
+    const source = closing ? (this.screen === 'inbox' ? this.dropdownRect() : this.fullRect()) : to;
+    from = this.motion?.model.lastRect ?? from;
+    // Closing never lays out or snapshots the outgoing body.
+    const heading = closing ? this.paintStatic(false, true) : undefined;
+    heading?.bakeDeferredDrawsInPlace();
+    this.motion?.model.cancel();
+    this.motion = { model: new WindowMotion(from, to, closing), source, from, to, started: null, closing, heading };
+
   }
   /** Data invalidation never keeps pixels from a notification or prior conversation alive. */
   contentChanged(): void {
@@ -90,9 +97,12 @@ export class T3Layer implements Layer {
     else { this.motion.content = undefined; this.motion.heading = undefined; this.motion.backdrop = undefined; }
   }
   backdropChanged(): void { if (this.motion) this.motion.backdrop = undefined; }
-  onRemoved(): void { this.motion = null; }
+  onRemoved(): void { this.motion?.model.cancel(); this.motion = null; }
+  setNotificationOrigin(rect: CardRect): void { this.notificationOrigin = { ...rect }; }
   private paintMotionBackdrop(image: GrayImage, selected: string, dim: boolean): void {
     const motion = this.motion!;
+    // A notification over another app has no T3 dashboard to repaint behind it.
+    if (this.screen === 'notification' && this.returnWindowId) return;
     if (!motion.backdrop || motion.backdrop.width !== image.width || motion.backdrop.height !== image.height) {
       let backdrop = paintT3Dashboard(image.width, image.height, selected, visibleT3Alerts().length,
         state.demo ? 'Sample data' : state.status, weatherBridge.snapshot(), timeFormatSetting.get(), new Date(), shell.getBatteryLevels());
@@ -143,9 +153,12 @@ export class T3Layer implements Layer {
 
   go(screen: Screen, remember = true, animateTransition = true): void {
     if (screen !== 'notification') this.notificationReturnToSleep = false;
-    this.motion = null;
+    const transition = animateTransition && (this.screen === 'dashboard' || screen === 'dashboard' || (this.screen === 'inbox' && screen === 'notification') || (this.screen === 'notification' && screen === 'inbox'));
+    if (!transition) this.onRemoved();
     if (animateTransition && this.screen === 'dashboard' && screen !== 'dashboard') { this.returnFocus = this.selected; if (screen !== 'compose') this.animate(this.homeRect(), screen === 'inbox' ? this.dropdownRect() : this.fullRect()); }
     if (animateTransition && screen === 'dashboard' && this.screen !== 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
+    if (animateTransition && this.screen === 'inbox' && screen === 'notification') this.animate(this.dropdownRect(), this.fullRect());
+    if (animateTransition && this.screen === 'notification' && screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
     if (remember) this.history.push({ screen: this.screen, selected: this.selected, scroll: this.scroll, projectId: this.projectId, threadId: state.selectedThreadId });
     this.screen = screen; this.selected = screen === 'dashboard' ? 'assistant' : ''; this.scroll = 0; this.atReaderEnd = false; this.repaint();
   }
@@ -171,6 +184,7 @@ export class T3Layer implements Layer {
     this.notificationGroupId = alert?.kind === 'phone' ? alert.groupId || '' : '';
     this.notificationNotice = '';
     this.go(alertId ? 'notification' : 'inbox');
+    if (alertId && this.notificationOrigin) { const origin = this.notificationOrigin; this.notificationOrigin = undefined; this.onRemoved(); this.animate(origin, this.fullRect()); }
   }
 
   private currentNotification() {
@@ -219,6 +233,7 @@ export class T3Layer implements Layer {
     }
     const previous = this.history.pop();
     if (previous) {
+      if (animateTransition && this.screen === 'notification' && previous.screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
       if (animateTransition && previous.screen === 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
       if (previous.screen === 'new-summary') this.creation = draftCreation;
       this.screen = previous.screen; this.selected = previous.selected; this.scroll = previous.scroll; this.projectId = previous.projectId;
@@ -472,32 +487,21 @@ export class T3Layer implements Layer {
     if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; }
     const motion = this.motion;
     if (motion) {
-      if (motion.started !== null && Date.now() - motion.started >= CARD_MOTION_MS) this.motion = null;
+      if (!motion.heading) { motion.heading = this.paintStatic(false, true); motion.heading.bakeDeferredDrawsInPlace(); }
+      const image = new GrayImage(width, height, 0);
+      this.paintMotionBackdrop(image, motion.closing ? this.selected : this.returnFocus, !motion.closing);
+      // Start after preparing the first lightweight frame, not before layout.
+      const frame = motion.model.sample(Date.now());
+      motion.started = motion.model.started;
+      if (!frame || frame.done) this.motion = null;
       else {
-        const deferList = !motion.closing && this.screen === 'sessions' &&
-          (motion.started === null || Date.now() - motion.started < CARD_MOTION_MS * .9);
-        let content: GrayImage;
-        if (deferList) {
-          // No session sorting, layout, or body pixels until the last 10%.
-          if (!motion.heading) {
-            motion.heading = this.paintStatic(false, true);
-            motion.heading.bakeDeferredDrawsInPlace();
-          }
-          content = motion.heading;
-        } else {
-          if (!motion.content) {
-            motion.content = this.paintStatic(false);
-            motion.content.bakeDeferredDrawsInPlace();
-          }
+        let content = motion.heading;
+        if (frame.bodyVisible) {
+          if (!motion.content) { motion.content = this.paintStatic(false); motion.content.bakeDeferredDrawsInPlace(); }
           content = motion.content;
         }
-        const image = new GrayImage(width, height, 0);
-        this.paintMotionBackdrop(image, motion.closing ? this.selected : this.returnFocus, !motion.closing);
-        // Snapshot preparation must not consume the visible animation's first frames.
-        if (motion.started === null) motion.started = Date.now();
-        const rect = cardRect(motion.from, motion.to, (Date.now() - motion.started) / CARD_MOTION_MS);
-        paintCardFace(image, rect);
-        paintCardContents(image, content, motion.closing ? motion.from : motion.to, rect);
+        paintCardFace(image, frame.rect);
+        paintCardContents(image, content, motion.source, frame.rect);
         return image;
       }
     }
@@ -514,8 +518,9 @@ export class T3Layer implements Layer {
       return paintT3Dashboard(width, height, this.selected, visibleT3Alerts().length, state.demo ? 'Sample data' : state.status, weatherBridge.snapshot(), timeFormatSetting.get(), new Date(), shell.getBatteryLevels());
     }
     if (headingOnly) {
-      paintCardFace(image, this.fullRect());
-      image.drawText(font, 16, 10, this.title().toUpperCase(), CARD_TEXT_BRIGHTNESS);
+      const rect = this.screen === 'inbox' ? this.dropdownRect() : this.fullRect();
+      paintCardFace(image, rect);
+      image.drawText(font, rect.x + 16, rect.y + 10, this.title().toUpperCase(), CARD_TEXT_BRIGHTNESS);
       return image;
     }
     const rows = this.rows();
@@ -607,7 +612,7 @@ export class T3Layer implements Layer {
 
   async handleInput(event: InputEvent): Promise<void> {
     // Synthetic release/menu notifications must not cancel a just-started animation.
-    if (['click', 'double-click', 'scroll-up', 'scroll-down', 'swipe-up', 'swipe-down', 'swipe-left', 'swipe-right'].includes(event.type)) this.motion = null;
+    if (['click', 'scroll-up', 'scroll-down', 'swipe-up', 'swipe-down', 'swipe-right'].includes(event.type)) this.onRemoved();
     if (this.screen === 'inbox' && event.type === 'swipe-left') { const alert = findT3Alert(this.selected); if (alert) dismissT3Alert(alert); return; }
     if (event.type === 'long-press' && this.claimsNotificationDismissGesture()) { await this.dismissSelectedNotification(); return; }
     if (event.type === 'double-click' || event.type === 'swipe-left') {

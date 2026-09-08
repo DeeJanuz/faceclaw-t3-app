@@ -6,7 +6,7 @@ const ts = require('typescript');
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports, require: name => { if (!(name in imports)) throw Error(name); return imports[name]; }, ...globals });
+  vm.runInNewContext(code, { module, exports: module.exports, require: name => { if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; }, ...globals });
   return module.exports;
 }
 const face = load('app/ui/card-presentation.ts');
@@ -38,7 +38,7 @@ function setup(animationClock, raster = false) {
       return {...selected,review:current=>new Promise(resolve=>{let used=false;reviews.push([{label:'Send reply',onSend:text=>{if(used||!current())return;used=true;const accepted=selected.send(text,status=>resolve(status));if(!accepted)resolve('rejected');else if(!selected.successMessage)resolve('sent');}},current,()=>resolve('rejected')]);})};
     }, dismissT3Alert(alert) { dismissed.push(alert.id); if (!permitDismiss) return false; state.removeAlert(alert.id); return true; } }, '@nativescript/core': { Frame: { topmost: () => ({ navigate: () => navigation.phone++ }) } },
     '../../ui/shell/notification-card': { ...notificationCard, paintNotificationCard(image, rect, font, content) { cards.push(rect); notificationCard.paintNotificationCard(image, rect, font, content); } },
-    './hub-view-model': hub, './card-motion': { ...(animationClock ? load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }) : {}), paintCardFace(image, rect) { cards.push(rect); if (raster) face.paintCardFace(image, rect); }, paintSelectionChevron(_image, x, y) { chevrons.push({ x, y }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
+    './hub-view-model': hub, './card-motion': { ...load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }), paintCardFace(image, rect) { cards.push(rect); if (raster) face.paintCardFace(image, rect); }, paintSelectionChevron(_image, x, y) { chevrons.push({ x, y }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
     './dashboard': { dashboardTargets: () => targets, paintT3Dashboard: (_w, _h, _selected, count) => {
       counts.push(count); const image = new RasterImage(_w, _h);
       if (raster) { image.drawText(font, 22, 20, 'DASHBOARD', 190); image.drawText(font, 22, 75, 'Synthetic home content', 190); for (const target of targets) { image.drawRoundedRect(target.x, target.y, target.width, target.height, 235, 8, 2); image.drawText(font, target.x + 16, target.y + 10, target.id.toUpperCase(), 190); } }
@@ -82,7 +82,7 @@ test('preview timeout leaves inbox untouched; swipe uses dismissal callback once
     '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face,
   }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => cleared++ });
   const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => { expired++; layer.onRemoved(); }, () => {});
-  now = 4999; tick(); assert.equal(expired, 0);
+  now = 4500; tick(); assert.equal(expired, 0);
   now = 5000; tick(); assert.equal(expired, 1); assert.equal(dismissed, 0); assert.equal(opened, 0); assert.equal(cleared, 1);
   const next = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => {}, () => {});
   next.handleInput({ type: 'swipe-down' }); assert.equal(dismissed, 1); next.onRemoved();
@@ -779,7 +779,7 @@ function saveMotionFrame(name, image) {
   fs.mkdirSync(process.env.T3_TRANSITION_ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(`${process.env.T3_TRANSITION_ARTIFACT_DIR}/${name}.pgm`, Buffer.concat([Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.pixels)]));
 }
-test('actual raster shows crisp card content in first/middle/final expand and collapse frames', async () => {
+test('actual raster keeps headings crisp in first/middle/final expand and collapse frames', async () => {
   const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
   await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions');
   const movement = load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face });
@@ -794,7 +794,7 @@ test('actual raster shows crisp card content in first/middle/final expand and co
     clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
     if (name !== 'final') {
       const rect = movement.cardRect(h.layer.motion.from, h.layer.motion.to, (time - 1360) / 360);
-      assert.ok(contentPixels(image, rect) > 20, `collapse ${name} must retain outgoing text`);
+      assert.ok(contentPixels(image, rect) > 20, `collapse ${name} must retain its heading`);
     }
     if (name === 'middle') assert.ok(contentPixels(image, { x: 0, y: 0, width: 230, height: 100 }) > 20, 'dashboard content appears behind the shrinking card');
     saveMotionFrame(`collapse-${name}`, image);
@@ -816,7 +816,8 @@ test('transition cache lays out a large session list once, rebuilds on new state
   h.state.sessions = []; h.state.changed(); assert.equal(h.layer.motion.content, undefined);
   h.layer.paint(ctx); assert.notEqual(h.layer.motion.content, oldContent); assert.equal(layouts, afterPrepare + 1);
   clock.now = 1345; await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx);
-  assert.ok(h.layer.motion.content);
+  assert.equal(h.layer.motion.content, undefined, 'closing releases the outgoing body');
+  assert.ok(h.layer.motion.heading);
   h.state.changed(); assert.equal(h.layer.motion, null, 'outgoing snapshot must be released when its source state changes');
   const fresh = h.layer.paint(ctx); fresh.bakeDeferredDrawsInPlace();
   assert.equal(h.layer.screen, 'dashboard'); assert.ok(contentPixels(fresh, { x: 0, y: 0, width: 230, height: 100 }) > 20);
@@ -879,7 +880,7 @@ test('arrival dropdown rests at the top in both band and full-height viewports',
    './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect)=>painted=rect},'../card-presentation':face,
   },{Date:{now:()=>now},setInterval:()=>1,clearInterval(){}});
   const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>{},()=>{},()=>{});
-  now=300;layer.paint({stack:{getBaseSize:()=>({width:576,height})}},()=>({}));assert.equal(painted.y,12);
+  const ctx={stack:{getBaseSize:()=>({width:576,height})}};layer.paint(ctx,()=>({}));now=360;layer.paint(ctx,()=>({}));assert.equal(painted.y,12);
   layer.onRemoved();
  }
 });
@@ -893,4 +894,55 @@ test('a confirmed reply closes even if Android already removed its notification'
  const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('sessions');h.layer.openNotification('one','apk:com.faceclaw.t3/com.faceclaw.t3.T3AppService');
  h.setReply({isCurrent:()=>true,send:()=>{h.state.alerts=[];return true;}});await h.layer.handleInput({type:'click'});h.reviews[0][0].onSend('Reply');await new Promise(resolve=>setImmediate(resolve));
  assert.equal(h.layer.screen,'sessions');assert.deepEqual(h.navigation.events,[]);
+});
+
+
+test('Sessions clears all body pixels before collapse and Back reverses from the last drawn rectangle', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true);
+  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  clock.now = 1324; h.layer.paint(ctx); assert.ok(h.layer.motion.content);
+  const lastRect = { ...h.layer.motion.model.lastRect };
+  const rows = h.layer.rows.bind(h.layer); let layouts = 0;
+  h.layer.rows = () => { layouts++; return rows(); };
+  clock.now = 1330; await h.layer.handleInput({ type: 'double-click' });
+  assert.deepEqual(JSON.parse(JSON.stringify(h.layer.motion.from)), lastRect);
+  for (const time of [1330, 1370, 1510, 1650]) {
+    clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
+    const rect = h.layer.motion.model.lastRect;
+    assert.equal(h.layer.motion.content, undefined);
+    assert.equal(layouts, 0, 'collapse does not lay out outgoing rows');
+    for (let y = rect.y + 42; y < rect.y + rect.height - 8; y++)
+      for (let x = rect.x + 8; x < rect.x + rect.width - 8; x++)
+        assert.equal(image.pixels[y * image.width + x], 1, 'outgoing body is blank');
+    saveMotionFrame(`empty-collapse-${time}`, image);
+  }
+  clock.now = 1690; h.layer.paint(ctx); assert.equal(h.layer.motion, null);
+});
+
+test('arrival animation gates body, reverses dismissal without a jump and cancels on removal', () => {
+ let now=0, painted, tick, dismissed=0, expired=0;
+ const {TimedNotificationLayer}=load('app/ui/shell/timed-notification.ts',{
+  '../../graphics/image':{},'../../graphics/ui-fonts':{getDefaultSmallFont:()=>({})},'./geometry':{appViewportRect:()=>({x:0,y:0,width:576,height:452})},
+  './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect,_font,content)=>painted={rect,content}},
+ },{Date:{now:()=>now},setInterval:callback=>{tick=callback;return 1;},clearInterval(){}});
+ const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>dismissed++,()=>expired++,()=>{});
+ const ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
+ layer.paint(ctx,()=>({})); assert.equal(painted.content.bodyVisible,false);
+ now=323;layer.paint(ctx,()=>({}));assert.equal(painted.content.bodyVisible,false);
+ now=324;layer.paint(ctx,()=>({}));assert.equal(painted.content.bodyVisible,true);
+ const before=JSON.stringify(painted.rect);layer.handleInput({type:'double-click'});layer.paint(ctx,()=>({}));
+ assert.equal(JSON.stringify(painted.rect),before);assert.equal(painted.content.bodyVisible,false);assert.equal(dismissed,0);
+ now=684;layer.paint(ctx,()=>({}));assert.equal(dismissed,1);
+ now=10000;tick();assert.equal(dismissed,1);assert.equal(expired,0);
+});
+
+test('expanded notification starts at the preview rectangle and defers its body', () => {
+ const clock={now:1000},h=setup(clock,true),ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
+ h.state.alerts=[{id:'one',kind:'phone',title:'Sender',body:'Synthetic message body'}];
+ const origin={x:20,y:12,width:530,height:130};h.layer.setNotificationOrigin(origin);h.layer.openNotification('one');
+ h.layer.paint(ctx);assert.deepEqual(JSON.parse(JSON.stringify(h.layer.motion.model.lastRect)),origin);
+ for(const time of [1000,1180,1323]){clock.now=time;h.layer.paint(ctx);assert.equal(h.layer.motion.content,undefined);}
+ clock.now=1324;h.layer.paint(ctx);assert.ok(h.layer.motion.content);
+ clock.now=1900;h.layer.paint(ctx);assert.equal(h.layer.motion,null,'stalled renderer settles immediately');
 });

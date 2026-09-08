@@ -10,7 +10,7 @@ function load(file, imports, globals = {}) {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
   }).outputText;
   vm.runInNewContext(code, { module, exports: module.exports, require: name => {
-    assert.ok(name in imports, name); return imports[name];
+    if (name === '@faceclaw/motion') return require(name); assert.ok(name in imports, name); return imports[name];
   }, ...globals });
   return module.exports;
 }

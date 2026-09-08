@@ -1,4 +1,4 @@
-import { CARD_FRAME_MS } from '../card-presentation';
+import { WindowMotion, DURATION_MS, FRAME_INTERVAL_MS, type Rect, type MotionFrame } from '@faceclaw/motion';
 import { GrayImage } from '../../graphics/image';
 import { getDefaultSmallFont } from '../../graphics/ui-fonts';
 import { notificationCardRect, paintNotificationCard } from './notification-card';
@@ -6,38 +6,78 @@ import type { Layer, LayerContext, PaintBelow } from '../layers';
 import type { InputEvent } from '../gestures';
 import { appViewportRect } from './geometry';
 
-/** Five-second silent preview. It never removes the inbox entry on timeout. */
+/** A five-second arrival uses the same motion/content contract as app windows. */
 export class TimedNotificationLayer implements Layer {
   readonly acceptsDirectional = true;
-  private readonly started = Date.now();
-  private deadline = this.started + 5000;
+  private deadline = Date.now() + 5000;
   private timer: ReturnType<typeof setInterval> | null;
+  private motion: WindowMotion | null = null;
+  private lastFrame: MotionFrame | null = null;
+  private viewport = '';
+  private removed = false;
+  private closeAction: (() => void) | null = null;
   constructor(private title: string, private text: string, private open: () => void,
-    private dismiss: () => void, expire: () => void, repaint: () => void, private readonly showBackdrop = true) {
-    this.timer = setInterval(() => { if (Date.now() >= this.deadline) expire(); else repaint(); }, CARD_FRAME_MS);
+    private dismiss: () => void, private expire: () => void, private repaint: () => void, private readonly showBackdrop = true) {
+    this.timer = setInterval(() => {
+      if (this.removed) return;
+      if (!this.closeAction && Date.now() >= this.deadline - DURATION_MS) this.beginClose(this.expire);
+      this.repaint();
+      // Also expire previews that were never painted or lost their render target.
+      if ((Date.now() >= this.deadline && !this.motion) || Date.now() >= this.deadline + DURATION_MS) this.finishClose();
+    }, FRAME_INTERVAL_MS);
   }
+  currentRect(): Rect | undefined { return this.lastFrame ? { ...this.lastFrame.rect } : undefined; }
   update(title: string, text: string, restartWindow = false): void {
     this.title = title; this.text = text;
-    if (restartWindow) this.deadline = Date.now() + 5000;
+    if (restartWindow) {
+      this.deadline = Date.now() + 5000;
+      if (this.closeAction && this.lastFrame) {
+        const box = appViewportRect('medium'), target = notificationCardRect(box); target.y = box.y + 12;
+        this.motion?.retarget(target, false); this.closeAction = null;
+      }
+    }
+  }
+  private beginClose(action: () => void): void {
+    if (this.closeAction || this.removed) return;
+    this.closeAction = action;
+    if (this.lastFrame && this.motion) {
+      const target = { ...this.lastFrame.rect, y: -this.lastFrame.rect.height };
+      this.motion.retarget(target, true);
+    }
+    if (!this.motion) { this.finishClose(); return; }
+    this.repaint();
+  }
+  private finishClose(): void {
+    const action = this.closeAction; this.closeAction = null;
+    if (!action || this.removed) return;
+    this.onRemoved(); action();
   }
   paint(ctx: LayerContext, below: PaintBelow): GrayImage {
     const size = ctx.stack.getBaseSize();
-    // Awake arrivals overlay the existing planes. A notification-only wake
-    // keeps the sleeping app hidden until the user explicitly opens content.
     const image = this.showBackdrop ? below() : new GrayImage(size.width, size.height, 0);
-    const box = appViewportRect('medium');
-    const font = getDefaultSmallFont();
-    const elapsed = Date.now() - this.started;
-    const progress = Math.min(1, elapsed / 300, Math.max(0, (this.deadline - Date.now()) / 300));
-    const rect = notificationCardRect(box);
-    rect.y = box.y + 12;
-    rect.y -= Math.round((1 - progress) ** 3 * rect.height);
-    paintNotificationCard(image, rect, font, { title: this.title, text: this.text, progress: (this.deadline - Date.now()) / 5000 });
+    if (this.removed) return image;
+    const key = `${size.width}:${size.height}`;
+    const box = appViewportRect('medium'), target = notificationCardRect(box); target.y = box.y + 12;
+    if (this.viewport && this.viewport !== key) { this.onRemoved(); this.expire(); return image; }
+    this.viewport = key;
+    if (!this.motion) this.motion = new WindowMotion({ ...target, y: -target.height }, target);
+    const frame = this.motion.sample(Date.now());
+    if (frame) this.lastFrame = frame;
+    const current = this.lastFrame!;
+    if (current.done && current.closing) { this.finishClose(); return image; }
+    paintNotificationCard(image, current.rect, getDefaultSmallFont(), {
+      title: this.title, text: this.text, bodyVisible: current.bodyVisible,
+      progress: (this.deadline - Date.now()) / 5000,
+    });
     return image;
   }
   handleInput(event: InputEvent): void {
+    if (this.removed) return;
     if (event.type === 'click') this.open();
-    else if (event.type.startsWith('swipe-') || event.type.startsWith('scroll-') || event.type === 'double-click' || event.type === 'short-then-long-press') this.dismiss();
+    else if (event.type.startsWith('swipe-') || event.type.startsWith('scroll-') || event.type === 'double-click' || event.type === 'short-then-long-press') this.beginClose(this.dismiss);
   }
-  onRemoved(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
+  onRemoved(): void {
+    if (this.timer !== null) clearInterval(this.timer);
+    this.timer = null; this.removed = true; this.motion?.cancel(); this.motion = null; this.lastFrame = null; this.closeAction = null;
+  }
 }

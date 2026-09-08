@@ -10,7 +10,7 @@ export function notificationCardRect(viewport: CardRect): CardRect {
 }
 
 export function paintNotificationCard(image: GrayImage, rect: CardRect, font: UiFont,
-  content: { title: string; text: string; counter?: string; progress?: number }): void {
+  content: { title: string; text: string; counter?: string; progress?: number; bodyVisible?: boolean }): void {
   paintCardFace(image, rect);
   const left = rect.x + 14;
   const width = rect.width - 28;
@@ -21,6 +21,6 @@ export function paintNotificationCard(image: GrayImage, rect: CardRect, font: Ui
   const lineHeight = cardLineStep(font);
   const bodyBottom = rect.height - 14;
   const lineCount = Math.max(0, Math.min(2, 1 + Math.floor((bodyBottom - bodyTop - font.lineHeight) / lineHeight)));
-  wrapText(font, content.text, width).slice(0, lineCount).forEach((line, i) => image.drawText(font, left, rect.y + bodyTop + i * lineHeight, line, CARD_TEXT_BRIGHTNESS));
+  if (content.bodyVisible !== false) wrapText(font, content.text, width).slice(0, lineCount).forEach((line, i) => image.drawText(font, left, rect.y + bodyTop + i * lineHeight, line, CARD_TEXT_BRIGHTNESS));
   if (content.progress !== undefined) image.fillRect(left, rect.y + rect.height - 9, Math.round(width * Math.max(0, Math.min(1, content.progress))), 2, 150);
 }

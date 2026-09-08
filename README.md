@@ -43,3 +43,8 @@ Notification UI snapshots are bounded, assembled only when complete, and purged 
 ## Source and regression ownership
 
 See [EXTRACTION.md](EXTRACTION.md) for the checkpoint source, imported test ownership, and validation record. The fork remains the reference until end-to-end regression testing is complete.
+
+
+## Shared window motion
+
+T3 consumes `@faceclaw/motion` from the sibling platform SDK. The [SDK motion contract](../faceclaw-app-platform/android-sdk/WINDOW_MOTION.md) defines the optional 360 ms / 40 ms card and notification behavior. Window, dropdown and expanded-reader transitions defer body rendering until 90% open, discard body rasters before closing, and reverse from the last drawn rectangle. Application data and scroll state remain separate. In-process render requests coalesce through the shared SDK helper. The cadence is a target, not a measured glasses frame rate.

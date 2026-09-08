@@ -2,20 +2,7 @@ import type { GrayImage } from '../../graphics/image';
 import type { CardRect } from '../../ui/card-presentation';
 export { paintCardFace, CARD_FRAME_MS, type CardRect } from '../../ui/card-presentation';
 
-export const CARD_MOTION_MS = 360;
-const ease = (n: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, n)), 3);
-
-/** Width leads height slightly, giving the outline a soft unfolding motion. */
-export function cardRect(from: CardRect, to: CardRect, progress: number): CardRect {
-  const horizontal = ease(progress / .78);
-  const vertical = ease((progress - .1) / .9);
-  return {
-    x: Math.round(from.x + (to.x - from.x) * horizontal),
-    y: Math.round(from.y + (to.y - from.y) * vertical),
-    width: Math.round(from.width + (to.width - from.width) * horizontal),
-    height: Math.max(2, Math.round(from.height + (to.height - from.height) * vertical)),
-  };
-}
+export { WindowMotion, DURATION_MS as CARD_MOTION_MS, interpolateRect as cardRect } from '@faceclaw/motion';
 
 /** Move the heading, then reveal stationary body pixels as the card unfolds.
  * Moving the entire text raster makes each Bluetooth update erase and resend

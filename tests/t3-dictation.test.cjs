@@ -21,11 +21,11 @@ function setup({ stop, start, origin, raster = false, firstPaint = true, paintDa
     drawText(_font, x, y, value) { this.labels.push(value); this.placements.push({ x, y, value }); }
   }
   const face = { exports: {} };
-  vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/ui/card-presentation.ts', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText, { module: face, exports: face.exports });
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/ui/card-presentation.ts', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText, { module: face, exports: face.exports, require });
   const motion = { exports: {} };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/apps/t3/card-motion.ts', 'utf8'), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
-  }).outputText, { module: motion, exports: motion.exports, require: () => face.exports });
+  }).outputText, { module: motion, exports: motion.exports, require: name => name === '@faceclaw/motion' ? require(name) : face.exports });
   const hubModule = { exports: {} };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/apps/t3/hub-view-model.ts', 'utf8'), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },

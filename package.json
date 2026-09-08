@@ -1,0 +1,23 @@
+{
+  "name": "faceclaw-t3-app",
+  "main": "app/app.ts",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "node --test --test-reporter=tap tests/*.test.cjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@evenrealities/pretext": "^0.1.4",
+    "@nativescript/core": "~9.0.0",
+    "@nativescript/theme": "^3.1.0"
+  },
+  "devDependencies": {
+    "@nativescript/android": "9.0.4",
+    "@nativescript/types": "~9.0.0",
+    "@nativescript/webpack": "~5.0.25",
+    "typescript": "~5.4.0"
+  }
+}

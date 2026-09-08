@@ -1,0 +1,123 @@
+Faceclaw T3 fork additions (September 6, 2026)
+
+When enabled, T3 sends reviewed prompts, project/model selections, and plan
+answers to the paired private bridge. It receives project/session summaries,
+transcripts, activity, and completion events. Bridge-hosted dictation sends
+microphone PCM to that bridge while recording. On-device recognition is the
+backup. Original Faceclaw cloud-provider settings continue to apply when those
+providers are selected.
+
+Requested Luna refinement sends the draft and editing instruction through the
+bridge's existing Codex login to its model provider. Anthropic refinement uses
+the original Faceclaw API configuration. Refinement is never automatic.
+
+Pairing tokens and plan drafts use Android Keystore-backed encrypted storage
+excluded from ordinary configuration export/backup. Plan drafts are bounded
+and expire after seven days. Re-pairing changes the identity used for drafts
+and notification links. Drafts and audio are not added to T3 diagnostic logs.
+Existing optional user-enabled recording settings still apply.
+
+If device tools are enabled, the paired bridge can invoke the registered
+Faceclaw tools for the configured assistant project. These can read device
+state and Android notifications or perform actions authorized by the user and
+Android permissions. Tool output returns to the calling T3 agent. Notification
+content can appear on the phone and glasses. Proactive actions need not show an
+additional confirmation when the user's consent or project rules authorize
+them. Project rules do not replace authenticated transport or OS permissions.
+
+Sample-data prompts remain local. Configured live assistant/tool connections
+can continue in the background while the T3 app displays sample data.
+
+The original upstream policy follows.
+
+# Faceclaw Privacy Policy
+
+Faceclaw is a privacy-conscious app. The developers of Faceclaw don't collect
+or store user data. Faceclaw does integrate with some third-party services,
+which have their own privacy policies; this document describes what those
+services are, what they're used for and what data they collect, and links to
+their privacy policies.
+
+
+## Audio
+
+Faceclaw allows users to transcribe audio (for use with the voice assistant,
+the Transcribe app, typing into Terminal, and other apps). The default setting
+is that this is done using an on-device model running on your phone. If an
+on-device model is selected, audio never leaves your device, and is not stored
+after it is processed.
+
+Users can also provide their own API key for a third-party transcription
+service such as OpenAI Whisper, ElevenLabs, or Soniox, which may offer better
+accuracy.
+Faceclaw never transmits audio to any party other than a user-selected
+transcription service. If a third-party transcription service is selected,
+audio will be sent to that third party, is linked to the account with which
+that API key was created, and is subject to that party's privacy and retention
+policies:
+
+  OpenAI: https://openai.com/policies/row-privacy-policy/
+  ElevenLabs: https://elevenlabs.io/privacy-policy
+  Soniox: https://soniox.com/policies/privacy-policy
+
+Third party data retention and privacy policies may differ based on the API
+key provided. API keys are part of a relationship between the user and the API
+provider; Faceclaw does not manage accounts or process billing information.
+
+
+## AI Assistant Transcripts
+
+Faceclaw has a builtin AI voice assistant. Using the voice assistant requires
+providing an API key for a model provider such as Anthropic or OpenAI. Prompts
+and responses are subject to that model provider's privacy policy:
+
+  OpenAI: https://openai.com/policies/row-privacy-policy/
+  Anthropic: https://www.anthropic.com/legal/privacy
+
+AI conversation histories and memory files may be stored on your phone.
+Faceclaw does not transmit voice-assistant prompts or responses to any party
+other than a user-selected AI model provider. The voice assistant is given
+tools with which it is able to access most things on the user's phone,
+including all content displayed on the glasses, location, notifications, and
+content accessible through the Terminal app.
+
+The AI assistant can take actions on the user's behalf, including sharing any
+information it has access to. The user is responsible for any instructions
+they give it.
+
+
+## Location
+
+Faceclaw has a builtin Navigate app, which provides turn-by-turn directions.
+Using the Navigate app requires providing an API key for Mapbox. While the
+Navigate app is active, the user's exact location and selected destination are
+transmitted to Mapbox, and are subject to Mapbox's privacy policy.
+
+  Mapbox: https://www.mapbox.com/legal/privacy
+
+The Weather app will retrieve the user's coarse location, and will use it to
+query a third-party weather information provider.
+
+
+## EvenHub
+
+The EvenHub app store is subject to Even Realities' privacy policy:
+https://support.evenrealities.com/hc/en-us/articles/14127464826511-Privacy-Policy.
+Apps downloaded from the EvenHub app store come with their own privacy
+policies.
+
+
+## Wear OS Watch
+
+The optional Faceclaw watch app (wear/) talks to the phone over Google Play
+services' Wearable Data Layer, the same channel the watch uses for
+notifications and other companion apps. Gestures, commands, the watch's own
+speech-recognition results, and the mirrored glasses status and assistant
+replies travel between your watch and your phone over their Bluetooth (or,
+when paired that way, Wi-Fi) link; Faceclaw does not send any of it to a
+server. Speech recognized on the watch uses the watch's system speech
+recognizer, which may send audio to Google under Google's privacy policy:
+
+  Google: https://policies.google.com/privacy
+
+The phone does nothing watch-related on phones without Google Play services.

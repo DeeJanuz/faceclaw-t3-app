@@ -1,0 +1,66 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
+  <ActionBar title="T3 Assistant" />
+  <ScrollView>
+    <StackLayout class="p-20">
+      <Label text="Bridge connection" class="h2" />
+      <Label text="Use your private T3 bridge address. Pairing stays on this phone." textWrap="true" class="m-b-12" />
+      <TextField text="{{ bridgeUrl }}" hint="wss://your-computer:8443" autocorrect="false" autocapitalizationType="none" />
+      <TextField text="{{ passphrase }}" hint="Pairing passphrase" secure="true" autocorrect="false" autocapitalizationType="none" />
+      <Button text="Pair and connect" tap="{{ pair }}" isEnabled="{{ canPair }}" class="-primary" />
+      <Label text="{{ status }}" textWrap="true" class="m-b-16" />
+      <GridLayout columns="*,auto" class="m-t-8">
+        <Label col="0" text="Enable T3 connection" verticalAlignment="center" />
+        <Switch col="1" checked="{{ enabled }}" checkedChange="{{ toggleEnabled }}" />
+      </GridLayout>
+      <Label text="Faceclaw customizations" class="h2 m-t-24"/>
+      <GridLayout columns="*,auto"><Label text="Enable T3 customizations" textWrap="true"/><Switch col="1" checked="{{ customizationsEnabled }}" checkedChange="{{ toggleCustomizations }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Launcher and folders"/><Switch col="1" checked="{{ custom_launcher }}" checkedChange="{{ toggleLauncher }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Ring navigation"/><Switch col="1" checked="{{ custom_navigation }}" checkedChange="{{ toggleNavigation }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="App actions menus"/><Switch col="1" checked="{{ custom_app_menu }}" checkedChange="{{ toggleMenus }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Window layout"/><Switch col="1" checked="{{ custom_window_layout }}" checkedChange="{{ toggleLayout }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Typography"/><Switch col="1" checked="{{ custom_typography }}" checkedChange="{{ toggleTypography }}"/></GridLayout>
+      <Label text="Choose grants and per-feature priority in Faceclaw. A bundle may partly win." textWrap="true"/>
+      <Label text="{{ overrideStatus }}" textWrap="true"/>
+      <Label text="Assistant" class="h2 m-t-24" />
+      <GridLayout columns="*,auto">
+        <Label col="0" text="Prefer T3 assistant" verticalAlignment="center" />
+        <Switch col="1" checked="{{ preferAssistant }}" checkedChange="{{ toggleAssistant }}" />
+      </GridLayout>
+      <Label text="Each invocation starts a fresh conversation. Review the transcript and tap to send. Your normal Faceclaw assistant remains the fallback." textWrap="true" />
+      <Button text="{{ projectLabel }}" tap="{{ chooseProject }}" />
+      <Button text="{{ modelLabel }}" tap="{{ chooseModel }}" />
+      <Button text="{{ reasoningLabel }}" tap="{{ chooseReasoning }}" />
+      <GridLayout columns="*,auto" class="m-t-12">
+        <Label col="0" text="Allow assistant device tools" verticalAlignment="center" textWrap="true" />
+        <Switch col="1" checked="{{ allowTools }}" checkedChange="{{ toggleTools }}" />
+      </GridLayout>
+      <Label text="Use Faceclaw tools from the configured assistant project, including background interactions authorized by your project rules." textWrap="true" />
+      <Label text="Notifications" class="h2 m-t-24" />
+      <GridLayout columns="*,auto">
+        <Label col="0" text="Use T3 for Faceclaw notifications" verticalAlignment="center" textWrap="true" />
+        <Switch col="1" checked="{{ notificationOverride }}" checkedChange="{{ toggleNotifications }}" />
+      </GridLayout>
+      <Label text="Open notifications in T3's inbox and reader. New notifications keep the five-second dropdown. Android notification access and app notification settings still apply. Waking the display returns to your last app." textWrap="true" />
+      <Button text="Choose notification apps" tap="{{ chooseNotificationApps }}" visibility="{{ notificationOverride ? 'visible' : 'collapsed' }}" />
+      <GridLayout columns="*,auto" class="m-t-12">
+        <Label col="0" text="Show T3 alerts on this phone" verticalAlignment="center" textWrap="true" />
+        <Switch col="1" checked="{{ phoneNotifications }}" checkedChange="{{ togglePhoneNotifications }}" />
+      </GridLayout>
+      <Label text="Off by default. Agent alerts still appear in the glasses inbox and dropdown. Turning this off clears existing T3 alerts from the phone." textWrap="true" />
+      <Button text="Android notification settings" tap="{{ connectionNotificationSettings }}" />
+      <Label text="Manage this APK's optional phone notifications in Android settings." textWrap="true" />
+      <Label text="Dictation" class="h2 m-t-24" />
+      <GridLayout columns="*,auto">
+        <Label col="0" text="Use bridge-hosted Whisper" verticalAlignment="center" />
+        <Switch col="1" checked="{{ bridgeDictation }}" checkedChange="{{ toggleDictation }}" />
+      </GridLayout>
+      <Label text="Ask Assistant always uses this bridge. Enable this switch to use it for dictation across Faceclaw too. On-device transcription is the automatic backup when available." textWrap="true" />
+      <Label text="Draft refinement" class="h2 m-t-24" />
+      <Button text="{{ refinementLabel }}" tap="{{ chooseRefinement }}" />
+      <Label text="Refinement runs only when requested. Luna uses the bridge's existing Codex login; Anthropic uses your existing Faceclaw API configuration." textWrap="true" />
+      <Label text="UI testing" class="h2 m-t-24" />
+      <Button text="Open T3 with sample data" tap="{{ preview }}" />
+      <Button text="Open live T3 app" tap="{{ openLive }}" />
+    </StackLayout>
+  </ScrollView>
+</Page>

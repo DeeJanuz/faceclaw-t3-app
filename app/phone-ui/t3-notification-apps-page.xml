@@ -1,0 +1,24 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
+  <ActionBar title="Notification apps" />
+  <GridLayout rows="auto,auto,auto,auto,*" class="p-16">
+    <Label row="0" text="{{ summary }}" textWrap="true" class="m-b-12" />
+    <SearchBar row="1" hint="Find an app" loaded="searchLoaded" unloaded="searchUnloaded" />
+    <GridLayout row="2" columns="*,*" isEnabled="{{ overrideEnabled }}">
+      <Button col="0" text="Allow all" tap="{{ allowAll }}" />
+      <Button col="1" text="Mute all" tap="{{ muteAll }}" />
+    </GridLayout>
+    <StackLayout row="3">
+      <Label text="{{ error }}" textWrap="true" />
+      <Label text="{{ empty }}" textWrap="true" />
+    </StackLayout>
+    <ListView row="4" items="{{ apps }}" isEnabled="{{ overrideEnabled }}">
+      <ListView.itemTemplate>
+        <GridLayout columns="*,auto" rows="auto,auto" class="p-12">
+          <Label row="0" col="0" text="{{ name }}" textWrap="true" class="font-weight-bold" />
+          <Label row="1" col="0" text="{{ packageName }}" textWrap="true" class="text-muted" />
+          <Switch row="0" rowSpan="2" col="1" checked="{{ allowed }}" checkedChange="{{ toggle }}" verticalAlignment="center" />
+        </GridLayout>
+      </ListView.itemTemplate>
+    </ListView>
+  </GridLayout>
+</Page>

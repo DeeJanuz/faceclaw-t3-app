@@ -790,8 +790,9 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
   const unsubscribe = state.onChange(() => { layer.contentChanged(); repaint(); });
   const offWeather = weatherBridge.onStateChange(() => { layer.backdropChanged(); repaint(); });
   const offHostState = onHostState(() => layer.contentChanged());
-  const offHostEvent = onHostEvent(type => {
-    if (['visibility', 'close', 'disconnected', 'destroyed', 'extensions', 'extension-surface', 'shared-style'].includes(type)) layer.onRemoved();
+  const offHostEvent = onHostEvent((type,data) => {
+    if (type==='extensions' && (!Array.isArray(data.changedFeatures) || data.changedFeatures.some((feature:string)=>['ui.typography','ui.navigation','ui.window-layout','ui.notifications'].includes(feature)))) layer.onRemoved();
+    if (['visibility', 'close', 'disconnected', 'destroyed', 'extension-surface', 'shared-style'].includes(type)) layer.onRemoved();
   });
   const motionTimer = setInterval(() => { if (layer.needsAnimation() && shell.isWindowVisible(T3_WINDOW_ID)) app?.requestRender(); }, CARD_FRAME_MS);
   const clockTimer = setInterval(() => { if (layer.screen === 'dashboard' && shell.isWindowVisible(T3_WINDOW_ID)) repaint(); }, 15000);

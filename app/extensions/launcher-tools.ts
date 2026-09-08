@@ -20,7 +20,8 @@ export function runLauncherFolderTool(name:string,args:unknown):{ok:boolean;cont
 export function initializeLauncherTools():void{
  const seen=new Set<string>();
  onHostEvent((type,envelope)=>{
-  if(type==='disconnected'||type==='destroyed'||type==='extensions'){seen.clear();return;}
+  if(type==='disconnected'||type==='destroyed'){seen.clear();return;}
+  if(type==='extensions'){if(!Array.isArray(envelope.changedFeatures)||envelope.changedFeatures.includes('ui.launcher'))seen.clear();return;}
   if(type!=='extension-event'||envelope.feature!=='ui.launcher'||envelope.type!=='request'||envelope.data?.operation!=='folder-tool')return;
   const data=envelope.data;if(typeof data.requestId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(data.requestId)||seen.has(data.requestId))return;
   if(seen.size>=512){respondHostRequest('ui.launcher',envelope.generation,data.requestId,{ok:false,error:'Too many requests'});return;}

@@ -89,3 +89,12 @@ test('notification long press reaches dismissal without opening a second menu',a
  const api=load('app/runtime.ts',imports);await api.deliverInput('long-press');
  assert.equal(requested,0);assert.equal(slept,0);assert.equal(pushed.length,0);assert.equal(dismissed,1);
 });
+
+
+test('an unrelated snapshot update preserves a partially received winning notification snapshot',()=>{
+ const b=boundary();b.configure(b.feature('ui.notifications',7));
+ const parts=fragments();b.event('ui.notifications',{event:'notification-snapshot-fragment',...parts[0]},7);
+ b.configure(b.feature('ui.notifications',7),b.feature('ui.typography',8,'other.app/Service'));
+ b.event('ui.notifications',{event:'notification-snapshot-fragment',...parts[1]},7);
+ assert.equal(b.host.hostState.notifications.length,1);
+});

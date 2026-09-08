@@ -40,8 +40,12 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
  if(type==='disconnected'||type==='destroyed') {ownVisible=false;clearOwnNotifications();clearPending();ownRequests.clear();ownCaptureId="";snapshotAssembler.reset();featureStates=[];hostState.notificationApps=[];hostState.notifications=[];hostState.tools=[];service=null;for(const listener of stateListeners)listener();}
  if(type==='host-state'){if(Array.isArray(data.notificationApps))hostState.notificationApps=data.notificationApps.slice(0,4096);hostState.battery=data.battery??hostState.battery;hostState.weather=data.weather??hostState.weather;for(const listener of stateListeners)listener();}
  if(type==='extensions') {
-  snapshotAssembler.reset();clearOwnNotifications();extensionGeneration=Number.isSafeInteger(data.generation)?data.generation:0;
-  featureStates=Array.isArray(data.features)?data.features:[];
+  const next:FeatureState[]=Array.isArray(data.features)?data.features:[];
+  const names=new Set([...featureStates,...next].map(item=>item.feature));
+  const changedFeatures=[...names].filter(name=>{const before=effectiveFeature(name),after=next.find(item=>item.feature===name);return !before||!after||before.generation!==after.generation||before.component!==after.component||before.available!==after.available;});
+  if(changedFeatures.includes('ui.notifications'))snapshotAssembler.reset();
+  clearOwnNotifications();extensionGeneration=Number.isSafeInteger(data.generation)?data.generation:0;
+  featureStates=next;data={...data,changedFeatures};
   if(!ownsFeature('ui.notifications')){hostState.notificationApps=[];hostState.notifications=[];for(const listener of stateListeners)listener();}
   if(ownVisible)service?.requestOwnNotifications();
   for(const [id,item] of pending)if(!ownsFeature(item.feature)||effectiveFeature(item.feature)?.generation!==item.generation){clearTimeout(item.timer);pending.delete(id);item.reject(new Error('HOST_OVERRIDE_REVOKED'));}

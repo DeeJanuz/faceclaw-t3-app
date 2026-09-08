@@ -24,9 +24,11 @@ The debug APK is for isolated testing. Use your own stable signing identity for 
 3. Select the assistant project, model, and reasoning level. Enable desired assistant, bridge dictation, refinement, and device-tool roles.
 4. Enable optional T3 customizations. Approve each desired capability and set its priority in Faceclaw. Disabled winners reveal the next enabled, approved app according to your chosen order.
 
-**T3 gestures** controls double tap for display off/wake, tap then hold for the app switcher, and one hold for App actions. **App actions menus** separately controls the menu presentation, including access to System actions. These settings need the customization bundle enabled and their respective host grants. The preview and sample-data controls are at the bottom of T3 settings.
+**T3 gestures** makes double tap go back through menus and screens; at the dashboard it turns the display off, and another double tap wakes it. Tap then hold opens the app switcher, and one hold opens App actions. **App actions menus** separately controls the menu presentation, including access to System actions. These settings need the customization bundle enabled and their respective host grants. The preview and sample-data controls are at the bottom of T3 settings.
 
 The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. `../faceclaw-t3-bridge/scripts/faceclaw-dev-server.mjs` provides the existing isolated integration fixture.
+
+Frame conversion uses one bulk JavaScript-to-Android buffer transfer for both the preview and host surfaces. The [emulator pixel benchmark](tests/android/README.md) checks pixel fidelity and buffer bounds and compares transfer time with the former per-pixel path.
 
 ## Boundaries
 

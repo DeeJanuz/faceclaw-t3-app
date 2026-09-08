@@ -2,7 +2,6 @@ import {createT3AppWindow,openT3Thread,openT3Inbox,openT3Notification,isT3FlowPr
 import {initializeT3Notifications,handlePhoneNotification} from './apps/t3/notifications-ui';
 import {t3Workspace} from './apps/t3/runtime';
 import {GrayImage} from './graphics/image';
-import {toJavaBytes} from './native/cloud-stt';
 import {LayerStack,noopLayerActions} from './ui/layers';
 import {TimedNotificationLayer} from './ui/shell/timed-notification';
 import {WindowMenuLayer,appActionItems} from './ui/window-menu';
@@ -23,7 +22,11 @@ let lastFrame:GrayImage|null=null;
 const frames=new Set<(frame:GrayImage)=>void>();
 const surfaces=new Map<string,{width:number;height:number;visible:boolean;generation:number;stack?:LayerStack}>();
 let preview:any=null;let previewLayer:TimedNotificationLayer|null=null;let notificationMode:'preview'|'reader'|'inbox'|undefined;
-export function grayBitmap(image:GrayImage,extension=false):any {image.bakeDeferredDrawsInPlace();return extension?com.faceclaw.t3.T3Pixels.extensionBitmap(toJavaBytes(image.pixels),image.width,image.height):com.faceclaw.t3.T3Pixels.bitmap(toJavaBytes(image.pixels),image.width,image.height);}
+export function grayBitmap(image:GrayImage,extension=false):any {
+ image.bakeDeferredDrawsInPlace();
+ const pixels=image.pixels;
+ return com.faceclaw.t3.T3Pixels.bitmapBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,extension);
+}
 export function onFrame(listener:(frame:GrayImage)=>void):()=>void{frames.add(listener);if(lastFrame)listener(lastFrame);return ()=>frames.delete(listener);}
 export function setPhonePreviewVisible(visible:boolean):void{phoneVisible=visible;if(visible)getApp().requestRender();}
 export function getApp(){

@@ -9,7 +9,7 @@ export function setCustomizationEnabled(id:string,value:boolean):void{if(customi
 export function extensionDeclarations(){
  const config=getT3Config(),enabled=customizationsEnabled();
  const configurations:Record<string,Record<string,unknown>>={
-  launcher:{label:'T3 vertical launcher',filesDefaultView:'list'},navigation:{doubleTap:'sleep',rootBack:'sleep',tapHold:'switcher',hold:'app-menu',wakeFocus:'window'},
+  launcher:{label:'T3 vertical launcher',filesDefaultView:'list'},navigation:{doubleTap:'back',rootBack:'sleep',tapHold:'switcher',hold:'app-menu',wakeFocus:'window'},
   'app-menu':{title:'App actions',displayOffFirst:true,systemActionsLast:true,systemTitle:'System actions'},
   'window-layout':{centered:true,sidebarMode:'overlay',switcherHeight:'display',dividerWidth:2,ownTopBar:false,ownHeightMode:'medium',inputDialogs:'viewport'},
   typography:{font:'Inter_18pt-Regular.ttf',size:17,raster:'crisp',borderWidth:2,selectionBorderWidth:3,cardRadius:8},

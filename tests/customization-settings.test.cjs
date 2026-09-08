@@ -11,7 +11,8 @@ test('T3 owns the gesture declaration and publishes it only while its settings f
  assert.equal(feature('ui.navigation').enabled, false);
  api.setCustomizationsEnabled(true);
  assert.equal(feature('ui.navigation').enabled, true);
- assert.deepEqual({ ...feature('ui.navigation').configuration }, { doubleTap: 'sleep', rootBack: 'sleep', tapHold: 'switcher', hold: 'app-menu', wakeFocus: 'window' });
+ // Back must reach the active menu/T3 screen. Only root Back requests sleep.
+ assert.deepEqual({ ...feature('ui.navigation').configuration }, { doubleTap: 'back', rootBack: 'sleep', tapHold: 'switcher', hold: 'app-menu', wakeFocus: 'window' });
  assert.equal(feature('ui.window-layout').configuration.switcherHeight, 'display');
  api.setCustomizationEnabled('navigation', false);
  assert.equal(feature('ui.navigation').enabled, false);

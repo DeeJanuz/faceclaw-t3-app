@@ -9,7 +9,7 @@
       <GridLayout columns="*,auto"><Label text="Enable T3 customizations" textWrap="true"/><Switch col="1" checked="{{ customizationsEnabled }}" checkedChange="{{ toggleCustomizations }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="Launcher and folders"/><Switch col="1" checked="{{ custom_launcher }}" checkedChange="{{ toggleLauncher }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="T3 gestures"/><Switch col="1" checked="{{ custom_navigation }}" checkedChange="{{ toggleNavigation }}"/></GridLayout>
-      <Label text="Double tap: display off/wake. Tap then hold: app switcher. Hold: App actions." textWrap="true"/>
+      <Label text="Double tap: back; at the dashboard, display off. Double tap again to wake. Tap then hold: app switcher. Hold: App actions." textWrap="true"/>
       <GridLayout columns="*,auto"><Label text="App actions menus"/><Switch col="1" checked="{{ custom_app_menu }}" checkedChange="{{ toggleMenus }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="Window layout"/><Switch col="1" checked="{{ custom_window_layout }}" checkedChange="{{ toggleLayout }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="Typography"/><Switch col="1" checked="{{ custom_typography }}" checkedChange="{{ toggleTypography }}"/></GridLayout>

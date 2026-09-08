@@ -122,6 +122,32 @@ test('only dashboard-root back sleeps the display, including after direct nested
   await layer.handleInput({ type: 'double-click', source: 'ring' });
   assert.equal(layer.screen, 'dashboard'); assert.equal(navigation.yielded, 1);
 });
+test('double tap closes App actions before backing through T3 to dashboard sleep', async () => {
+  const gestures = load('app/ui/gestures.ts');
+  const { LayerStack, noopLayerActions } = load('app/ui/layers.ts', {
+    '../graphics/image': { G2_LENS_WIDTH: 576, G2_LENS_HEIGHT: 452 },
+    '../graphics/plane': {}, '../native/frame-timings': {}, './gestures': gestures,
+  });
+  const { MenuLayer } = load('app/ui/menu.ts', {
+    '../graphics/image': { G2_LENS_HEIGHT: 452 }, '../graphics/textwrap': {},
+    '../graphics/ui-fonts': {}, '../util/numeric-util': {}, './gestures': gestures, './metrics': {},
+  });
+  for (const source of ['ring', 'watch']) {
+    const { layer, navigation } = setup();
+    const stack = new LayerStack(layer, noopLayerActions, { width: 576, height: 452 });
+    layer.go('sessions'); layer.go('projects');
+    stack.push(new MenuLayer('App actions', [{ label: 'Display off', onSelect: () => assert.fail('Back must not select an action') }]));
+    await stack.handleInput({ type: 'double-click', source });
+    assert.equal(stack.isAtBase(), true);
+    assert.equal(layer.screen, 'projects'); assert.equal(navigation.yielded, 0);
+    await stack.handleInput({ type: 'double-click', source });
+    assert.equal(layer.screen, 'sessions'); assert.equal(navigation.yielded, 0);
+    await stack.handleInput({ type: 'double-click', source });
+    assert.equal(layer.screen, 'dashboard'); assert.equal(navigation.yielded, 0);
+    await stack.handleInput({ type: 'double-click', source });
+    assert.equal(navigation.yielded, 1);
+  }
+});
 test('Settings opens phone configuration and leaves a check-phone screen with dashboard back', async () => {
   const { layer, navigation } = setup();
   let popped = 0;

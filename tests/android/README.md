@@ -1,0 +1,5 @@
+# Pixel conversion regression and benchmark
+
+Build the debug T3 APK, then run `bash scripts/benchmark-pixels.sh emulator-5556` from the repository with `JAVA_HOME` and `ANDROID_HOME` configured. The script refuses physical-device serials, installs the APK and a separate debug instrumentation APK on the emulator, and writes results to `../output/t3-pixel-benchmark/results.log`. It opens T3 settings without selecting a host or pairing a bridge. The test APK must use the same debug signing key as T3; `PIXEL_TEST_KEYSTORE` can select another debug keystore.
+
+Native tests verify grayscale and transparency, typed-view offsets, unchanged buffer cursors, direct/read-only buffers, snapshot ownership, invalid bounds, and maximum dimensions. The benchmark runs JavaScript in the real NativeScript runtime and compares the previous per-element Java byte-array conversion with the bulk ByteBuffer method, including bitmap creation. It warms both paths, alternates measurement order, takes 15 samples per size, and recycles each bitmap. These are conversion timings, not end-to-end gesture or BLE latency.

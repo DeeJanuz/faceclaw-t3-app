@@ -15,11 +15,14 @@ let hub;
 test.before(async () => { hub = load('app/apps/t3/hub-view-model.ts', { '@evenrealities/pretext': await import('@evenrealities/pretext'), '../../graphics/textwrap': load('app/graphics/textwrap.ts') }); });
 const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': load('app/t3/security.ts') });
 const { T3DemoApi } = load('app/apps/t3/demo.ts');
-function setup(animationClock) {
+function setup(animationClock, raster = false) {
   const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0 }; let permitDismiss = true;
   const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
   const alerts = () => visible || state.alerts;
   class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(width * height); } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} dimmed() { return this; } }
+  const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
+  const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
+  const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
   const shell = { getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
     wakeWindowForNotification: id => {
       if (visibility.on || visibility.foreground !== id || visibility.overlay || visibility.preview) return false;
@@ -35,12 +38,19 @@ function setup(animationClock) {
       return {...selected,review:current=>new Promise(resolve=>{let used=false;reviews.push([{label:'Send reply',onSend:text=>{if(used||!current())return;used=true;const accepted=selected.send(text,status=>resolve(status));if(!accepted)resolve('rejected');else if(!selected.successMessage)resolve('sent');}},current,()=>resolve('rejected')]);})};
     }, dismissT3Alert(alert) { dismissed.push(alert.id); if (!permitDismiss) return false; state.removeAlert(alert.id); return true; } }, '@nativescript/core': { Frame: { topmost: () => ({ navigate: () => navigation.phone++ }) } },
     '../../ui/shell/notification-card': { ...notificationCard, paintNotificationCard(image, rect, font, content) { cards.push(rect); notificationCard.paintNotificationCard(image, rect, font, content); } },
-    './hub-view-model': hub, './card-motion': { ...(animationClock ? load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }) : {}), paintCardFace(_image, rect) { cards.push(rect); }, paintSelectionChevron(_image, x, y) { chevrons.push({ x, y }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
-    './dashboard': { dashboardTargets: () => [], paintT3Dashboard: (_w, _h, _selected, count) => { counts.push(count); return new Image(_w, _h); } }, '../../native/weather': { weatherBridge: { snapshot: () => ({}) } }, '../../ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, '../../graphics/image': { GrayImage: Image }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({ lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) }) }, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] },
+    './hub-view-model': hub, './card-motion': { ...(animationClock ? load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }) : {}), paintCardFace(image, rect) { cards.push(rect); if (raster) face.paintCardFace(image, rect); }, paintSelectionChevron(_image, x, y) { chevrons.push({ x, y }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
+    './dashboard': { dashboardTargets: () => targets, paintT3Dashboard: (_w, _h, _selected, count) => {
+      counts.push(count); const image = new RasterImage(_w, _h);
+      if (raster) { image.drawText(font, 22, 20, 'DASHBOARD', 190); image.drawText(font, 22, 75, 'Synthetic home content', 190); for (const target of targets) { image.drawRoundedRect(target.x, target.y, target.width, target.height, 235, 8, 2); image.drawText(font, target.x + 16, target.y + 10, target.id.toUpperCase(), 190); } }
+      return image;
+    } }, '../../native/weather': { weatherBridge: { snapshot: () => ({}) } }, '../../ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, '../../graphics/image': { GrayImage: RasterImage }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => font }, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] },
+    '../../extensions/host': { onHostEvent: () => () => {}, onHostState: () => () => {} },
     '../../ui/shell/shell': { shell }, '../../ui/shell/in-process-window': {},
     '../../t3/config': { getT3Config: () => ({}) }, './runtime': { t3Workspace: state },
   }, animationClock ? { Date: class extends Date { static now() { return animationClock.now; } } } : {});
-  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, denyDismiss: () => { permitDismiss = false; }, layer: new T3Layer(() => {}, () => visibility.appBase) };
+  const layer = new T3Layer(() => {}, () => visibility.appBase);
+  state.onChange(() => layer.contentChanged());
+  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, denyDismiss: () => { permitDismiss = false; }, layer };
 }
 test('assistant draft requires review tap and preserves assistant.start intent', async () => {
   const { api, state, layer } = setup(); await state.refresh();
@@ -727,7 +737,7 @@ test('dashboard inbox stays top aligned in both viewport heights', () => {
     assert.equal(layer.dropdownRect().height, 104);
   }
 });
-test('Sessions closes over black like Ask Assistant and refreshes the dashboard at completion', async () => {
+test('Sessions retains its content over the dashboard throughout collapse', async () => {
   const clock = { now: 1000 };
   const { layer, counts } = setup(clock);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
@@ -736,10 +746,10 @@ test('Sessions closes over black like Ask Assistant and refreshes the dashboard 
   clock.now = 1360;
   await layer.handleInput({ type: 'double-click' });
   for (; clock.now < 1720; clock.now += face.CARD_FRAME_MS) layer.paint(ctx);
-  assert.equal(counts.length, 0, 'no dashboard raster is transmitted during full-card collapse');
+  assert.equal(counts.length, 1, 'dashboard is visible during collapse and reused between frames');
   layer.paint(ctx);
   assert.equal(layer.motion, null);
-  assert.equal(counts.length, 1);
+  assert.equal(counts.length, 2);
   assert.equal(layer.selected, 'sessions');
 });
 
@@ -756,4 +766,77 @@ test('explicit APK conversation action clears wake-return state without sleeping
  h.layer.openNotification('apk-one', 'notes', true);
  h.layer.menuItems().find(item => item.label === 'Open conversation in app').onSelect({ stack: { pop() {} } });
  assert.deepEqual(h.navigation.events, ['open-app:apk-one']); assert.equal(h.layer.notificationReturnToSleep, false); assert.equal(h.layer.screen, 'inbox');
+});
+
+function contentPixels(image, rect) {
+  let count = 0;
+  for (let y = Math.max(0, rect.y + 8); y < Math.min(image.height, rect.y + rect.height - 8); y++)
+    for (let x = Math.max(0, rect.x + 8); x < Math.min(image.width, rect.x + rect.width - 8); x++)
+      if (image.pixels[y * image.width + x] === 190) count++;
+  return count;
+}
+function saveMotionFrame(name, image) {
+  if (!process.env.T3_TRANSITION_ARTIFACT_DIR) return;
+  image.bakeDeferredDrawsInPlace();
+  fs.mkdirSync(process.env.T3_TRANSITION_ARTIFACT_DIR, { recursive: true });
+  fs.writeFileSync(`${process.env.T3_TRANSITION_ARTIFACT_DIR}/${name}.pgm`, Buffer.concat([Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.pixels)]));
+}
+test('actual raster shows crisp card content in first/middle/final expand and collapse frames', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions');
+  const movement = load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face });
+  for (const [name, time] of [['first', 1000], ['middle', 1180], ['final', 1360]]) {
+    clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
+    const rect = name === 'final' ? h.layer.fullRect() : movement.cardRect(h.layer.motion.from, h.layer.motion.to, (time - 1000) / 360);
+    assert.ok(contentPixels(image, rect) > 20, `expansion ${name} must include real text pixels`);
+    saveMotionFrame(`expand-${name}`, image);
+  }
+  await h.layer.handleInput({ type: 'double-click' });
+  for (const [name, time] of [['first', 1360], ['middle', 1540], ['final', 1720]]) {
+    clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
+    if (name !== 'final') {
+      const rect = movement.cardRect(h.layer.motion.from, h.layer.motion.to, (time - 1360) / 360);
+      assert.ok(contentPixels(image, rect) > 20, `collapse ${name} must retain outgoing text`);
+    }
+    if (name === 'middle') assert.ok(contentPixels(image, { x: 0, y: 0, width: 230, height: 100 }) > 20, 'dashboard content appears behind the shrinking card');
+    saveMotionFrame(`collapse-${name}`, image);
+  }
+  assert.equal(h.layer.motion, null);
+});
+
+test('transition cache lays out a large session list once, rebuilds on new state, and never keeps invalidated outgoing pixels', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
+  await h.state.refresh();
+  const original = h.state.sessions[0]; h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Synthetic session ${i}` }));
+  const rows = h.layer.rows.bind(h.layer); let layouts = 0; h.layer.rows = () => { layouts++; return rows(); };
+  h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  const oldContent = h.layer.motion.content, afterPrepare = layouts;
+  clock.now = 1040; h.layer.paint(ctx); clock.now = 1080; h.layer.paint(ctx);
+  assert.equal(layouts, afterPrepare, 'no session sorting/layout between cached frames');
+  h.state.sessions = []; h.state.changed(); assert.equal(h.layer.motion.content, undefined);
+  h.layer.paint(ctx); assert.notEqual(h.layer.motion.content, oldContent); assert.equal(layouts, afterPrepare + 1);
+  clock.now = 1120; await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx);
+  assert.ok(h.layer.motion.content);
+  h.state.changed(); assert.equal(h.layer.motion, null, 'outgoing snapshot must be released when its source state changes');
+  const fresh = h.layer.paint(ctx); fresh.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.screen, 'dashboard'); assert.ok(contentPixels(fresh, { x: 0, y: 0, width: 230, height: 100 }) > 20);
+});
+
+test('resize, real input, overlays and removal end motion, while synthetic releases keep it running', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true); let width = 576, height = 452;
+  const ctx = { stack: { getBaseSize: () => ({ width, height }) } };
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  const motion = h.layer.motion;
+  await h.layer.handleInput({ type: 'long-press-release' }); await h.layer.handleInput({ type: 'system-menu-opened' });
+  assert.equal(h.layer.motion, motion);
+  await h.layer.handleInput({ type: 'scroll-down' }); assert.equal(h.layer.motion, null);
+  assert.notEqual(h.layer.selected, '');
+  await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx); assert.ok(h.layer.motion);
+  await h.layer.handleInput({ type: 'click' }); assert.equal(h.layer.screen, 'sessions');
+  h.layer.paint(ctx); assert.ok(h.layer.motion, 'reverse navigation starts a populated expansion immediately');
+  width = 640; height = 288; const resized = h.layer.paint(ctx); resized.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.motion, null); assert.equal(resized.width, 640); assert.equal(resized.height, 288); assert.ok(contentPixels(resized, h.layer.fullRect()) > 20);
+  await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx); h.visibility.overlay = true; h.layer.paint(ctx);
+  assert.equal(h.layer.motion, null);
+  h.visibility.overlay = false; h.layer.go('sessions'); h.layer.paint(ctx); h.layer.onRemoved(); assert.equal(h.layer.motion, null);
 });

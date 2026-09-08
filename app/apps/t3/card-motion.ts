@@ -17,6 +17,20 @@ export function cardRect(from: CardRect, to: CardRect, progress: number): CardRe
   };
 }
 
+/** Move baked content without scaling glyphs; copy only the moving card's interior. */
+export function paintCardContents(image: GrayImage, content: GrayImage, source: CardRect, target: CardRect): void {
+  const inset = 8; // Stay inside the rounded face and preserve its single outline.
+  const width = Math.max(0, Math.min(source.width, target.width) - inset * 2);
+  const height = Math.max(0, Math.min(source.height, target.height) - inset * 2);
+  const sx = source.x + inset, sy = source.y + inset, dx = target.x + inset, dy = target.y + inset;
+  const left = Math.max(0, -sx, -dx), right = Math.min(width, content.width - sx, image.width - dx);
+  for (let row = Math.max(0, -sy, -dy); row < height && sy + row < content.height && dy + row < image.height; row++) {
+    if (right <= left) break;
+    const start = (sy + row) * content.width + sx + left;
+    image.pixels.set(content.pixels.subarray(start, start + right - left), (dy + row) * image.width + dx + left);
+  }
+}
+
 /** A two-pixel chevron marks the single ring-selected control. */
 export function paintSelectionChevron(image: GrayImage, x: number, centerY: number, value = 245): void {
   const y = Math.round(centerY);

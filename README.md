@@ -30,6 +30,8 @@ The phone preview uses the same extracted T3 layer stack as the glasses APK surf
 
 Frame conversion uses one bulk JavaScript-to-Android buffer transfer for both the preview and host surfaces. The [emulator pixel benchmark](tests/android/README.md) checks pixel fidelity and buffer bounds and compares transfer time with the former per-pixel path.
 
+Navigation cards show their content during expansion and reveal the dashboard during collapse. Content snapshots are limited to the active transition and invalidated by data changes. Render requests from the same interaction are combined into one frame using the latest state.
+
 ## Boundaries
 
 The host retains the glasses connection, input delivery, Android permissions, conflict order, and all native/APK notification action authority. The APK supplies launcher/folder rendering, app menus, T3 screens, notification previews/inbox/readers, and configuration tokens for shared navigation, layout and typography. Host configuration persists across APK process restarts; live service loss falls back to host behavior.

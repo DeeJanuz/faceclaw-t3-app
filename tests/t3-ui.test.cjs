@@ -840,3 +840,38 @@ test('resize, real input, overlays and removal end motion, while synthetic relea
   assert.equal(h.layer.motion, null);
   h.visibility.overlay = false; h.layer.go('sessions'); h.layer.paint(ctx); h.layer.onRemoved(); assert.equal(h.layer.motion, null);
 });
+
+test('progressive Sessions body keeps revealed pixels stationary and reduces animation changes', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
+  const { GrayImage } = load('app/graphics/image.ts', { './textwrap': {} });
+  const movement = load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face });
+  await h.state.refresh();
+  const original = h.state.sessions[0];
+  h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Project ${i}: synthetic session with enough text` }));
+  h.layer.selected = 'sessions'; h.layer.go('sessions');
+  let previous, previousMoving, changed = 0, movingChanged = 0;
+  for (let elapsed = 0; elapsed < 360; elapsed += 40) {
+    clock.now = 1000 + elapsed;
+    const image = h.layer.paint(ctx), motion = h.layer.motion;
+    const rect = movement.cardRect(motion.from, motion.to, elapsed / 360);
+    const moving = new GrayImage(576, 452, 0); moving.pixels.set(motion.backdrop.pixels); face.paintCardFace(moving, rect);
+    // Previous implementation shifted the complete content raster every frame.
+    const w = Math.min(motion.to.width, rect.width) - 16, height = Math.min(motion.to.height, rect.height) - 16;
+    for (let row = 0; row < height; row++) {
+      const start = (motion.to.y + 8 + row) * 576 + motion.to.x + 8;
+      moving.pixels.set(motion.content.pixels.subarray(start, start + w), (rect.y + 8 + row) * 576 + rect.x + 8);
+    }
+    if (previous) for (let i = 0; i < image.pixels.length; i++) {
+      if (image.pixels[i] !== previous[i]) changed++;
+      if (moving.pixels[i] !== previousMoving[i]) movingChanged++;
+    }
+    // The body uses its final coordinates even while the frame is moving.
+    const left = Math.max(8, rect.x + 8), top = Math.max(42, rect.y + 42);
+    for (let y = top; y < rect.y + rect.height - 8; y++) for (let x = left; x < rect.x + rect.width - 8; x++)
+      assert.equal(image.pixels[y * 576 + x], motion.content.pixels[y * 576 + x]);
+    saveMotionFrame(`progressive-${elapsed}`, image); saveMotionFrame(`moving-${elapsed}`, moving);
+    previous = image.pixels; previousMoving = moving.pixels;
+  }
+  assert.ok(changed < movingChanged * .8, `progressive ${changed} vs moving ${movingChanged} changed pixels`);
+  if (process.env.T3_TRANSITION_ARTIFACT_DIR) fs.writeFileSync(`${process.env.T3_TRANSITION_ARTIFACT_DIR}/pixel-comparison.json`, JSON.stringify({ changed, movingChanged }, null, 2));
+});

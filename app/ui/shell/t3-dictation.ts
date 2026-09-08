@@ -1,12 +1,12 @@
 import { CARD_TEXT_BRIGHTNESS, cardLineStep } from '../card-presentation';
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { paginateMessageText, reflowDictationText } from "../../apps/t3/hub-view-model";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { type InputEvent } from "../gestures";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 import { appViewportRect } from "./geometry";
-import { cardRect, paintCardFace, CARD_MOTION_MS, CARD_FRAME_MS, type CardRect } from "../../apps/t3/card-motion";
+import { cardRect, paintCardFace, paintCardContents, CARD_MOTION_MS, CARD_FRAME_MS, type CardRect } from "../../apps/t3/card-motion";
 
 const FINAL_TIMEOUT_MS = 95000;
 const EXPANSION_MS = CARD_MOTION_MS;
@@ -15,6 +15,8 @@ type T3DictationOptions = {
   actions: LayerActions;
   /** Starting control bounds in app-content coordinates. */
   origin?: CardRect;
+  /** Explicit dashboard renderer only. Never pass a conversation or lower layer. */
+  paintDashboard?: (width: number, height: number) => GrayImage;
   dismiss: () => void;
   onClosed: () => void;
   /** Local draft handoff only. The owning T3 screen requires a separate send tap. */
@@ -27,11 +29,14 @@ export class T3DictationLayer implements Layer {
   private phase: "capturing" | "finalizing" | "error" | "closing" = "capturing";
   private text = "";
   private cachedLayout: { source: string; font: ReturnType<typeof getDefaultSmallFont>; width: number; height: number; lines: string[] } | null = null;
+  private motionContent: GrayImage | null = null;
+  private backdrop: GrayImage | null = null;
   private error = "";
   private capturing = false;
   private removed = false;
   private delivered = false;
   private startedAt = Date.now();
+  private expansionStartedAt: number | null = null;
   private closedAt = 0;
   private lastRenderedSecond = -1;
   private animationTimer: ReturnType<typeof setInterval> | null = null;
@@ -42,12 +47,16 @@ export class T3DictationLayer implements Layer {
   constructor(private readonly options: T3DictationOptions) {}
 
   isAnimatingCard(): boolean {
-    return !this.removed && Date.now() - (this.phase === "closing" ? this.closedAt : this.startedAt) < CARD_MOTION_MS;
+    return !this.removed && (this.phase === "closing" ? Date.now() - this.closedAt < CARD_MOTION_MS
+      : this.expansionStartedAt === null || Date.now() - this.expansionStartedAt < CARD_MOTION_MS);
   }
+
+  invalidateBackdrop(): void { this.backdrop = null; }
 
   startCapture(): void {
     if (this.removed || this.capturing) return;
     this.startedAt = Date.now();
+    this.expansionStartedAt = null;
     this.capturing = true;
     this.unsubscribeTranscript = voiceControlBridge.onTranscript(event => this.onTranscript(event));
     // onStatus replays the preceding capture's status upon subscription.
@@ -68,7 +77,7 @@ export class T3DictationLayer implements Layer {
       }
       const age = Date.now() - this.startedAt;
       const second = Math.floor(age / 1000);
-      if (this.phase !== "closing" && age >= EXPANSION_MS && this.lastRenderedSecond === second) return;
+      if (!this.isAnimatingCard() && this.lastRenderedSecond === second) return;
       // Frame-rate rendering is only needed during expansion; mic time ticks once a second.
       if (age >= EXPANSION_MS) this.lastRenderedSecond = second;
       this.options.actions.requestRender();
@@ -86,6 +95,7 @@ export class T3DictationLayer implements Layer {
     if (this.removed || !this.capturing || this.phase !== "capturing") return;
     this.capturing = false;
     this.phase = "finalizing";
+    this.motionContent = null;
     this.finalizeTimer = setTimeout(() => this.fail("Transcript timed out. Nothing sent."), FINAL_TIMEOUT_MS);
     this.stopCapture();
     this.options.actions.requestRender();
@@ -104,6 +114,7 @@ export class T3DictationLayer implements Layer {
     // Events contain the entire current utterance, not incremental deltas.
     this.text = event.text.trim();
     this.cachedLayout = null;
+    this.motionContent = null;
     if (event.isFinal && this.phase === "finalizing") {
       // Empty finals are authoritative, including speaker-verification rejection.
       // Never replace them with the earlier, unverified partial transcript.
@@ -126,6 +137,7 @@ export class T3DictationLayer implements Layer {
     this.error = message;
     this.text = "";
     this.cachedLayout = null;
+    this.motionContent = null;
     if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
     this.finalizeTimer = null;
     if (this.capturing) {
@@ -140,8 +152,10 @@ export class T3DictationLayer implements Layer {
     if (event.type === "double-click" || (event.type === "click" && this.phase === "error")) {
       this.phase = "closing";
       this.closedAt = Date.now();
+      this.backdrop = null;
       this.text = "";
       this.cachedLayout = null;
+      this.motionContent = null;
       if (this.capturing) {
         this.capturing = false;
         this.stopCapture();
@@ -153,24 +167,57 @@ export class T3DictationLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, _paintBelow: () => GrayImage): GrayImage {
-    // Do not request lower planes. Value 1 also occludes the shell's color-key surface.
+    // Do not request lower planes. Only the explicit dashboard can be revealed.
+    // Value 1 also occludes the shell's color-key surface.
     const viewport = appViewportRect("medium");
     const image = new GrayImage(viewport.width, viewport.height, 1);
     const left = viewport.x;
     const top = viewport.y;
-    const elapsed = Date.now() - (this.phase === "closing" ? this.closedAt : this.startedAt);
+    const elapsed = this.phase === "closing" ? Date.now() - this.closedAt
+      : this.expansionStartedAt === null ? 0 : Date.now() - this.expansionStartedAt;
     const from = this.options.origin ?? { x: 0, y: 0, width: viewport.width - 5, height: viewport.height - 5 };
     const full = { x: 0, y: 0, width: viewport.width - 5, height: viewport.height - 5 };
     const rect = this.phase === "closing"
       ? cardRect(full, from, elapsed / EXPANSION_MS)
       : cardRect(from, full, elapsed / EXPANSION_MS);
-    paintCardFace(image, { ...rect, x: left + rect.x, y: top + rect.y });
-    if (elapsed < EXPANSION_MS || this.phase === "closing") return image;
+    const moving = elapsed < EXPANSION_MS || this.phase === "closing";
+    if (moving && this.options.paintDashboard) {
+      if (!this.backdrop || this.backdrop.width !== image.width || this.backdrop.height !== image.height) {
+        const dashboard = this.options.paintDashboard(image.width, image.height);
+        this.backdrop = this.phase === "closing" ? dashboard : dashboard.dimmed(.5);
+        this.backdrop.bakeDeferredDrawsInPlace();
+        // Keep the shell opaque even where the dashboard has transparent pixels.
+        const pixels = this.backdrop.pixels;
+        for (let i = 0; i < pixels.length; i++) if (pixels[i] === 0) pixels[i] = 1;
+      }
+      image.pixels.set(this.backdrop.pixels);
+    }
+    const face = { ...rect, x: left + rect.x, y: top + rect.y };
+    paintCardFace(image, face);
+    if (moving) {
+      if (!this.motionContent || this.motionContent.width !== image.width || this.motionContent.height !== image.height) {
+        this.motionContent = new GrayImage(image.width, image.height, 1);
+        this.paintText(this.motionContent, viewport);
+        this.motionContent.bakeDeferredDrawsInPlace();
+      }
+      paintCardContents(image, this.motionContent, { ...full, x: left, y: top }, face);
+      // Font and dashboard rasterization must not consume the first visible frames.
+      if (this.phase !== "closing" && this.expansionStartedAt === null) this.expansionStartedAt = Date.now();
+    } else {
+      this.motionContent = null;
+      this.backdrop = null;
+      this.paintText(image, viewport);
+    }
+    return image;
+  }
+
+  private paintText(image: GrayImage, viewport: ReturnType<typeof appViewportRect>): void {
+    const left = viewport.x, top = viewport.y;
     const font = getDefaultSmallFont();
     const lineHeight = cardLineStep(font);
-    const title = this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : "DICTATION";
+    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : "DICTATION";
     image.drawText(font, left + 16, top + 14, title, 190);
-    const body = this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : "Nothing sent.");
+    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : "Nothing sent.");
     const textWidth = viewport.width - 37;
     const textHeight = viewport.height - 65 - font.lineHeight - 28;
     let layout = this.cachedLayout;
@@ -184,12 +231,12 @@ export class T3DictationLayer implements Layer {
     const lines = layout.lines;
     lines.forEach((line, index) => image.drawText(font, left + 16, top + 65 + index * lineHeight, line, CARD_TEXT_BRIGHTNESS));
     if (this.phase === "finalizing" && this.text) image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, "Nothing sent.", 145);
-    return image;
   }
 
   onRemoved(): void {
     if (this.removed) return;
     this.removed = true;
+    this.backdrop = null;
     this.unsubscribeTranscript?.(); this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.(); this.unsubscribeStatus = null;
     if (this.animationTimer !== null) clearInterval(this.animationTimer);
@@ -198,6 +245,7 @@ export class T3DictationLayer implements Layer {
     this.finalizeTimer = null;
     this.text = "";
     this.cachedLayout = null;
+    this.motionContent = null;
     if (this.capturing) {
       this.capturing = false;
       this.stopCapture();

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function setup({ stop, start, origin, replay = '', viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
+function setup({ stop, start, origin, raster = false, firstPaint = true, paintDashboard, replay = '', viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
   const module = { exports: {} };
   const listeners = { transcript: null, status: null };
   const timers = new Map(); let nextTimer = 0; let now = 0;
@@ -14,8 +14,9 @@ function setup({ stop, start, origin, replay = '', viewport = { x: 32, y: 96, wi
     onStatus(callback) { listeners.status = callback; callback({ status: replay }); return () => { listeners.status = null; }; },
   };
   class GrayImage {
-    constructor(width, height, fill) { this.width = width; this.height = height; this.fill = fill; this.labels = []; this.placements = []; this.rects = []; }
+    constructor(width, height, fill) { this.width = width; this.height = height; this.fill = fill; this.pixels = new Uint8Array(width * height); this.labels = []; this.placements = []; this.rects = []; }
     bakeDeferredDrawsInPlace() {}
+    dimmed() { return this; }
     drawRoundedRect(...args) { this.rects.push(args); } fillRoundedRect() {} drawLine() {}
     drawText(_font, x, y, value) { this.labels.push(value); this.placements.push({ x, y, value }); }
   }
@@ -29,10 +30,17 @@ function setup({ stop, start, origin, replay = '', viewport = { x: 32, y: 96, wi
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/apps/t3/hub-view-model.ts', 'utf8'), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
   }).outputText, { module: hubModule, exports: hubModule.exports, require: () => ({}) });
-  const font = { lineHeight: 16 };
+  function load(path, imports) {
+    const loaded = { exports: {} };
+    vm.runInNewContext(ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText,
+      { module: loaded, exports: loaded.exports, require: name => { assert.ok(name in imports, name); return imports[name]; } });
+    return loaded.exports;
+  }
+  const Image = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : GrayImage;
+  const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 16 };
   const imports = {
     '../card-presentation': face.exports,
-    '../../graphics/image': { G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480, GrayImage },
+    '../../graphics/image': { G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480, GrayImage: Image },
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => font },
     '../../graphics/textwrap': { truncateText: (_font, value) => value, wrapText: (_font, value) => value.split('\n') },
     '../../apps/t3/card-motion': motion.exports,
@@ -52,7 +60,7 @@ function setup({ stop, start, origin, replay = '', viewport = { x: 32, y: 96, wi
     clearInterval: id => timers.delete(id),
   });
   const layer = new module.exports.T3DictationLayer({
-    origin,
+    origin, paintDashboard: paintDashboard ? (w, h) => paintDashboard(w, h, Image) : undefined,
     actions: {
       requestRender: () => result.renders++,
       startVoiceCapture: (endpointing, transcription) => { result.starts++; result.transcription = transcription; return start?.(listeners); },
@@ -62,7 +70,8 @@ function setup({ stop, start, origin, replay = '', viewport = { x: 32, y: 96, wi
     onDraft: text => result.drafts.push(text), onCancelled: () => result.cancellations++,
   });
   layer.startCapture();
-  return { layer, result, listeners, timers, cardRect: motion.exports.cardRect, advance: value => { now = value; } };
+  if (firstPaint) { layer.paint({}, () => assert.fail('capture cannot request the lower plane')); result.pageBoxes.length = 0; }
+  return { layer, result, listeners, timers, Image, font, cardRect: motion.exports.cardRect, advance: value => { now = value; } };
 }
 
 test('finish tap waits for the actual final and hands off a local draft once', () => {
@@ -247,4 +256,104 @@ test('app cancellation callback failure cannot skip voice-owner and shell cleanu
 
 test('direct capture uses the shared 40ms card frame cadence', () => {
   const h = setup(); assert.equal([...h.timers.values()].find(timer => timer.interval).delay, 40); h.layer.onRemoved();
+});
+
+const captureViewport = { x: 0, y: 0, width: 576, height: 452 };
+const captureOrigin = { x: 259, y: 95, width: 288, height: 44 };
+const noPrivateBackdrop = () => assert.fail('capture must not request the private lower plane');
+
+function inkIn(image, x, y, width, height, value) {
+  let ink = 0;
+  for (let row = y; row < y + height; row++) for (let col = x; col < x + width; col++) {
+    if (image.pixels[row * image.width + col] === value) ink++;
+  }
+  return ink;
+}
+
+test('dictation has real heading pixels on first and intermediate expansion frames and reveals body before completion', () => {
+  const h = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
+  for (const time of [0, 80, 180, 320]) {
+    h.advance(time);
+    const image = h.layer.paint({}, noPrivateBackdrop);
+    const rect = h.cardRect(captureOrigin, { x: 0, y: 0, width: 571, height: 447 }, time / 360);
+    assert.ok(inkIn(image, rect.x + 8, rect.y + 8, rect.width - 16, Math.min(26, rect.height - 16), 190) > 10,
+      `LISTENING heading must be visible at ${time}ms`);
+  }
+  const moving = h.layer.paint({}, noPrivateBackdrop);
+  h.advance(400); const settled = h.layer.paint({}, noPrivateBackdrop); settled.bakeDeferredDrawsInPlace();
+  assert.ok(inkIn(moving, 16, 65, 250, 24, 190) > 0, 'body ink is already visible before motion ends');
+  for (let y = 65; y < 89; y++) assert.deepEqual(moving.pixels.slice(y * 576 + 16, y * 576 + 250), settled.pixels.slice(y * 576 + 16, y * 576 + 250), 'body stays in final coordinates');
+  assert.equal(h.layer.motionContent, null); h.layer.onRemoved();
+});
+
+test('cancel replaces every cached transcript pixel with safe content throughout collapse', () => {
+  const secret = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
+  const clean = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
+  secret.listeners.transcript({ text: 'PRIVATE TRANSCRIPT MUST DISAPPEAR', isFinal: false });
+  secret.advance(180); secret.layer.paint({}, noPrivateBackdrop);
+  const secretRaster = secret.layer.motionContent;
+  assert.ok(secretRaster); assert.match(secret.layer.cachedLayout.source, /PRIVATE/);
+  for (const h of [secret, clean]) {
+    h.advance(200); h.layer.handleInput({ type: 'double-click' });
+    assert.equal(h.layer.text, ''); assert.equal(h.layer.cachedLayout, null); assert.equal(h.layer.motionContent, null);
+  }
+  secret.listeners.transcript({ text: 'LATE PRIVATE FINAL', isFinal: true });
+  for (const time of [200, 280, 380, 559]) {
+    secret.advance(time); clean.advance(time);
+    const actual = secret.layer.paint({}, noPrivateBackdrop);
+    const expected = clean.layer.paint({}, noPrivateBackdrop);
+    assert.deepEqual(Buffer.from(actual.pixels), Buffer.from(expected.pixels), `cancel frame at ${time}ms contains only safe UI`);
+    assert.notEqual(secret.layer.motionContent, secretRaster);
+    assert.equal(secret.layer.cachedLayout.source, 'Nothing sent.');
+  }
+  assert.deepEqual(secret.result.drafts, []);
+  secret.layer.onRemoved(); clean.layer.onRemoved();
+  assert.equal(secret.layer.motionContent, null); assert.equal(secret.layer.cachedLayout, null);
+});
+
+test('explicit dashboard backdrop stays opaque, refreshes on invalidation and resize, and is discarded on removal', () => {
+  let calls = 0, marker = 180;
+  const viewport = { ...captureViewport };
+  const h = setup({ raster: true, origin: captureOrigin, viewport,
+    paintDashboard: (w, height, Image) => { calls++; const image = new Image(w, height, 0); image.pixels[0] = marker; return image; } });
+  const first = h.layer.paint({}, noPrivateBackdrop);
+  assert.ok(first.pixels.every(value => value > 0), 'transparent dashboard cannot punch through the privacy shield');
+  assert.ok(first.pixels[0] > 1);
+  h.advance(80); h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 1, 'reuse backdrop while moving');
+  marker = 230; h.layer.invalidateBackdrop();
+  const refreshed = h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 2); assert.notEqual(refreshed.pixels[0], first.pixels[0]);
+  viewport.width = 640; h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 3); assert.equal(h.layer.motionContent.width, 640);
+  h.layer.handleInput({ type: 'double-click' }); assert.equal(h.layer.backdrop, null);
+  h.advance(440); h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 4, 'closing uses fresh undimmed destination');
+  assert.equal(h.layer.backdrop.pixels[0], marker);
+  h.layer.onRemoved(); assert.equal(h.layer.backdrop, null); assert.equal(h.layer.motionContent, null);
+});
+
+test('speaker rejection during expansion invalidates the partial raster before painting failure', () => {
+  const h = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
+  h.listeners.transcript({ text: 'UNVERIFIED PRIVATE PARTIAL', isFinal: false }); h.advance(180);
+  h.layer.paint({}, noPrivateBackdrop); const partial = h.layer.motionContent;
+  h.listeners.status({ status: 'Ignored: speaker verification failed' });
+  assert.equal(h.layer.text, ''); assert.equal(h.layer.cachedLayout, null); assert.equal(h.layer.motionContent, null);
+  h.layer.paint({}, noPrivateBackdrop);
+  assert.notEqual(h.layer.motionContent, partial); assert.doesNotMatch(h.layer.cachedLayout.source, /PRIVATE/);
+  assert.match(h.layer.cachedLayout.source, /Nothing sent/); assert.deepEqual(h.result.drafts, []); h.layer.onRemoved();
+});
+
+test('640x452 capture begins motion after delayed first snapshot while microphone time remains accurate', () => {
+  const origin = { x: 291, y: 95, width: 288, height: 44 };
+  const h = setup({ firstPaint: false, origin, viewport: { x: 0, y: 0, width: 640, height: 452 },
+    paintDashboard: (w, height, Image) => { h.advance(1300); return new Image(w, height, 1); } });
+  h.advance(600); assert.equal(h.layer.isAnimatingCard(), true);
+  const renders = h.result.renders;
+  [...h.timers.values()].find(timer => timer.interval).callback(); assert.equal(h.result.renders, renders + 1);
+  const first = h.layer.paint({}, noPrivateBackdrop);
+  assert.deepEqual(first.rects[0].slice(0, 4), [291, 95, 288, 44]);
+  assert.equal(h.layer.expansionStartedAt, 1300);
+  assert.ok(h.layer.motionContent.labels.includes('LISTENING | 1s'), 'microphone elapsed time includes pre-render work');
+  h.advance(1480);
+  const half = h.layer.paint({}, noPrivateBackdrop);
+  const rect = h.cardRect(origin, { x: 0, y: 0, width: 635, height: 447 }, .5);
+  assert.deepEqual(half.rects[0].slice(0, 4), [rect.x, rect.y, rect.width, rect.height]);
+  h.advance(1660); assert.equal(h.layer.isAnimatingCard(), false); h.layer.onRemoved();
 });

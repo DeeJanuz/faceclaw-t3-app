@@ -1,11 +1,14 @@
 import {createT3AppWindow,openT3Thread,openT3Inbox,openT3Notification,isT3FlowProtected} from './apps/t3/t3-app';
-import {initializeT3Notifications,handlePhoneNotification} from './apps/t3/notifications-ui';
+import {initializeT3Notifications,handlePhoneNotification,visibleT3Alerts} from './apps/t3/notifications-ui';
 import {t3Workspace} from './apps/t3/runtime';
 import {GrayImage} from './graphics/image';
 import {LayerStack,noopLayerActions} from './ui/layers';
 import {TimedNotificationLayer} from './ui/shell/timed-notification';
 import {WindowMenuLayer,appActionItems} from './ui/window-menu';
 import {MenuLayer} from './ui/menu';
+import {paintT3Dashboard,dashboardTargets} from './apps/t3/dashboard';
+import {weatherBridge} from './native/weather';
+import {timeFormatSetting} from './ui/dashboard-settings';
 import {T3DictationLayer} from './ui/shell/t3-dictation';
 import {voiceControlBridge} from './native/voice-control';
 import {setAppViewport} from './ui/shell/geometry';
@@ -74,7 +77,12 @@ export function initializeAppRuntime():void{
   if(type==='open'){getApp().requestRender();}
   if(type==='capture'){
    const current=getApp();let layer:T3DictationLayer;
-   layer=new T3DictationLayer({origin:data.origin,actions:{...noopLayerActions,requestRender:()=>current.requestRender(),startVoiceCapture:()=>voiceControlBridge.startCapture(),stopVoiceCapture:()=>voiceControlBridge.finishCapture()},dismiss:()=>{current.stack.pop();current.requestRender();},onClosed:()=>{voiceControlBridge.cancelCapture();current.requestRender();},onDraft:data.onDraft,onCancelled:data.onCancelled});
+   // The home control is the sole allowed backdrop origin. Reply captures keep
+   // their opaque shield over the private reader until the destination restores.
+   const home=dashboardTargets(width,height).find(target=>target.id==='assistant')!;
+   const fromDashboard=data.origin&&['x','y','width','height'].every(key=>data.origin[key]===home[key as keyof typeof home]);
+   const offBackdrop=onHostState(()=>layer.invalidateBackdrop());
+   layer=new T3DictationLayer({origin:data.origin,paintDashboard:fromDashboard?(w,h)=>paintT3Dashboard(w,h,'assistant',visibleT3Alerts().length,'',weatherBridge.snapshot(),timeFormatSetting.get(),new Date(),shell.getBatteryLevels()):undefined,actions:{...noopLayerActions,requestRender:()=>current.requestRender(),startVoiceCapture:()=>voiceControlBridge.startCapture(),stopVoiceCapture:()=>voiceControlBridge.finishCapture()},dismiss:()=>{current.stack.pop();current.requestRender();},onClosed:()=>{offBackdrop();voiceControlBridge.cancelCapture();current.requestRender();},onDraft:data.onDraft,onCancelled:data.onCancelled});
    current.stack.push(layer);layer.startCapture();current.requestRender();
   }
   if(type==='preview'||type==='preview-update'){

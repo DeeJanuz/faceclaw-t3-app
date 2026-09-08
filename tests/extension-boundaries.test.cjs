@@ -34,7 +34,7 @@ test('own System actions delegates to the host system menu without substituting 
  const source=fs.readFileSync('app/runtime.ts','utf8'),imports={};for(const match of source.matchAll(/from\s*['"]([^'"]+)['"]/g))imports[match[1]]={};
  let systemActions,requested=0,slept=0;const pushed=[];
  imports['./ui/layers']={noopLayerActions:{}};
- imports['./apps/t3/t3-app']={createT3AppWindow:()=>({stack:{push:layer=>pushed.push(layer)},menuItems:()=>[],requestRender(){}})};
+ imports['./apps/t3/t3-app']={createT3AppWindow:()=>({stack:{push:layer=>pushed.push(layer)},claimsNotificationDismissGesture:()=>false,menuItems:()=>[],requestRender(){}})};
  imports['./apps/t3/notifications-ui']={initializeT3Notifications(){}};
  imports['./ui/window-menu']={WindowMenuLayer:class{},appActionItems:(_items,_sleep,system)=>{systemActions=system;return[];}};
  imports['./ui/shell/shell']={shell:{sleepAtAppRoot:()=>slept++}};
@@ -51,4 +51,41 @@ test('reply pre-dispatch rejection differs from a send with an unknown outcome',
  const unknown=b.host.requestHostAction('ui.notifications','notification-review-reply',{callId:'unknown'});
  b.event('ui.notifications',{event:'action-result',callId:'unknown',ok:false,status:'unknown'});
  assert.equal((await unknown).status,'unknown');
+});
+
+test('large fragmented catalogs retain apps beyond the old 512 entry limit',()=>{
+ const a=new snapshots.NotificationSnapshotAssembler();
+ const apps=Array.from({length:900},(_,i)=>({packageName:`app.${i}`,name:`Application ${i}`}));apps.push({packageName:'org.thoughtcrime.securesms',name:'Signal'});
+ const json=JSON.stringify({revision:1,notifications:[],notificationApps:apps});let result;
+ for(let i=0;i<Math.ceil(json.length/16000);i++)result=a.accept({snapshotId:'large',index:i,total:Math.ceil(json.length/16000),json:json.slice(i*16000,(i+1)*16000)});
+ assert.equal(result.length,0);assert.equal(a.notificationApps.length,901);assert.equal(a.notificationApps.at(-1).name,'Signal');
+});
+test('notification settings refresh an active search when the host catalog arrives and unsubscribe on close',()=>{
+ class Observable{constructor(){this.data={};}set(k,v){this.data[k]=v;}get(k){return this.data[k];}}
+ let apps=[],listener,disposed=false;
+ const pageModule=load('app/phone-ui/t3-notification-apps-page.ts',{
+ '@nativescript/core':{Observable,ObservableArray:class extends Array{constructor(items){super(...items);}}},
+ '../native/notification-apps':{readNotificationApps:()=>apps},
+ '../extensions/host':{onHostState:fn=>{listener=fn;return()=>{disposed=true;};}},
+ '../t3/config':{getT3Config:()=>({notificationOverride:true}),onT3ConfigChanged:()=>()=>{}},
+ '../t3/notification-preferences':{allowsT3PhoneNotification:()=>true,onT3NotificationAppsChanged:()=>()=>{}}
+ });
+ const page={};pageModule.navigatingTo({object:page});page.bindingContext.search({object:{text:'signal'}});
+ assert.equal(page.bindingContext.get('apps').length,0);
+ apps=[{packageName:'org.thoughtcrime.securesms',name:'Signal'},{packageName:'other',name:'Other'}];listener();
+ assert.equal(page.bindingContext.get('apps').length,1);assert.equal(page.bindingContext.get('apps')[0].get('name'),'Signal');
+ pageModule.unloaded({object:page});assert.equal(disposed,true);
+});
+
+test('notification long press reaches dismissal without opening a second menu',async()=>{
+ const source=fs.readFileSync('app/runtime.ts','utf8'),imports={};for(const match of source.matchAll(/from\s*['"]([^'"]+)['"]/g))imports[match[1]]={};
+ let systemActions,requested=0,slept=0,dismissed=0;const pushed=[];
+ imports['./ui/layers']={noopLayerActions:{}};
+ imports['./apps/t3/t3-app']={createT3AppWindow:()=>({stack:{push:layer=>pushed.push(layer)},claimsNotificationDismissGesture:()=>true,handleInput:async event=>{assert.equal(event.type,'long-press');dismissed++;},menuItems:()=>[],requestRender(){}})};
+ imports['./apps/t3/notifications-ui']={initializeT3Notifications(){}};
+ imports['./ui/window-menu']={WindowMenuLayer:class{},appActionItems:(_items,_sleep,system)=>{systemActions=system;return[];}};
+ imports['./ui/shell/shell']={shell:{sleepAtAppRoot:()=>slept++}};
+ imports['./extensions/host']={nativeService:()=>({requestSystemMenu:()=>requested++})};
+ const api=load('app/runtime.ts',imports);await api.deliverInput('long-press');
+ assert.equal(requested,0);assert.equal(slept,0);assert.equal(pushed.length,0);assert.equal(dismissed,1);
 });

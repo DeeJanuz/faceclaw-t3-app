@@ -3,7 +3,7 @@ import { GrayImage } from '../../graphics/image';
 import { LayerStack, noopLayerActions, type LayerActions } from '../layers';
 import type { InputEvent } from '../gestures';
 export type InProcessAppOptions=Record<string,any> & {actions?:LayerActions;onClosed?:()=>void};
-export interface InProcessWindow {stack:LayerStack;requestRender():void;setHeightMode(mode:string):void;resize(width:number,height:number):void;handleInput(event:InputEvent):Promise<void>;receiveTextInput(text:string):void;menuItems():any[];close():void;}
+export interface InProcessWindow {stack:LayerStack;requestRender():void;setHeightMode(mode:string):void;resize(width:number,height:number):void;handleInput(event:InputEvent):Promise<void>;receiveTextInput(text:string):void;menuItems():any[];claimsNotificationDismissGesture():boolean;close():void;}
 export function createInProcessWindow(options:InProcessAppOptions):InProcessWindow {
  let width=576,height=452;const actions={...noopLayerActions,...options.actions};
  let renderTimer:ReturnType<typeof setTimeout>|null=null,closed=false;
@@ -20,6 +20,7 @@ export function createInProcessWindow(options:InProcessAppOptions):InProcessWind
   requestRender(){if(!closed&&renderTimer===null)renderTimer=setTimeout(render,0);},
   async handleInput(event){if(closed)return;await stack.handleInput(event);app.requestRender();},
   receiveTextInput(text){if(closed)return;options.receiveTextInput?.(text);app.requestRender();},menuItems:()=>options.menuItems?.()??[],
+  claimsNotificationDismissGesture:()=>stack.isAtBase()&&Boolean(options.claimsNotificationDismissGesture?.()),
   close(){if(closed)return;closed=true;if(renderTimer!==null){clearTimeout(renderTimer);renderTimer=null;}options.onClosed?.();}};
  actions.requestRender=app.requestRender;return app;
 }

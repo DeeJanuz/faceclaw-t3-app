@@ -14,7 +14,7 @@ export class NotificationSnapshotAssembler {
   try{
    const value=JSON.parse(text);if(!Number.isSafeInteger(value.revision)||value.revision<=this.revision||!Array.isArray(value.notifications)||value.notifications.length>50)return null;
    if(!value.notifications.every(validNotification))return null;
-   if(value.notificationApps!==undefined&&(!Array.isArray(value.notificationApps)||value.notificationApps.length>512||!value.notificationApps.every((item:any)=>item&&typeof item.packageName==='string'&&item.packageName.length<=255&&typeof item.name==='string'&&item.name.length<=512)))return null;
+   if(value.notificationApps!==undefined&&(!Array.isArray(value.notificationApps)||value.notificationApps.length>4096||!value.notificationApps.every((item:any)=>item&&typeof item.packageName==='string'&&item.packageName.length<=255&&typeof item.name==='string'&&item.name.length<=512)))return null;
    this.notificationApps=value.notificationApps??[];this.revision=value.revision;return value.notifications;
   }catch{return null;}
  }

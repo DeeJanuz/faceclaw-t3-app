@@ -1,25 +1,33 @@
 import { Observable, ObservableArray, type EventData, type Page, type SearchBar } from '@nativescript/core';
 import { readNotificationApps, type NotificationApp } from '../native/notification-apps';
+import { onHostState } from '../extensions/host';
 import { getT3Config, onT3ConfigChanged } from '../t3/config';
 import { allowsT3PhoneNotification, saveT3NotificationApps, onT3NotificationAppsChanged } from '../t3/notification-preferences';
 
 class NotificationAppsModel extends Observable {
-  private readonly installedApps: NotificationApp[] = readNotificationApps();
+  private installedApps: NotificationApp[] = readNotificationApps();
   private query = '';
   private offConfig: () => void;
   private rows: Observable[] = [];
 
   constructor() {
     super();
+    this.reloadApps();
+    const offConfig = onT3ConfigChanged(() => this.refresh());
+    const offApps = onT3NotificationAppsChanged(() => this.refresh());
+    const offHost = onHostState(() => this.reloadApps());
+    this.offConfig = () => { offConfig(); offApps(); offHost(); };
+  }
+  private reloadApps(): void {
+    const apps = readNotificationApps();
+    if (this.get('apps') && JSON.stringify(apps) === JSON.stringify(this.installedApps)) return;
+    this.installedApps = apps;
     this.rows = this.installedApps.map(app => {
       const row = new Observable();
       row.set('name', app.name); row.set('packageName', app.packageName); row.set('toggle', this.toggle);
       return row;
     });
-    this.refresh();
-    const offConfig = onT3ConfigChanged(() => this.refresh());
-    const offApps = onT3NotificationAppsChanged(() => this.refresh());
-    this.offConfig = () => { offConfig(); offApps(); };
+    this.refresh(true);
   }
   dispose(): void { this.offConfig(); }
 

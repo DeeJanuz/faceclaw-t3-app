@@ -163,7 +163,7 @@ export class T3Layer implements Layer {
   }
 
   openNotification(alertId?: string, returnWindowId?: string, returnToSleep = false): void {
-    if (returnWindowId && returnWindowId !== T3_WINDOW_ID) this.returnWindowId = returnWindowId;
+    this.returnWindowId = returnWindowId && returnWindowId !== T3_WINDOW_ID && !returnWindowId.startsWith('apk:com.faceclaw.t3/') ? returnWindowId : null;
     if (this.screen === 'dashboard') this.selected = 'inbox';
     this.notificationId = alertId || '';
     const alert = alertId ? findT3Alert(alertId) : undefined;
@@ -182,8 +182,9 @@ export class T3Layer implements Layer {
     const reply = alert && getT3NotificationReply(alert.id);
     if (!reply) return;
     const history = this.history[this.history.length - 1];
-    const isVisible = () => this.screen === 'notification' && this.history[this.history.length - 1] === history &&
-      this.currentNotification()?.id === alert.id && shell.isWindowFocused(T3_WINDOW_ID);
+    const notificationId = this.notificationId;
+    const sameVisit = () => this.screen === 'notification' && this.history[this.history.length - 1] === history && this.notificationId === notificationId;
+    const isVisible = () => sameVisit() && this.currentNotification()?.id === alert.id && shell.isWindowFocused(T3_WINDOW_ID);
     const isCurrent = () => isVisible() && reply.isCurrent();
     this.notificationNotice = '';
     if(this.notificationReviewPending)return;
@@ -192,6 +193,7 @@ export class T3Layer implements Layer {
     this.repaint();
     void reply.review(isCurrent).then(status => {
       this.notificationReviewPending=false;
+      if (status === 'sent') { if (sameVisit()) this.closeNotificationReader(); return; }
       if (!isVisible()) return;
       this.notificationNotice = { sent: 'Reply sent.', 'draft-saved': 'Draft saved in app. Open app to send.', unknown: 'Send outcome unknown. Check app before retrying.', rejected: 'Reply unavailable. Nothing sent.' }[status];
       this.repaint();
@@ -607,7 +609,11 @@ export class T3Layer implements Layer {
     // Synthetic release/menu notifications must not cancel a just-started animation.
     if (['click', 'double-click', 'scroll-up', 'scroll-down', 'swipe-up', 'swipe-down', 'swipe-left', 'swipe-right'].includes(event.type)) this.motion = null;
     if (this.screen === 'inbox' && event.type === 'swipe-left') { const alert = findT3Alert(this.selected); if (alert) dismissT3Alert(alert); return; }
-    if (event.type === 'double-click' || event.type === 'swipe-left') { this.back(); return; }
+    if (event.type === 'long-press' && this.claimsNotificationDismissGesture()) { await this.dismissSelectedNotification(); return; }
+    if (event.type === 'double-click' || event.type === 'swipe-left') {
+      if (this.screen === 'notification') await this.dismissSelectedNotification(); else this.back();
+      return;
+    }
     if (['question-text', 'choices', 'plan-review'].includes(this.screen) && state.plans.get(state.selectedThreadId)?.locked) return;
     const direction = event.type === 'scroll-down' || event.type === 'swipe-down' ? 1 : event.type === 'scroll-up' || event.type === 'swipe-up' ? -1 : 0;
     if (direction) {
@@ -728,7 +734,7 @@ export class T3Layer implements Layer {
     ];
   }
 
-  claimsNotificationDismissGesture(): boolean { return false; }
+  claimsNotificationDismissGesture(): boolean { return this.isBaseVisible() && ['inbox', 'notification'].includes(this.screen); }
 
   private async dismissSelectedNotification(): Promise<void> {
     const visible = visibleT3Alerts();
@@ -736,10 +742,12 @@ export class T3Layer implements Layer {
     const alert = this.screen === 'notification' ? this.currentNotification() : visible[index < 0 ? 0 : index];
     if (!alert) {
       // A reply can remove its native notification before the reader is closed.
-      if (this.screen === 'notification' && this.notificationReturnToSleep) this.closeNotificationReader();
+      if (this.screen === 'notification') this.closeNotificationReader();
       return;
     }
+    const screen = this.screen, visit = this.history[this.history.length - 1], notificationId = this.notificationId;
     if (!await dismissT3Alert(alert)) return;
+    if (this.screen !== screen || this.history[this.history.length - 1] !== visit || this.notificationId !== notificationId) return;
     if (this.screen === 'notification') this.closeNotificationReader();
     else {
       const remaining = visibleT3Alerts();
@@ -750,6 +758,8 @@ export class T3Layer implements Layer {
 
   private closeNotificationReader(): void {
     const returnToSleep = this.notificationReturnToSleep;
+    const returnToInbox = this.history[this.history.length - 1]?.screen === 'inbox';
+    this.notificationNotice = '';
     this.notificationReturnToSleep = false;
     this.notificationId = '';
     this.notificationGroupId = '';
@@ -757,7 +767,7 @@ export class T3Layer implements Layer {
     // never sleeps; dismissal/back completes this notification wake-up visit.
     if (returnToSleep) shell.sleepAtAppRoot();
     if (this.returnWindowId) { const id = this.returnWindowId; this.returnWindowId = null; this.go('inbox', false); shell.focusWindow(id); }
-    else this.back();
+    else { if (returnToSleep || !returnToInbox) shell.closeNotificationReader(); this.back(); }
   }
 
 }

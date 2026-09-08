@@ -24,6 +24,7 @@ export const shell={
  isWindowVisible:(_id:string)=>visible,
  isWindowFocused:(_id:string)=>visible,
  foregroundWindow:()=>hostState.focusedWindowId?{windowId:hostState.focusedWindowId}:null,
+ closeNotificationReader(){if(notificationSurface)sendHostAction('ui.notifications','close-surface');},
  hasOverlay:()=>Boolean(capture||preview),getNotificationPreviewId:()=>preview?.id??null,
  focusWindow(id:string){if(notificationSurface){if(id!=='t3')sendHostAction('ui.notifications','close-surface');local('open');}else if(id==='t3'){action('open-self');local('open');}else sendHostAction('ui.launcher','focus-app',{windowId:id});},
  sleepAtAppRoot(){if(notificationSurface)sendHostAction('ui.notifications','close-surface');action('sleep');local('sleep');},wake(_target?:string){action('open-self');local('wake');},

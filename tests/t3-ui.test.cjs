@@ -23,7 +23,7 @@ function setup(animationClock, raster = false) {
   const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
   const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
   const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
-  const shell = { getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
+  const shell = { closeNotificationReader() {}, getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
     wakeWindowForNotification: id => {
       if (visibility.on || visibility.foreground !== id || visibility.overlay || visibility.preview) return false;
       visibility.on = true; navigation.wakes++; return true;
@@ -242,7 +242,7 @@ test('notification inbox menu action dismisses selected entry and retains the ne
   await h.layer.menuItems().find(item => item.label === 'Dismiss notification')?.onSelect({ stack: { pop() {} } });
   assert.deepEqual(h.dismissed, ['two']); assert.equal(h.layer.screen, 'inbox');
   assert.equal(h.layer.selected, 'one'); assert.equal(h.navigation.yielded, 0);
-  assert.equal(h.layer.claimsNotificationDismissGesture(), false);
+  assert.equal(h.layer.claimsNotificationDismissGesture(), true);
   h.layer.screen = 'reader'; assert.equal(h.layer.claimsNotificationDismissGesture(), false);
 });
 
@@ -295,7 +295,7 @@ test('notification reader tap opens one reviewed reply destination without sendi
   assert.equal(h.reviews.length, 1); assert.deepEqual(sent, []); assert.equal(h.layer.screen, 'notification');
   const [target, canStart] = h.reviews[0];
   assert.equal(target.label, 'Send reply'); assert.equal(canStart(), true);
-  target.onSend('Reviewed text'); await new Promise(resolve=>setImmediate(resolve)); assert.deepEqual(sent, ['Reviewed text']); assert.equal(h.layer.notificationNotice, 'Reply sent.');
+  target.onSend('Reviewed text'); await new Promise(resolve=>setImmediate(resolve)); assert.deepEqual(sent, ['Reviewed text']); assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.layer.notificationNotice, '');
 });
 
 test('notification review rejects navigation, focus loss and changed native versions', async () => {
@@ -329,16 +329,15 @@ test('notification reader provides a reply affordance only for an enabled text a
   h.setReply({ isCurrent: () => true, send: () => false }); h.layer.paint(ctx); assert.equal(h.drawn.at(-1), 'Tap to dictate reply');
 });
 
-test('wake-origin notification retains sleep state through reviewed reply and blanks before dismissal return', async () => {
+test('successful wake-origin reply automatically restores sleep and the interrupted app', async () => {
   const h = setup(); h.state.alerts = [{ id: 'one', kind: 'phone' }]; let sent = 0;
   h.setReply({ isCurrent: () => true, send: () => { sent++; return true; } });
   h.layer.openNotification('one', 'notes', true);
   await h.layer.handleInput({ type: 'click' });
   assert.equal(h.layer.notificationReturnToSleep, true); assert.equal(h.navigation.yielded, 0);
   h.reviews[0][0].onSend('Reviewed reply'); await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(sent, 1); assert.equal(h.layer.notificationReturnToSleep, true); assert.equal(h.navigation.yielded, 0);
-  await h.layer.menuItems().find(item => item.label === 'Dismiss notification')?.onSelect({ stack: { pop() {} } });
-  assert.deepEqual(h.dismissed, ['one']); assert.deepEqual(h.navigation.events, ['sleep', 'focus:notes']);
+  assert.equal(sent, 1); assert.equal(h.layer.notificationReturnToSleep, false); assert.equal(h.navigation.yielded, 1);
+  assert.deepEqual(h.dismissed, []); // The host dismisses the bound notification after sending. assert.deepEqual(h.navigation.events, ['sleep', 'focus:notes']);
   assert.equal(h.layer.notificationReturnToSleep, false);
   h.reviews[0][0].onSend('Late callback'); assert.equal(sent, 1); assert.equal(h.navigation.yielded, 1);
 });
@@ -373,7 +372,7 @@ test('reader back restores wake-origin sleep but reply cancellation alone does n
   h.reviews[0][2]();
   assert.equal(h.navigation.yielded, 0); assert.equal(h.layer.notificationReturnToSleep, true);
   await h.layer.handleInput({ type: 'double-click' });
-  assert.deepEqual(h.navigation.events, ['sleep', 'focus:notes']); assert.deepEqual(h.dismissed, []);
+  assert.deepEqual(h.navigation.events, ['sleep', 'focus:notes']); assert.deepEqual(h.dismissed, ['one']);
 });
 
 test('T3 readers fill the configured viewport and repaginate unchanged transcripts on resize', async () => {
@@ -643,7 +642,6 @@ for (const initiallyAwake of [true, false]) {
     assert.equal(h.layer.showAlertInCurrentConversation(alert), true);
     await h.layer.handleInput({ type: 'click' });
     h.reviews[0][0].onSend('Reviewed reply'); await new Promise(resolve=>setImmediate(resolve));
-    await h.layer.handleInput({ type: 'double-click' });
     assert.equal(h.navigation.yielded, initiallyAwake ? 0 : 1);
   });
 }
@@ -884,4 +882,15 @@ test('arrival dropdown rests at the top in both band and full-height viewports',
   now=300;layer.paint({stack:{getBaseSize:()=>({width:576,height})}},()=>({}));assert.equal(painted.y,12);
   layer.onRemoved();
  }
+});
+
+test('long press dismisses the selected list item and exiting an expanded item removes it', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'},{id:'two',kind:'phone'}];h.layer.go('inbox');h.layer.selected='one';
+ await h.layer.handleInput({type:'long-press'});assert.deepEqual(h.dismissed,['one']);assert.equal(h.layer.screen,'inbox');assert.equal(h.layer.selected,'two');
+ h.layer.openNotification('two');await h.layer.handleInput({type:'double-click'});assert.deepEqual(h.dismissed,['one','two']);assert.equal(h.layer.screen,'inbox');assert.equal(h.navigation.yielded,0);
+});
+test('a confirmed reply closes even if Android already removed its notification', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('sessions');h.layer.openNotification('one','apk:com.faceclaw.t3/com.faceclaw.t3.T3AppService');
+ h.setReply({isCurrent:()=>true,send:()=>{h.state.alerts=[];return true;}});await h.layer.handleInput({type:'click'});h.reviews[0][0].onSend('Reply');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.layer.screen,'sessions');assert.deepEqual(h.navigation.events,[]);
 });

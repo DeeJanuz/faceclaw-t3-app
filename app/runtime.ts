@@ -47,6 +47,7 @@ export function getApp(){
 }
 export async function deliverInput(event:string|InputEvent):Promise<void>{
  const current=getApp();const input=typeof event==='string'?{type:event,source:'ring',timestampMs:Date.now()} as InputEvent:event;const type=input.type;
+ if(type==='long-press' && current.claimsNotificationDismissGesture()){await current.handleInput(input);return;}
  if(type==='long-press'){
   current.stack.push(new WindowMenuLayer('App actions',appActionItems(current.menuItems(),()=>shell.sleepAtAppRoot(),()=>{
    nativeService()?.requestSystemMenu();

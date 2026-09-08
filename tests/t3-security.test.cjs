@@ -192,7 +192,7 @@ test('re-pairing the same endpoint clears selected thread, plans, and alerts bef
   assert.equal(api.t3Workspace.alerts.length, 0);
   pending[1].resolve(); await second;
 });
-function notificationHarness() {
+function notificationHarness(sources = [], requestReply = () => Promise.resolve({status: 'sent'})) {
   const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'pair-one' };
   const state = { alerts: [], demo: false, onArrival() {}, onChange() {}, removeAlert() {}, fail() {} };
   const opened = []; const dismissed = []; let nativeClick;
@@ -203,7 +203,7 @@ function notificationHarness() {
     '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {} } }),
     '../../ui/notification-routing': { setNotificationOpenRoute() {} },
     '../../ui/shell/shell': { shell: { foregroundWindow: () => undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => false, focusWindow() {}, wake() {}, openNotificationModal() {} } },
-    '../../native/notification-icons': { readActiveNotifications: () => [], dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
+    '../../native/notification-icons': { requestNotificationReply: requestReply, readActiveNotifications: () => sources, dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
     '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification() {}, dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
     './runtime': { t3Workspace: state, connectT3: async () => { state.demo = false; } },
     './t3-app': { isT3FlowProtected: () => false, openT3Thread: (id) => opened.push(id) },
@@ -391,3 +391,16 @@ test('pairing changed during approval transcript refresh prevents refreshing the
 });
 
 test('own T3 workspace alerts remain visible when native snapshot is separately filtered',()=>{const h=notificationHarness();const alert={id:'own',kind:'t3',threadId:'thread',createdAt:1};h.state.alerts=[alert];assert.equal(h.api.visibleT3Alerts()[0],alert);});
+
+test('notification review remains current after admission while duplicate review is rejected', async () => {
+ const sources=[{key:'fixture',postTime:7,packageName:'fixture.messages',appName:'Messages',title:'Sender',text:'Fixture',lines:[],actions:[{index:0,enabled:true,acceptsText:true}]}];
+ let checks,finish,calls=0;
+ const h=notificationHarness(sources,(_key,_version,_index,current)=>{calls++;checks=current;if(!current())throw Error('NOTIFICATION_REVIEW_STALE');return new Promise(resolve=>finish=resolve);});
+ h.config.notificationOverride=true;
+ const reply=h.api.getT3NotificationReply('phone:fixture:7');assert.ok(reply);
+ const pending=reply.review(()=>reply.isCurrent());
+ assert.equal(calls,1);assert.equal(checks(),true);assert.equal(await reply.review(),'rejected');assert.equal(calls,1);
+ h.config.pairingFingerprint='changed';assert.equal(checks(),false);h.config.pairingFingerprint='pair-one';
+ sources.length=0;assert.equal(checks(),false);
+ finish({status:'sent'});assert.equal(await pending,'sent');
+});

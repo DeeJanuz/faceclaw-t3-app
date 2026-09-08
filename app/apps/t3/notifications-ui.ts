@@ -95,8 +95,8 @@ export function getT3NotificationReply(id: string): { isCurrent: () => boolean; 
  const action=notification?.actions.find(a=>a.enabled&&a.acceptsText);
  if(!notification||!action)return undefined;
  const pairing=pairingIdentity();let requested=false;
- const isCurrent=()=>!requested&&!state.demo&&getT3Config().notificationOverride===true&&pairingIdentity()===pairing&&Boolean(findT3Alert(id));
- return {isCurrent,async review(current=()=>true){if(!isCurrent()||!current())return 'rejected';requested=true;try{const result=await requestNotificationReply(notification.key,notification.postTime,action.index,()=>current()&&pairingIdentity()===pairing&&getT3Config().notificationOverride===true);return ['sent','draft-saved','unknown','rejected'].includes(result.status)?result.status:'unknown';}catch{return 'unknown';}}};
+ const isCurrent=()=>!state.demo&&getT3Config().notificationOverride===true&&pairingIdentity()===pairing&&Boolean(findT3Alert(id));
+ return {isCurrent,async review(current=()=>true){if(requested||!isCurrent()||!current())return 'rejected';requested=true;try{const result=await requestNotificationReply(notification.key,notification.postTime,action.index,()=>current()&&pairingIdentity()===pairing&&getT3Config().notificationOverride===true);return ['sent','draft-saved','unknown','rejected'].includes(result.status)?result.status:'unknown';}catch(error){return ['NOTIFICATION_REVIEW_STALE','HOST_CAPABILITY_UNAVAILABLE','HOST_ACTION_UNAVAILABLE','HOST_ACTION_DUPLICATE'].includes(error instanceof Error?error.message:'')?'rejected':'unknown';}}};
 }
 
 async function openNotificationUi(notificationKey?: string, returnToSleep = false): Promise<boolean> {

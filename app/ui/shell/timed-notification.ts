@@ -30,6 +30,7 @@ export class TimedNotificationLayer implements Layer {
     const elapsed = Date.now() - this.started;
     const progress = Math.min(1, elapsed / 300, Math.max(0, (this.deadline - Date.now()) / 300));
     const rect = notificationCardRect(box);
+    rect.y = box.y + 12;
     rect.y -= Math.round((1 - progress) ** 3 * rect.height);
     paintNotificationCard(image, rect, font, { title: this.title, text: this.text, progress: (this.deadline - Date.now()) / 5000 });
     return image;

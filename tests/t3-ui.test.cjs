@@ -872,3 +872,16 @@ test('Sessions defers list layout and body pixels until 90% of expansion', async
   clock.now = 1360; const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
   assert.equal(h.layer.motion, null); assert.ok(contentPixels(final, h.layer.fullRect()) > 20);
 });
+
+test('arrival dropdown rests at the top in both band and full-height viewports', () => {
+ for (const height of [288,452]) {
+  let now=0,painted;
+  const {TimedNotificationLayer}=load('app/ui/shell/timed-notification.ts',{
+   '../../graphics/image':{},'../../graphics/ui-fonts':{getDefaultSmallFont:()=>({})},'./geometry':{appViewportRect:()=>({x:0,y:0,width:576,height})},
+   './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect)=>painted=rect},'../card-presentation':face,
+  },{Date:{now:()=>now},setInterval:()=>1,clearInterval(){}});
+  const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>{},()=>{},()=>{});
+  now=300;layer.paint({stack:{getBaseSize:()=>({width:576,height})}},()=>({}));assert.equal(painted.y,12);
+  layer.onRemoved();
+ }
+});

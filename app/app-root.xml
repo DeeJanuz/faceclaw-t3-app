@@ -1,1 +1,1 @@
-<Frame xmlns="http://schemas.nativescript.org/tns.xsd" defaultPage="main-page"/>
+<Frame xmlns="http://schemas.nativescript.org/tns.xsd" defaultPage="phone-ui/t3-settings-page"/>

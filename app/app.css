@@ -1,0 +1,12 @@
+Page { background-color: #f7f8fa; color: #202830; }
+ActionBar { background-color: #202830; color: #ffffff; }
+.p-20 { padding: 20; }
+.h2 { font-size: 22; font-weight: 600; margin-top: 16; margin-bottom: 8; }
+.m-t-8 { margin-top: 8; }
+.m-t-12 { margin-top: 12; }
+.m-t-24 { margin-top: 24; }
+.m-b-12 { margin-bottom: 12; }
+.m-b-16 { margin-bottom: 16; }
+Label { font-size: 16; }
+Button { margin-top: 8; margin-bottom: 8; padding: 12; }
+TextField { margin-top: 8; margin-bottom: 8; padding: 12; }

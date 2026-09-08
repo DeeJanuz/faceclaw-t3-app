@@ -1,6 +1,6 @@
 import {customizationGroups,customizationsEnabled,customizationEnabled,setCustomizationsEnabled,setCustomizationEnabled} from '../extensions/settings';
 import {onHostEvent,effectiveFeature,ownsFeature} from '../extensions/host';
-import { Observable, Frame, type EventData, type Page, action } from '@nativescript/core';
+import { Observable, Frame, Application, Utils, type EventData, type Page, action, alert } from '@nativescript/core';
 import { getT3Config, saveT3Config, type T3Config } from '../t3/config';
 import { pairT3 } from '../t3/pairing';
 import { t3Client } from '../t3/client';
@@ -49,6 +49,29 @@ class T3SettingsModel extends Observable {
   toggleMenus=(args:EventData)=>{if(this.ready)setCustomizationEnabled('app-menu',this.checked(args));this.syncCustomizations();};
   toggleLayout=(args:EventData)=>{if(this.ready)setCustomizationEnabled('window-layout',this.checked(args));this.syncCustomizations();};
   toggleTypography=(args:EventData)=>{if(this.ready)setCustomizationEnabled('typography',this.checked(args));this.syncCustomizations();};
+  hostSettings = async () => {
+    const context = Utils.android.getApplicationContext();
+    const manager = context.getPackageManager();
+    const matches = manager.queryIntentActivities(new android.content.Intent('com.faceclaw.action.MANAGE_APPS'), 0);
+    const hosts: {label:string; packageName:string; name:string}[] = [];
+    for(let i=0;i<matches.size();i++) {
+      const match=matches.get(i), info=match.activityInfo;
+      if(info?.exported && info.enabled && info.applicationInfo?.enabled) hosts.push({label:String(match.loadLabel(manager)),packageName:String(info.packageName),name:String(info.name)});
+    }
+    if(!hosts.length) { await alert({title:'Open Faceclaw',message:'Open Faceclaw settings, then Installed apps → Manage Android applications → Permissions and priority. Approve T3, select this host, and choose feature permissions and priority.',okButtonText:'OK'}); return; }
+    let selected=hosts[0];
+    if(hosts.length>1) {
+      const labels=hosts.map(host=>`${host.label} (${host.packageName})`);
+      const choice=await action({title:'Choose your Faceclaw host',cancelButtonText:'Cancel',actions:labels});
+      const index=labels.indexOf(choice);if(index<0)return;selected=hosts[index];
+    }
+    try {
+      const intent=new android.content.Intent('com.faceclaw.action.MANAGE_APPS')
+        .setComponent(new android.content.ComponentName(selected.packageName,selected.name)).putExtra('appPackage',context.getPackageName());
+      const activity=Application.android.foregroundActivity;
+      if(activity) activity.startActivity(intent); else context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+    } catch { await alert({title:'Open Faceclaw',message:'Could not open Faceclaw permissions. Open your Faceclaw app and try again.',okButtonText:'OK'}); }
+  };
   private save(update: Partial<T3Config>): void {
     try { saveT3Config(update); this.config = getT3Config(); this.sync(); }
     catch (error) { this.set('status', error instanceof Error ? error.message : 'T3_CONFIG_FAILED'); }
@@ -128,9 +151,17 @@ class T3SettingsModel extends Observable {
     if (choice.startsWith('Luna')) this.save({ refinementProvider: 't3' });
     else if (choice.startsWith('Anthropic')) this.save({ refinementProvider: 'anthropic' });
   };
-  preview = async () => { await useT3SampleData(); Frame.topmost()?.goBack(); await dashboardController.openApp('t3'); };
-  openLive = async () => { await connectT3(); Frame.topmost()?.goBack(); await dashboardController.openApp('t3'); };
+  preview = async () => { await useT3SampleData(); Frame.topmost()?.navigate('main-page'); await dashboardController.openApp('t3'); };
+  openLive = async () => { await connectT3(); Frame.topmost()?.navigate('main-page'); await dashboardController.openApp('t3'); };
 }
 
-export function navigatingTo(args: EventData): void { (args.object as Page).bindingContext = new T3SettingsModel(); }
-export function unloaded(args: EventData): void { ((args.object as Page).bindingContext as T3SettingsModel)?.dispose(); }
+export function loaded(args: EventData): void {
+  Application.android.foregroundActivity?.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+  const page = args.object as Page;
+  if (!page.bindingContext) page.bindingContext = new T3SettingsModel();
+}
+export function unloaded(args: EventData): void {
+  const page = args.object as Page;
+  (page.bindingContext as T3SettingsModel)?.dispose();
+  page.bindingContext = null;
+}

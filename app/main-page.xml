@@ -1,8 +1,8 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" loaded="loaded" unloaded="unloaded">
- <ActionBar title="T3 for Faceclaw"/>
+ <ActionBar title="T3 preview"/>
  <ScrollView><StackLayout padding="16" spacing="8">
  <Label text="Install and approve this app in Faceclaw, then pair your computer bridge." textWrap="true"/>
- <Button text="T3 connection and customizations" tap="{{ settings }}"/>
+ <Button text="Back to T3 settings" tap="{{ settings }}"/>
  <Label text="{{ status }}" textWrap="true"/>
  <Image src="{{ preview }}" stretch="aspectFit" height="290" backgroundColor="black"/>
  <GridLayout columns="*,*,*" rows="auto,auto"><Button row="0" col="0" text="Up" tap="{{ up }}"/><Button row="0" col="1" text="Tap" tap="{{ tap }}"/><Button row="0" col="2" text="Down" tap="{{ down }}"/><Button row="1" col="0" text="Back" tap="{{ back }}"/><Button row="1" col="1" text="Hold" tap="{{ hold }}"/><Button row="1" col="2" text="Type" tap="{{ type }}"/></GridLayout>

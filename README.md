@@ -19,10 +19,12 @@ The debug APK is for isolated testing. Use your own stable signing identity for 
 
 ## Setup
 
-1. Install the general Faceclaw host and this APK. Discover and approve T3 under the host's installed apps settings, including the app's approval of that host.
-2. Open T3's phone settings. Pair the existing computer bridge with its address and pairing passphrase. Fresh pairing and manual configuration are intentional.
+1. Install the general Faceclaw host and this APK. Open T3 from your phone launcher or select it under Faceclaw's **Manage Android applications**. Both open **T3 settings** directly. Use **Faceclaw permissions and priority** to approve T3, select the host, and grant individual features. These controls also remain available through the host manager's **Permissions and priority** button.
+2. Pair the existing computer bridge with its address and pairing passphrase in T3 settings. Fresh pairing and manual configuration are intentional.
 3. Select the assistant project, model, and reasoning level. Enable desired assistant, bridge dictation, refinement, and device-tool roles.
 4. Enable optional T3 customizations. Approve each desired capability and set its priority in Faceclaw. Disabled winners reveal the next enabled, approved app according to your chosen order.
+
+**T3 gestures** controls double tap for display off/wake, tap then hold for the app switcher, and one hold for App actions. **App actions menus** separately controls the menu presentation, including access to System actions. These settings need the customization bundle enabled and their respective host grants. The preview and sample-data controls are at the bottom of T3 settings.
 
 The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. `../faceclaw-t3-bridge/scripts/faceclaw-dev-server.mjs` provides the existing isolated integration fixture.
 

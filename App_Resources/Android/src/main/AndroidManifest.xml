@@ -1,8 +1,10 @@
 <manifest xmlns:tools="http://schemas.android.com/tools" xmlns:android="http://schemas.android.com/apk/res/android" package="__PACKAGE__">
  <uses-permission android:name="android.permission.INTERNET"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+ <queries><intent><action android:name="com.faceclaw.action.MANAGE_APPS"/></intent></queries>
  <application tools:replace="android:allowBackup" android:fullBackupContent="false" android:name="com.tns.NativeScriptApplication" android:allowBackup="false" android:label="T3 for Faceclaw" android:theme="@style/AppTheme" android:usesCleartextTraffic="true">
  <activity android:name="com.tns.NativeScriptActivity" android:exported="true" android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|locale|uiMode" android:theme="@style/LaunchScreenTheme">
- <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+ <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+ <intent-filter><action android:name="com.faceclaw.action.APP_SETTINGS"/><category android:name="android.intent.category.DEFAULT"/></intent-filter></activity>
  <activity android:name="com.faceclaw.sdk.HostApprovalActivity" android:exported="false"/>
  <service android:name="com.faceclaw.t3.T3AppService" android:exported="true">
  <intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter>

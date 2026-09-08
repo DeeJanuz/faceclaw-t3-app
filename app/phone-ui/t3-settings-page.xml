@@ -1,7 +1,20 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
-  <ActionBar title="T3 Assistant" />
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" loaded="loaded" unloaded="unloaded">
+  <ActionBar title="T3 settings" />
   <ScrollView>
     <StackLayout class="p-20">
+      <Label text="T3 for Faceclaw" class="h2"/>
+      <Label text="Control T3 here. Faceclaw manages permission for this app to change your glasses experience." textWrap="true"/>
+      <Button text="Faceclaw permissions and priority" tap="{{ hostSettings }}"/>
+      <Label text="Faceclaw customizations" class="h2 m-t-24"/>
+      <GridLayout columns="*,auto"><Label text="Enable T3 customizations" textWrap="true"/><Switch col="1" checked="{{ customizationsEnabled }}" checkedChange="{{ toggleCustomizations }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Launcher and folders"/><Switch col="1" checked="{{ custom_launcher }}" checkedChange="{{ toggleLauncher }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="T3 gestures"/><Switch col="1" checked="{{ custom_navigation }}" checkedChange="{{ toggleNavigation }}"/></GridLayout>
+      <Label text="Double tap: display off/wake. Tap then hold: app switcher. Hold: App actions." textWrap="true"/>
+      <GridLayout columns="*,auto"><Label text="App actions menus"/><Switch col="1" checked="{{ custom_app_menu }}" checkedChange="{{ toggleMenus }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Window layout"/><Switch col="1" checked="{{ custom_window_layout }}" checkedChange="{{ toggleLayout }}"/></GridLayout>
+      <GridLayout columns="*,auto"><Label text="Typography"/><Switch col="1" checked="{{ custom_typography }}" checkedChange="{{ toggleTypography }}"/></GridLayout>
+      <Label text="Enable the settings you want, then use Faceclaw permissions and priority above to allow each feature and choose T3 first. Turning a setting off restores Faceclaw behavior for that feature." textWrap="true"/>
+      <Label text="{{ overrideStatus }}" textWrap="true"/>
       <Label text="Bridge connection" class="h2" />
       <Label text="Use your private T3 bridge address. Pairing stays on this phone." textWrap="true" class="m-b-12" />
       <TextField text="{{ bridgeUrl }}" hint="wss://your-computer:8443" autocorrect="false" autocapitalizationType="none" />
@@ -12,15 +25,6 @@
         <Label col="0" text="Enable T3 connection" verticalAlignment="center" />
         <Switch col="1" checked="{{ enabled }}" checkedChange="{{ toggleEnabled }}" />
       </GridLayout>
-      <Label text="Faceclaw customizations" class="h2 m-t-24"/>
-      <GridLayout columns="*,auto"><Label text="Enable T3 customizations" textWrap="true"/><Switch col="1" checked="{{ customizationsEnabled }}" checkedChange="{{ toggleCustomizations }}"/></GridLayout>
-      <GridLayout columns="*,auto"><Label text="Launcher and folders"/><Switch col="1" checked="{{ custom_launcher }}" checkedChange="{{ toggleLauncher }}"/></GridLayout>
-      <GridLayout columns="*,auto"><Label text="Ring navigation"/><Switch col="1" checked="{{ custom_navigation }}" checkedChange="{{ toggleNavigation }}"/></GridLayout>
-      <GridLayout columns="*,auto"><Label text="App actions menus"/><Switch col="1" checked="{{ custom_app_menu }}" checkedChange="{{ toggleMenus }}"/></GridLayout>
-      <GridLayout columns="*,auto"><Label text="Window layout"/><Switch col="1" checked="{{ custom_window_layout }}" checkedChange="{{ toggleLayout }}"/></GridLayout>
-      <GridLayout columns="*,auto"><Label text="Typography"/><Switch col="1" checked="{{ custom_typography }}" checkedChange="{{ toggleTypography }}"/></GridLayout>
-      <Label text="Choose grants and per-feature priority in Faceclaw. A bundle may partly win." textWrap="true"/>
-      <Label text="{{ overrideStatus }}" textWrap="true"/>
       <Label text="Assistant" class="h2 m-t-24" />
       <GridLayout columns="*,auto">
         <Label col="0" text="Prefer T3 assistant" verticalAlignment="center" />

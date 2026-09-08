@@ -6,7 +6,7 @@ import {t3Client} from './t3/client';
 class MainModel extends Observable{
  private offFrame:()=>void;private stateOff:()=>void;
  constructor(){super();this.set('status',t3Client.state().status);this.offFrame=onFrame(frame=>this.set('preview',new ImageSource(grayBitmap(frame))));this.stateOff=t3Client.onStateChange(state=>this.set('status',state.status));setPhonePreviewVisible(true);}
- settings=()=>Frame.topmost()?.navigate('phone-ui/t3-settings-page');
+ settings=()=>{const frame=Frame.topmost();if(frame?.canGoBack())frame.goBack();else frame?.navigate('phone-ui/t3-settings-page');};
  sample=async()=>{await useT3SampleData();getApp().requestRender();};
  live=async()=>{await connectT3();shell.focusWindow('t3');getApp().requestRender();};
  up=()=>deliverInput('scroll-up');down=()=>deliverInput('scroll-down');tap=()=>deliverInput('click');back=()=>deliverInput('double-click');hold=()=>deliverInput('long-press');

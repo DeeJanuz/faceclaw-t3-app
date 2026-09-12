@@ -7,6 +7,7 @@ const DICTATION_ERROR_CODES = new Set([
   'transcription_unavailable', 'transcription_failed', 'transcription_invalid_response',
   'T3_NOT_CONNECTED', 'T3_CONNECTION_DROPPED', 'T3_REQUEST_TIMEOUT', 'T3_SEND_FAILED',
   'T3_AUDIO_SEND_FAILED', 'unauthorized', 'rate_limited',
+  'T3_CONNECT_TIMEOUT', 'T3_CONNECT_FAILED', 'T3_VOICE_START_TIMEOUT',
 ]);
 
 /** Only fixed diagnostic codes can leave the provider boundary, never raw error text. */
@@ -25,8 +26,12 @@ export class T3SttClient implements CloudSttClient {
   private maxBytes = 9600000;
   private unsubscribe: (() => void) | null = null;
   private unsubscribeConfig: (() => void) | null = null;
+  private unsubscribeState: (() => void) | null = null;
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
   constructor(private options: CloudSttOptions, private fallback: () => void, private scope: 'configured' | 't3' = 'configured') {}
   start(): void {
+    if (this.stopped || this.startTimer !== null || this.ready) return;
+    this.startTimer = setTimeout(() => this.fail('T3_VOICE_START_TIMEOUT'), 20000);
     const initial = getT3Config();
     this.unsubscribeConfig = onT3ConfigChanged(() => {
       const config = getT3Config();
@@ -35,11 +40,23 @@ export class T3SttClient implements CloudSttClient {
     this.unsubscribe = this.client.onEvent((event) => {
       if (this.stopped) return;
       if (event.event === 'voice.partial' && typeof event.payload?.text === 'string') this.options.onTranscript({ text: event.payload.text, isFinal: false });
-      if (event.event === 'voice.error') this.fail();
+      if (event.event === 'voice.error') {
+        // The bridge keeps recording after a partial preview failure. Preserve
+        // the audio so voice.finish can still produce the authoritative text.
+        if (event.payload?.error?.code === 'partial_transcription_unavailable') {
+          this.options.onStatus('Live preview unavailable. Finish dictation to transcribe.');
+        } else {
+          this.fail(dictationErrorCode(event.payload?.error));
+        }
+      }
     });
     void (async () => {
       try {
-        this.client.configure(initial); await this.client.connect();
+        this.client.configure(initial);
+        this.unsubscribeState = this.client.onStateChange(state => {
+          if (state.phase === 'failed') this.fail(dictationErrorCode({ code: state.status }));
+        });
+        await this.client.connect();
         if (this.stopped) return;
         const recording = await this.client.rpc<any>('voice.start');
         if (this.stopped) return;
@@ -47,10 +64,12 @@ export class T3SttClient implements CloudSttClient {
         this.maxBytes = Math.min(recording.maxBytes, this.maxBytes);
         if (this.bytes > this.maxBytes) throw new Error();
         this.ready = true;
+        if (this.startTimer !== null) clearTimeout(this.startTimer);
+        this.startTimer = null;
         for (const chunk of this.chunks) { this.client.sendAudio(chunk); chunk.fill(0); }
         this.chunks = [];
         if (this.finishing) await this.complete();
-      } catch { this.fail(); }
+      } catch (error) { this.fail(dictationErrorCode(error)); }
     })();
   }
   acceptPcm(pcm: Uint8Array): void {
@@ -80,13 +99,21 @@ export class T3SttClient implements CloudSttClient {
         return;
       }
       console.warn(`T3 dictation finish failed: ${code}`);
-      this.fail();
+      this.fail(code);
     }
   }
-  private fail(): void { if (this.stopped) return; this.stop(); this.options.onStatus('T3 unavailable; using on-device transcription.'); this.fallback(); }
+  private fail(code = 'dictation_failed'): void {
+    if (this.stopped) return;
+    console.warn(`T3 dictation failed: ${code}`);
+    this.stop(); this.options.onStatus('T3 unavailable; using on-device transcription.'); this.fallback();
+  }
   stop(): void {
+    if (this.stopped) return;
     this.stopped = true; this.unsubscribe?.(); this.unsubscribe = null;
     this.unsubscribeConfig?.(); this.unsubscribeConfig = null;
+    this.unsubscribeState?.(); this.unsubscribeState = null;
+    if (this.startTimer !== null) clearTimeout(this.startTimer);
+    this.startTimer = null;
     this.client.close(); for (const chunk of this.chunks) chunk.fill(0); this.chunks = [];
   }
 }

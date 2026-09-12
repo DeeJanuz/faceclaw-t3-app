@@ -232,7 +232,7 @@ test('disabling or re-pairing bridge dictation stops audio on the old transport'
     const config = { enabled: true, bridgeDictation: true, token: 'old-pairing', bridgeUrl: 'wss://bridge.example' };
     let configChanged; let audio = 0; let closed = false; let fallback = 0;
     class Client {
-      configure() {} onEvent() { return () => {}; } connect() { return Promise.resolve(); }
+      configure() {} onStateChange() { return () => {}; } onEvent() { return () => {}; } connect() { return Promise.resolve(); }
       rpc() { return Promise.resolve({ maxBytes: 9600000, sampleRate: 16000, format: 'pcm_s16le' }); }
       sendAudio() { audio++; } close() { closed = true; }
     }
@@ -246,6 +246,74 @@ test('disabling or re-pairing bridge dictation stops audio on the old transport'
     stt.acceptPcm(new Uint8Array(20));
     assert.equal(audio, 1); assert.equal(closed, true); assert.equal(fallback, 1);
   }
+});
+test('temporary bridge preview failure preserves audio for final dictation', async () => {
+  let event;
+  let audio = 0;
+  let closed = 0;
+  let fallback = 0;
+  const statuses = [];
+  const transcripts = [];
+  class Client {
+    configure() {}
+    onStateChange() { return () => {}; }
+    onEvent(listener) { event = listener; return () => {}; }
+    async connect() {}
+    async rpc(method) {
+      return method === 'voice.start'
+        ? { maxBytes: 9600000, sampleRate: 16000, format: 'pcm_s16le' }
+        : { text: 'final speech' };
+    }
+    sendAudio() { audio++; }
+    close() { closed++; }
+  }
+  const { T3SttClient } = load('app/t3/stt.ts', {
+    './config': { getT3Config: () => ({ enabled: true, bridgeDictation: true }), onT3ConfigChanged: () => () => {} },
+    './client': { T3Client: Client },
+  });
+  const stt = new T3SttClient({
+    onStatus: status => statuses.push(status),
+    onTranscript: value => transcripts.push(value),
+    onError() {},
+  }, () => fallback++);
+  stt.start();
+  await flush();
+  event({ event: 'voice.error', payload: { error: { code: 'partial_transcription_unavailable' } } });
+  stt.acceptPcm(new Uint8Array(1600));
+  stt.finish();
+  await flush();
+  assert.equal(audio, 1);
+  assert.equal(fallback, 0);
+  assert.equal(closed, 1);
+  assert.equal(transcripts.length, 1);
+  assert.equal(transcripts[0].text, 'final speech');
+  assert.equal(transcripts[0].isFinal, true);
+  assert.deepEqual(statuses, ['Live preview unavailable. Finish dictation to transcribe.']);
+});
+test('bridge disconnect fails an active T3 dictation without waiting for stop', async () => {
+  let state;
+  let audio = 0;
+  let fallback = 0;
+  class Client {
+    configure() {}
+    onStateChange(listener) { state = listener; return () => {}; }
+    onEvent() { return () => {}; }
+    async connect() {}
+    async rpc() { return { maxBytes: 9600000, sampleRate: 16000, format: 'pcm_s16le' }; }
+    sendAudio() { audio++; }
+    close() {}
+  }
+  const { T3SttClient } = load('app/t3/stt.ts', {
+    './config': { getT3Config: () => ({ enabled: true, bridgeDictation: true }), onT3ConfigChanged: () => () => {} },
+    './client': { T3Client: Client },
+  });
+  const stt = new T3SttClient({ onStatus() {}, onTranscript() {}, onError() {} }, () => fallback++);
+  stt.start();
+  await flush();
+  state({ phase: 'failed', status: 'T3_CONNECTION_DROPPED' });
+  stt.acceptPcm(new Uint8Array(1600));
+  assert.equal(audio, 0);
+  assert.equal(fallback, 1);
 });
 function shellVoiceHarness(prepare) {
   const source = ts.createSourceFile('shell.ts', fs.readFileSync('app/ui/shell/shell.ts', 'utf8'), ts.ScriptTarget.Latest);

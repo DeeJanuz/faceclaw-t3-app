@@ -4,7 +4,7 @@ const transcripts=new Set<(value:VoiceTranscriptEvent)=>void>();const statuses=n
 export const voiceControlBridge={
  onTranscript(listener:(value:VoiceTranscriptEvent)=>void){transcripts.add(listener);return ()=>transcripts.delete(listener);},
  onStatus(listener:(value:{status:string})=>void){statuses.add(listener);return ()=>statuses.delete(listener);},
- startCapture(){if(captureId)throw new Error('CAPTURE_BUSY');captureId=`t3-capture-${Date.now()}`;setOwnCaptureId(captureId);const service=nativeService();if(!service?.requestCaptureDictation(captureId,'Dictate T3 message',true)){captureId='';setOwnCaptureId('');throw new Error('CAPTURE_UNAVAILABLE');}},
+ startCapture(){if(captureId)throw new Error('CAPTURE_BUSY');captureId=`t3-capture-${Date.now()}`;setOwnCaptureId(captureId);const service=nativeService();if(!service?.requestCaptureDictation(captureId,'Dictate T3 message',false)){captureId='';setOwnCaptureId('');throw new Error('CAPTURE_UNAVAILABLE');}},
  finishCapture(){if(captureId)nativeService()?.finishCaptureDictation(captureId);},
  cancelCapture(){const id=captureId;captureId='';setOwnCaptureId('');if(id)nativeService()?.cancelCaptureDictation(id);},
 };

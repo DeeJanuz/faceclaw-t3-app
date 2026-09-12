@@ -201,12 +201,14 @@ export type BridgeMethod =
   | 'plan.submit'
   | 'plan.approve'
   | 'thread.reasoning.set'
+  | 'thread.model.set'
   | 'weather.locations'
   | 'weather.current'
   | 'sessions.list'
   | 'projects.list'
   | 'models.list'
   | 'transcript.get'
+  | 'transcript.unsubscribe'
   | 'thread.start'
   | 'assistant.start'
   | 'thread.settle'
@@ -226,12 +228,14 @@ export type BridgeMethodResult = {
   'plan.submit': PlanSubmitResult
   'plan.approve': { threadId: string; planId: string; sequence: number }
   'thread.reasoning.set': { threadId: string; reasoningId: string; sequence: number }
+  'thread.model.set': { threadId: string; modelSelection: NewSessionModelSelection; sequence: number }
   'weather.locations': { locations: WeatherLocation[] }
   'weather.current': WeatherCurrentResult
   'sessions.list': SessionsListResult
   'projects.list': ProjectsListResult
   'models.list': ModelsListResult
   'transcript.get': TranscriptResult
+  'transcript.unsubscribe': { threadId: string; unsubscribed: true }
   'thread.start': SentTurnResult
   'assistant.start': SentTurnResult
   'thread.settle': { threadId: string; settled: true; sequence: number }

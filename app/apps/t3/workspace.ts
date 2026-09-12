@@ -59,7 +59,11 @@ export class T3Workspace {
   private initialized = false;
   private generation = 0;
   private transcriptRequest = 0;
+  private transcriptRefreshPending: Promise<void> | null = null;
+  private transcriptRefreshPendingThread = '';
+  private transcriptRefreshQueued = false;
   private refreshPending: Promise<void> | null = null;
+  private sessionsRefreshPending: Promise<void> | null = null;
   private draftStorage: PlanDraftStorage | null = null;
 
   constructor(private api: T3Api) {}
@@ -88,6 +92,8 @@ export class T3Workspace {
     this.transcript = null; this.selectedThreadId = ''; this.alerts = [];
     this.completions.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
     this.refreshPending = null; this.busy = false; this.error = ''; this.canRetryLastSend = true;
+    this.sessionsRefreshPending = null;
+    this.transcriptRefreshPending = null; this.transcriptRefreshPendingThread = ''; this.transcriptRefreshQueued = false;
     this.status = demo ? 'Sample data · no live actions' : 'Connecting…';
     this.changed();
   }
@@ -123,6 +129,30 @@ export class T3Workspace {
     })();
     this.refreshPending = pending;
     void pending.finally(() => { if (this.refreshPending === pending) this.refreshPending = null; });
+    return pending;
+  }
+
+  refreshSessions(): Promise<void> {
+    // `sessions.changed` is emitted from the bridge's live poll. Keep it off
+    // the full refresh path: models.list opens a separate upstream WebSocket.
+    if (this.refreshPending) return this.refreshPending;
+    if (this.sessionsRefreshPending) return this.sessionsRefreshPending;
+    const generation = this.generation;
+    const api = this.api;
+    const pending = (async () => {
+      try {
+        const sessions = await api.rpc<SessionsListResult>('sessions.list');
+        if (generation !== this.generation) return;
+        this.applySessions([...sessions.unsettled, ...sessions.settled]);
+        this.error = '';
+        this.status = this.demo ? 'Sample data · no live actions' : 'Connected to T3';
+        this.changed();
+      } catch (error) {
+        if (generation === this.generation) this.fail(error);
+      }
+    })();
+    this.sessionsRefreshPending = pending;
+    void pending.finally(() => { if (this.sessionsRefreshPending === pending) this.sessionsRefreshPending = null; });
     return pending;
   }
 
@@ -162,6 +192,10 @@ export class T3Workspace {
 
   async openThread(threadId: string): Promise<void> {
     const generation = this.generation;
+    const previousThreadId = this.selectedThreadId;
+    if (previousThreadId && previousThreadId !== threadId) {
+      void this.api.rpc('transcript.unsubscribe', { threadId: previousThreadId }).catch(() => undefined);
+    }
     this.selectedThreadId = threadId;
     this.transcript = null;
     this.changed();
@@ -171,9 +205,17 @@ export class T3Workspace {
   async refreshTranscript(): Promise<void> {
     const threadId = this.selectedThreadId;
     if (!threadId) return;
+    // The bridge may report a live turn every poll interval. Keep one fetch in
+    // flight and coalesce arrivals so a slow mobile link cannot build an
+    // unbounded queue that starves gesture handling.
+    if (this.transcriptRefreshPending && this.transcriptRefreshPendingThread === threadId) {
+      this.transcriptRefreshQueued = true;
+      return this.transcriptRefreshPending;
+    }
     const request = ++this.transcriptRequest;
     const generation = this.generation;
-    try {
+    const pending = (async () => {
+      try {
       const transcript = await this.api.rpc<TranscriptResult>('transcript.get', { threadId });
       if (request !== this.transcriptRequest || generation !== this.generation || threadId !== this.selectedThreadId) return;
       if (!transcript?.session || transcript.session.id !== threadId) throw new Error('T3_INVALID_RESPONSE');
@@ -194,7 +236,20 @@ export class T3Workspace {
       }
       this.error = '';
       this.changed();
-    } catch (error) { if (request === this.transcriptRequest && generation === this.generation) this.fail(error); }
+      } catch (error) { if (request === this.transcriptRequest && generation === this.generation) this.fail(error); }
+    })();
+    this.transcriptRefreshPending = pending;
+    this.transcriptRefreshPendingThread = threadId;
+    void pending.finally(() => {
+      if (this.transcriptRefreshPending !== pending) return;
+      this.transcriptRefreshPending = null;
+      this.transcriptRefreshPendingThread = '';
+      if (this.transcriptRefreshQueued) {
+        this.transcriptRefreshQueued = false;
+        void this.refreshTranscript();
+      }
+    });
+    return pending;
   }
 
   async send(text: string, options?: { projectId: string; modelSelection: NewSessionModelSelection; assistant?: boolean }, controls?: { interactionMode?: 'default' | 'plan' }): Promise<boolean> {
@@ -243,6 +298,22 @@ export class T3Workspace {
     this.busy = true; this.error = ''; this.changed();
     try {
       await api.rpc('thread.reasoning.set', { threadId, reasoningId, expectedModel: { instanceId: expectedModel.instanceId, model: expectedModel.model } });
+      if (generation !== this.generation) return false;
+      if (threadId === this.selectedThreadId) await this.refreshTranscript();
+      return generation === this.generation;
+    } catch (error) { if (generation === this.generation) this.fail(error); return false; }
+    finally { if (generation === this.generation) { this.busy = false; this.changed(); } }
+  }
+
+  async setModel(threadId: string, selection: NewSessionModelSelection, expectedModel: { instanceId: string; model: string }): Promise<boolean> {
+    const session = this.transcript?.session;
+    if (this.busy || !session || session.id !== threadId || !session.interactionMode ||
+        !['idle', 'ready', 'interrupted', 'stopped', 'error'].includes(session.status) || !session.modelSelection ||
+        session.modelSelection.instanceId !== expectedModel.instanceId || session.modelSelection.model !== expectedModel.model) return false;
+    const generation = this.generation; const api = this.api;
+    this.busy = true; this.error = ''; this.changed();
+    try {
+      await api.rpc('thread.model.set', { threadId, selection, expectedModel });
       if (generation !== this.generation) return false;
       if (threadId === this.selectedThreadId) await this.refreshTranscript();
       return generation === this.generation;

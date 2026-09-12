@@ -64,6 +64,7 @@ export class T3DemoApi implements T3Api {
       snapshotId: 'demo', frozenAt: ago(0), unsettled: this.sessions.filter(s => !s.settled), settled: this.sessions.filter(s => s.settled),
     };
     else if (method === 'transcript.get') result = this.transcript(String(params.threadId));
+    else if (method === 'transcript.unsubscribe') result = { threadId: String(params.threadId), unsubscribed: true };
     else if (method === 'thread.settle') {
       const session = this.sessions.find(s => s.id === params.threadId);
       if (session) session.settled = true;
@@ -107,7 +108,7 @@ export class T3DemoApi implements T3Api {
     const text = id === 'ui'
       ? 'The full-height reader is ready for review.\n\nProject and conversation navigation keep your place when a notification arrives. A tap opens the new conversation; double tap returns to what you were reading.\n\nNext I will check long replies, the plan-question flow, and the draft review screen.'
       : id === 'voice'
-      ? 'Bridge-hosted Whisper accepts the same PCM audio as Faceclaw.\n\nWhen the bridge is unavailable, dictation can use the on-device recognizer. The reviewed transcript stays on screen until you tap to send.'
+      ? 'Dictation uses Faceclaw\'s selected transcription engine.\n\nThe default on-device Moonshine engine works without a network connection once its voice model is downloaded. The reviewed transcript stays on screen until you tap to send.'
       : id === 'plan' ? 'I have three questions about the next UI test. Select Answer questions to review them. Nothing is submitted until the complete answer set is confirmed.'
       : 'This is a sample assistant conversation. The live version uses the project and model selected in T3 settings.';
     const messages = [

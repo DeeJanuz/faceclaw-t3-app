@@ -3,6 +3,7 @@ import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { paginateMessageText, reflowDictationText } from "../../apps/t3/hub-view-model";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
+import type { AnthropicStreamHandle } from "../../native/anthropic";
 import { type InputEvent } from "../gestures";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 import { appViewportRect } from "./geometry";
@@ -22,11 +23,12 @@ type T3DictationOptions = {
   /** Local draft handoff only. The owning T3 screen requires a separate send tap. */
   onDraft: (text: string) => void;
   onCancelled: () => void;
+  refine?: (options: { original: string; followup: string; onDone: (text: string) => void; onError: (error: string) => void }) => AnthropicStreamHandle;
 };
 
 /** T3's direct capture surface, independent of the shell's generic send menu. */
 export class T3DictationLayer implements Layer {
-  private phase: "capturing" | "finalizing" | "error" | "closing" = "capturing";
+  private phase: "capturing" | "finalizing" | "review" | "continuing" | "refining" | "error" | "closing" = "capturing";
   private text = "";
   private cachedLayout: { source: string; font: ReturnType<typeof getDefaultSmallFont>; width: number; height: number; lines: string[] } | null = null;
   private motionContent: GrayImage | null = null;
@@ -41,6 +43,9 @@ export class T3DictationLayer implements Layer {
   private lastRenderedSecond = -1;
   private animationTimer: ReturnType<typeof setInterval> | null = null;
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private refineTimer: ReturnType<typeof setTimeout> | null = null;
+  private refinement: AnthropicStreamHandle | null = null;
+  private baseText = "";
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
 
@@ -83,7 +88,7 @@ export class T3DictationLayer implements Layer {
       this.options.actions.requestRender();
     }, CARD_FRAME_MS);
     try {
-      void Promise.resolve(this.options.actions.startVoiceCapture(false, "t3")).catch(() => this.fail("Could not start dictation. Nothing sent."));
+      void Promise.resolve(this.options.actions.startVoiceCapture(false)).catch(() => this.fail("Could not start dictation. Nothing sent."));
     } catch {
       this.fail("Could not start dictation. Nothing sent.");
     }
@@ -122,10 +127,14 @@ export class T3DictationLayer implements Layer {
         this.fail("No speech captured. Nothing sent.");
         return;
       }
-      const draft = this.text;
-      this.delivered = true;
-      this.options.dismiss();
-      this.options.onDraft(draft);
+      this.phase = "review";
+      if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
+      this.finalizeTimer = null;
+      this.options.actions.requestRender();
+      return;
+    }
+    if (event.isFinal && this.phase === "continuing") {
+      this.beginRefinement();
       return;
     }
     this.options.actions.requestRender();
@@ -140,6 +149,10 @@ export class T3DictationLayer implements Layer {
     this.motionContent = null;
     if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
     this.finalizeTimer = null;
+    if (this.refineTimer !== null) clearTimeout(this.refineTimer);
+    this.refineTimer = null;
+    this.refinement?.cancel();
+    this.refinement = null;
     if (this.capturing) {
       this.capturing = false;
       this.stopCapture();
@@ -161,9 +174,70 @@ export class T3DictationLayer implements Layer {
         this.stopCapture();
       }
       this.options.actions.requestRender();
+    } else if (this.phase === "review" && event.type === "swipe-down") {
+      this.startContinuation();
+    } else if (this.phase === "review" && event.type === "click") {
+      this.sendDraft();
+    } else if (this.phase === "continuing" && event.type === "click") {
+      this.endContinuation();
+    } else if (this.phase === "refining") {
+      return;
     } else if (event.type === "click") {
       this.endCapture();
     }
+  }
+
+  private sendDraft(): void {
+    if (this.delivered || !this.text.trim()) return;
+    const draft = this.text.trim();
+    this.delivered = true;
+    this.options.dismiss();
+    this.options.onDraft(draft);
+  }
+
+  private startContinuation(): void {
+    if (this.removed || this.phase !== "review" || !this.text.trim()) return;
+    this.baseText = this.text.trim();
+    this.text = "";
+    this.phase = "continuing";
+    this.capturing = true;
+    try {
+      void Promise.resolve(this.options.actions.startVoiceCapture(false)).catch(() => this.fail("Could not start refinement. Nothing sent."));
+    } catch {
+      this.fail("Could not start refinement. Nothing sent.");
+    }
+    this.options.actions.requestRender();
+  }
+
+  private endContinuation(): void {
+    if (!this.capturing || this.phase !== "continuing") return;
+    this.capturing = false;
+    this.stopCapture();
+    this.refineTimer = setTimeout(() => this.beginRefinement(), 1200);
+    this.options.actions.requestRender();
+  }
+
+  private beginRefinement(): void {
+    if (this.refineTimer !== null) clearTimeout(this.refineTimer);
+    this.refineTimer = null;
+    if (this.removed || this.phase !== "continuing") return;
+    const followup = this.text.trim();
+    if (!followup) { this.text = this.baseText; this.phase = "review"; this.options.actions.requestRender(); return; }
+    this.phase = "refining";
+    this.text = "";
+    if (!this.options.refine) {
+      this.text = this.baseText;
+      this.phase = "review";
+      this.options.actions.requestRender();
+      return;
+    }
+    this.refinement = this.options.refine({
+      original: this.baseText,
+      followup,
+      onDone: text => { this.refinement = null; this.text = text.trim(); this.phase = "review"; this.options.actions.requestRender(); },
+      onError: () => { this.refinement = null; this.text = this.baseText; this.phase = "review"; this.options.actions.requestRender(); },
+    });
+    this.options.actions.requestRender();
   }
 
   paint(_ctx: LayerContext, _paintBelow: () => GrayImage): GrayImage {
@@ -215,9 +289,9 @@ export class T3DictationLayer implements Layer {
     const left = viewport.x, top = viewport.y;
     const font = getDefaultSmallFont();
     const lineHeight = cardLineStep(font);
-    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : "DICTATION";
+    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "continuing" ? "REFINEMENT INPUT" : this.phase === "refining" ? "REFINING" : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : this.phase === "review" ? "REVIEW DRAFT" : "DICTATION";
     image.drawText(font, left + 16, top + 14, title, 190);
-    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : "Nothing sent.");
+    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : this.phase === "continuing" ? "Say an edit or follow-up..." : this.phase === "refining" ? "Luna is refining..." : "Nothing sent.");
     const textWidth = viewport.width - 37;
     const textHeight = viewport.height - 65 - font.lineHeight - 28;
     let layout = this.cachedLayout;
@@ -230,7 +304,7 @@ export class T3DictationLayer implements Layer {
     }
     const lines = layout.lines;
     lines.forEach((line, index) => image.drawText(font, left + 16, top + 65 + index * lineHeight, line, CARD_TEXT_BRIGHTNESS));
-    if (this.phase === "finalizing" && this.text) image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, "Nothing sent.", 145);
+    if (this.phase === "review") image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, "Tap send · swipe down to refine", 145);
   }
 
   onRemoved(): void {
@@ -241,8 +315,11 @@ export class T3DictationLayer implements Layer {
     this.unsubscribeStatus?.(); this.unsubscribeStatus = null;
     if (this.animationTimer !== null) clearInterval(this.animationTimer);
     if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
+    if (this.refineTimer !== null) clearTimeout(this.refineTimer);
+    this.refinement?.cancel();
     this.animationTimer = null;
     this.finalizeTimer = null;
+    this.refineTimer = null;
     this.text = "";
     this.cachedLayout = null;
     this.motionContent = null;

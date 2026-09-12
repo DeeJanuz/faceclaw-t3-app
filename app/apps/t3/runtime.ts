@@ -55,10 +55,12 @@ export function initializeT3(): void {
   });
   t3Client.onEvent(event => {
     if (t3Workspace.demo) return;
-    if (event.event === 'transcript.changed') void t3Workspace.refreshTranscript();
+    if (event.event === 'transcript.changed' && event.payload?.threadId === t3Workspace.selectedThreadId) {
+      void t3Workspace.refreshTranscript();
+    }
     if (event.event === 'sessions.changed' && !eventTimer) {
       const mode = modeGeneration;
-      eventTimer = setTimeout(() => { eventTimer = null; if (current(mode)) void t3Workspace.refresh(); }, 150);
+      eventTimer = setTimeout(() => { eventTimer = null; if (current(mode)) void t3Workspace.refreshSessions(); }, 150);
     }
   });
   // Install relay after mode/config listeners so settings changes clear the old

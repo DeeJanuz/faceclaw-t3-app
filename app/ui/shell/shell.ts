@@ -13,7 +13,7 @@ function action(name:string,data:Record<string,unknown>={}):boolean{
  return sendHostAction('ui.launcher',name,data);
 }
 onHostEvent((type,data)=>{
- if(type==='visibility')visible=Boolean(data.visible);
+ if(type==='visibility')visible=Boolean(data.visible&&data.screenOn!==false);
  if(type==='extension-surface'&&data.feature==='ui.notifications'){if(data.type==='open')notificationSurface=true;if(data.type==='close')notificationSurface=false;}
  if(type==='disconnected'||type==='destroyed')notificationSurface=false;
  if(type==='disconnected'||type==='destroyed'){const previous=capture;capture=null;previous?.cancel();}

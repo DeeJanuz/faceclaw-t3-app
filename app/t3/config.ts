@@ -11,7 +11,7 @@ export interface T3Config {
   notificationExcludedApps: string[];
   refinementProvider: 'anthropic' | 't3'; allowTools: boolean; deviceId: string;
 }
-const defaults: T3Config = { enabled: false, pairingFingerprint: '', bridgeUrl: 'ws://10.0.2.2:8787', token: '', allowInsecureLocal: false, preferAssistant: false, assistantProjectId: '', assistantProvider: '', assistantModel: '', assistantReasoning: '', bridgeDictation: false, notificationOverride: false, notificationExcludedApps: [], refinementProvider: 'anthropic', allowTools: false, deviceId: 'faceclaw-t3' };
+const defaults: T3Config = { enabled: false, pairingFingerprint: '', bridgeUrl: 'ws://10.0.2.2:8787', token: '', allowInsecureLocal: false, preferAssistant: false, assistantProjectId: '', assistantProvider: '', assistantModel: '', assistantReasoning: '', bridgeDictation: false, notificationOverride: false, notificationExcludedApps: [], refinementProvider: 't3', allowTools: false, deviceId: 'faceclaw-t3' };
 const key = 't3.config';
 function secrets(): any { return com.faceclaw.app.FaceclawT3Secrets; }
 export function getT3Config(): T3Config {

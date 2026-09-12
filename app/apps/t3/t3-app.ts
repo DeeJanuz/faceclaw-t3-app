@@ -24,13 +24,13 @@ import type { T3Alert } from './workspace';
 
 export const T3_WINDOW_ID = 't3';
 export const T3_SURFACE_ID = 'window:t3';
-type Screen = 'dashboard' | 'phone-settings' | 'projects' | 'sessions' | 'reader' | 'actions' | 'new-project' | 'new-model' | 'new-reasoning' | 'new-summary' | 'compose' | 'draft' | 'inbox' | 'notification' | 'questions' | 'question-text' | 'choices' | 'plan-review' | 'session-reasoning' | 'proposed-plan' | 'plan-approve';
+type Screen = 'dashboard' | 'phone-settings' | 'projects' | 'sessions' | 'reader' | 'actions' | 'new-project' | 'new-model' | 'new-reasoning' | 'new-summary' | 'compose' | 'draft' | 'inbox' | 'notification' | 'questions' | 'question-text' | 'choices' | 'plan-review' | 'session-reasoning' | 'session-model' | 'proposed-plan' | 'plan-approve';
 type Navigation = { screen: Screen; selected: string; scroll: number; projectId: string; threadId: string };
 type Row = { id: string; title: string; detail?: string; disabled?: boolean; section?: boolean; action: () => void | Promise<void> };
 let activeLayer: T3Layer | null = null;
 
 export function openT3Thread(threadId: string, returnWindowId?: string): void { activeLayer?.openThread(threadId, returnWindowId, true); }
-export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question-text", "choices", "plan-review", "proposed-plan", "plan-approve", "session-reasoning"].includes(activeLayer.screen)); }
+export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question-text", "choices", "plan-review", "proposed-plan", "plan-approve", "session-reasoning", "session-model"].includes(activeLayer.screen)); }
 export function showT3AlertInCurrentConversation(alert: T3Alert): boolean { return activeLayer?.showAlertInCurrentConversation(alert) ?? false; }
 export function openT3Inbox(): void { activeLayer?.go('inbox'); }
 export function setT3NotificationOrigin(rect: CardRect): void { activeLayer?.setNotificationOrigin(rect); }
@@ -228,7 +228,7 @@ export class T3Layer implements Layer {
       // Replies, steering and plan edits are internal to this thread visit.
       // Back leaves the visit instead of restoring a reader's earlier page.
       const internal: Screen[] = ['reader', 'actions', 'compose', 'draft', 'questions', 'question-text', 'choices',
-        'plan-review', 'proposed-plan', 'plan-approve', 'session-reasoning', 'new-project', 'new-model', 'new-reasoning', 'new-summary'];
+        'plan-review', 'proposed-plan', 'plan-approve', 'session-reasoning', 'session-model', 'new-project', 'new-model', 'new-reasoning', 'new-summary'];
       while (this.history.length && internal.includes(this.history[this.history.length - 1].screen)) this.history.pop();
     }
     const previous = this.history.pop();
@@ -291,6 +291,13 @@ export class T3Layer implements Layer {
 
   private sessionDraft(): boolean { return this.screen === 'draft' && !this.creation && !this.dictatingAnswer && !this.draftLocked; }
 
+  private openModel(): void {
+    if (!this.canChangeSession() || !state.transcript?.session.modelSelection) return;
+    this.go('session-model');
+    this.selected = `${state.transcript.session.modelSelection.instanceId}/${state.transcript.session.modelSelection.model}`;
+    void state.refresh();
+  }
+
   private openReasoning(): void {
     if (!this.canChangeSession() || !state.transcript?.session.modelSelection) return;
     this.reasoningModel = { ...state.transcript.session.modelSelection };
@@ -309,7 +316,7 @@ export class T3Layer implements Layer {
 
   private title(): string {
     const titles: Record<Screen, string> = {
-      'session-reasoning': 'Session reasoning', 'proposed-plan': 'Proposed plan', 'plan-approve': 'Approve and implement?',
+      'session-reasoning': 'Session reasoning', 'session-model': 'Session model', 'proposed-plan': 'Proposed plan', 'plan-approve': 'Approve and implement?',
       dashboard: 'T3 Assistant', 'phone-settings': 'Settings', projects: 'Projects', sessions: 'Sessions', reader: state.transcript?.session.title || 'Conversation',
       actions: 'Conversation', 'new-project': 'New conversation', 'new-model': 'Choose a model', 'new-reasoning': 'Reasoning', 'new-summary': 'New session',
       compose: this.creation ? 'New message' : 'Reply', draft: 'Review draft', inbox: 'Notifications', notification: 'Notification', questions: 'Plan questions', 'question-text': this.question()?.header || 'Question', choices: this.question()?.header || 'Choose an answer', 'plan-review': 'Review answers',
@@ -326,6 +333,28 @@ export class T3Layer implements Layer {
         disabled: state.busy, action: async () => {
           if (model && await state.setReasoning(threadId, choice.id, model) && this.screen === 'session-reasoning') this.back();
         } }));
+    }
+    if (this.screen === 'session-model') {
+      const session = state.transcript?.session;
+      const expected = session?.modelSelection;
+      return state.models.map(model => ({
+        id: `${model.instanceId}/${model.model}`,
+        title: `${model.name}${model.instanceId === expected?.instanceId && model.model === expected.model ? ' (current)' : ''}`,
+        detail: model.providerName,
+        action: async () => {
+          if (!session || !expected || !this.canChangeSession()) return;
+          const sameModel = model.instanceId === expected.instanceId && model.model === expected.model;
+          const reasoningId = sameModel
+            ? expected.reasoningId
+            : model.reasoningChoices.find(choice => choice.isDefault)?.id;
+          const selection: NewSessionModelSelection = {
+            instanceId: model.instanceId,
+            model: model.model,
+            ...(reasoningId ? { reasoningId } : {}),
+          };
+          if (await state.setModel(session.id, selection, expected) && this.screen === 'session-model') this.back();
+        },
+      }));
     }
     if (this.screen === 'dashboard') return [
       { id: 'inbox', title: 'Notifications', action: () => this.go('inbox') },
@@ -703,11 +732,14 @@ export class T3Layer implements Layer {
         } },
       ];
     }
-    if (['session-reasoning', 'plan-approve'].includes(this.screen)) return [];
+    if (['session-reasoning', 'session-model', 'plan-approve'].includes(this.screen)) return [];
     if (this.sessionDraft() && this.canChangeSession()) return [
       { label: 'Use plan mode', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); if (this.sessionDraft() && this.canChangeSession()) { this.draftMode = 'plan'; this.repaint(); } } },
       { label: 'Use normal mode', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); if (this.sessionDraft() && this.canChangeSession()) { this.draftMode = 'default'; this.repaint(); } } },
-      ...(state.transcript?.session.modelSelection ? [{ label: 'Change reasoning', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openReasoning(); } }] : []),
+      ...(state.transcript?.session.modelSelection ? [
+        { label: 'Change model', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openModel(); } },
+        { label: 'Change reasoning', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openReasoning(); } },
+      ] : []),
     ];
     if (this.screen === 'notification') {
       const alert = this.currentNotification();
@@ -732,7 +764,10 @@ export class T3Layer implements Layer {
     const canSettle = selectedSession && !['running', 'starting'].includes(selectedSession.status) && !state.plans.has(selectedSession.id);
     return [
       ...(this.screen === 'reader' && state.transcript?.pendingProposedPlan ? [{ label: 'Review plan', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openProposedPlan(); } }] : []),
-      ...(this.screen === 'reader' && this.canChangeSession() && state.transcript?.session.modelSelection ? [{ label: 'Change reasoning', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openReasoning(); } }] : []),
+      ...(this.screen === 'reader' && this.canChangeSession() && state.transcript?.session.modelSelection ? [
+        { label: 'Change model', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openModel(); } },
+        { label: 'Change reasoning', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openReasoning(); } },
+      ] : []),
       { label: 'Display comparison', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); ctx.stack.push(new RenderingComparisonLayer()); } },
       { label: 'Ask assistant', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); const homeScreen = this.screen; this.screen = 'dashboard'; const assistant = this.rows().find(row => row.id === 'assistant'); this.screen = homeScreen; void assistant?.action(); } },
       ...(canSettle ? [{ label: 'Settle session', onSelect: async (ctx: LayerContext) => { ctx.stack.pop(); await state.settle(selectedSession.id); } }] : []),

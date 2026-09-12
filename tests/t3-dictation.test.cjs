@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function setup({ stop, start, origin, raster = false, firstPaint = true, paintDashboard, replay = '', viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
+function setup({ stop, start, refine, origin, raster = false, firstPaint = true, paintDashboard, replay = '', viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
   const module = { exports: {} };
   const listeners = { transcript: null, status: null };
   const timers = new Map(); let nextTimer = 0; let now = 0;
@@ -66,6 +66,7 @@ function setup({ stop, start, origin, raster = false, firstPaint = true, paintDa
       startVoiceCapture: (endpointing, transcription) => { result.starts++; result.transcription = transcription; return start?.(listeners); },
       stopVoiceCapture: () => { result.stops++; return stop?.(listeners); },
     },
+    refine,
     dismiss: () => layer.onRemoved(), onClosed: () => result.closed++,
     onDraft: text => result.drafts.push(text), onCancelled: () => result.cancellations++,
   });
@@ -74,14 +75,31 @@ function setup({ stop, start, origin, raster = false, firstPaint = true, paintDa
   return { layer, result, listeners, timers, Image, font, cardRect: motion.exports.cardRect, advance: value => { now = value; } };
 }
 
+test('reviewed draft can capture a follow-up and route it through Luna refinement before send', () => {
+  let refinement;
+  const { layer, result, listeners } = setup({ refine: options => { refinement = options; return { cancel() {} }; } });
+  listeners.transcript({ text: 'Original draft', isFinal: false });
+  layer.endCapture(); listeners.transcript({ text: 'Original draft', isFinal: true });
+  layer.handleInput({ type: 'swipe-down' });
+  listeners.transcript({ text: 'Make it concise', isFinal: false });
+  layer.handleInput({ type: 'click' });
+  listeners.transcript({ text: 'Make it concise', isFinal: true });
+  assert.equal(refinement.original, 'Original draft');
+  assert.equal(refinement.followup, 'Make it concise');
+  refinement.onDone('Concise draft');
+  layer.handleInput({ type: 'click' });
+  assert.deepEqual(result.drafts, ['Concise draft']);
+});
+
 test('finish tap waits for the actual final and hands off a local draft once', () => {
   const { layer, result, listeners, timers } = setup();
-  assert.equal(result.transcription, 't3');
+  assert.equal(result.transcription, undefined);
   listeners.transcript({ text: 'partial', isFinal: false });
   layer.handleInput({ type: 'click' });
   assert.equal(result.stops, 1); assert.deepEqual(result.drafts, []);
   assert.equal([...timers.values()].some(timer => timer.delay >= 90000), true);
   listeners.transcript({ text: 'Final replacement', isFinal: true });
+  layer.handleInput({ type: 'click' });
   assert.deepEqual(result.drafts, ['Final replacement']);
   assert.equal(result.cancellations, 0); assert.equal(result.closed, 1);
   assert.equal(listeners.transcript, null); assert.equal(timers.size, 0);
@@ -91,13 +109,13 @@ test('optional on-device backup warning does not terminate paired bridge dictati
   const { layer, result, listeners } = setup();
   listeners.status({ status: 'Using cloud transcription without on-device backup.' });
   assert.equal(layer.phase, 'capturing'); assert.equal(result.stops, 0);
-  layer.endCapture(); listeners.transcript({ text: 'Bridge Whisper result', isFinal: true });
+  layer.endCapture(); listeners.transcript({ text: 'Bridge Whisper result', isFinal: true }); layer.handleInput({ type: 'click' });
   assert.deepEqual(result.drafts, ['Bridge Whisper result']);
 });
 
 test('stop may synchronously emit final without losing it or stopping twice', () => {
   const { layer, result } = setup({ stop: listeners => listeners.transcript?.({ text: 'Synchronous final', isFinal: true }) });
-  layer.endCapture(); layer.endCapture();
+  layer.endCapture(); layer.handleInput({ type: 'click' }); layer.endCapture();
   assert.deepEqual(result.drafts, ['Synchronous final']); assert.equal(result.stops, 1);
 });
 
@@ -212,7 +230,7 @@ test('dictation reflows display-only line breaks and retains its exact authorita
   const painted = layer.paint({}, () => assert.fail('underlying private content stays hidden'));
   assert.ok(painted.labels.includes('This is a provider line followed by another provider line.'));
   layer.paint({}, () => assert.fail()); assert.equal(result.pageBoxes.length, 1, 'unchanged timer repaint reuses layout');
-  layer.endCapture(); listeners.transcript({ text: raw, isFinal: true });
+  layer.endCapture(); listeners.transcript({ text: raw, isFinal: true }); layer.handleInput({ type: 'click' });
   assert.deepEqual(result.drafts, [raw]); assert.equal(layer.cachedLayout, null); assert.equal(layer.text, '');
 });
 

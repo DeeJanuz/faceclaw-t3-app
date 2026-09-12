@@ -15,9 +15,17 @@ export function sendT3Assistant(text: string, callbacks: AssistantTurnCallbacks,
   let cancelled = false;
   let fallback: AssistantTurnHandle | null = null;
   let poll: ReturnType<typeof setTimeout> | null = null;
+  let activeThreadId: string | null = null;
   let lastText = '';
   const turnToken = {};
-  const finish = () => activeTurns.delete(turnToken);
+  const finish = () => {
+    activeTurns.delete(turnToken);
+    if (activeThreadId) {
+      const threadId = activeThreadId;
+      activeThreadId = null;
+      void t3Client.rpc('transcript.unsubscribe', { threadId }).catch(() => undefined);
+    }
+  };
   const config = getT3Config();
   const deadline = Date.now() + 10 * 60 * 1000;
   const run = async () => {
@@ -32,6 +40,7 @@ export function sendT3Assistant(text: string, callbacks: AssistantTurnCallbacks,
         projectId: config.assistantProjectId, text,
         modelSelection: { instanceId: config.assistantProvider, model: config.assistantModel, ...(config.assistantReasoning ? { reasoningId: config.assistantReasoning } : {}) },
       });
+      activeThreadId = result.threadId;
       if (cancelled) return;
       if (typeof result?.threadId !== 'string') throw new Error('T3_INVALID_RESPONSE');
       const read = async () => {

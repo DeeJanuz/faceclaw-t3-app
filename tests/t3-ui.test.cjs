@@ -178,7 +178,7 @@ test('a conversation tap starts reply dictation without an action-menu step', as
   const { layer, state } = setup(); await state.refresh(); await state.openThread('voice');
   layer.screen = 'reader'; await layer.handleInput({ type: 'click' });
   assert.equal(layer.screen, 'draft');
-  assert.deepEqual(Array.from(layer.menuItems(), item => item.label), ['Use plan mode', 'Use normal mode', 'Change reasoning']);
+  assert.deepEqual(Array.from(layer.menuItems(), item => item.label), ['Use plan mode', 'Use normal mode', 'Change model', 'Change reasoning']);
 });
 test('draft and transcript scrolling advances one page and clamps at the boundaries', async () => {
   const { layer } = setup();

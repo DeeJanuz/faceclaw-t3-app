@@ -1,6 +1,6 @@
 # Extraction record
 
-Source: `../faceclaw-t3` checkpoint `8734017`, tagged `checkpoint/pre-t3-apk-extraction-20260907`. Computer bridge checkpoint `ce5dc8e`; general host platform checkpoint `eb4c264`. Root rollback manifest: `../output/t3-apk-extraction/rollback-manifest.json`.
+Source: `../archive/faceclaw-t3` (archived 2026-09-10; formerly `../faceclaw-t3`) checkpoint `8734017`, tagged `checkpoint/pre-t3-apk-extraction-20260907`. Computer bridge checkpoint `ce5dc8e`; general host platform checkpoint `eb4c264`. Root rollback manifest: `../output/t3-apk-extraction/rollback-manifest.json`.
 
 Retained source includes `apps/t3` workspace, protocols, demo data, hub view model, T3Layer, dashboard, clock, activity and card renderers; `t3` pairing/client/config/security/drafts/assistant/STT/refinement; Java Keystore/pairing/WebSocket/HTTP/settings/font/icon/phone-notification helpers; graphics/fonts; T3 dictation and timed notification layers; launcher list/folders and reusable menu primitives. The launcher window's host registration tail was removed; its renderer and navigation remain APK-owned.
 

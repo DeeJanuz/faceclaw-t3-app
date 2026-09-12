@@ -6,6 +6,7 @@ export interface T3Event { v: 1; type: 'event'; event: string; payload: any }
 export interface T3State { phase: 'idle' | 'connecting' | 'connected' | 'failed'; status: string; connected: boolean }
 export class T3Error extends Error { constructor(public readonly code: string, public readonly dispatched = false) { super(code); } }
 export class T3Client {
+  private static readonly MAX_PENDING_REQUESTS = 64;
   private config: T3Config | null = null;
   private ws: any = null;
   private listener: any = null;
@@ -58,6 +59,7 @@ export class T3Client {
   }
   rpc<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (!this.connected || !this.ws) return Promise.reject(new T3Error('T3_NOT_CONNECTED'));
+    if (this.pending.size >= T3Client.MAX_PENDING_REQUESTS) return Promise.reject(new T3Error('T3_BUSY'));
     const id = `fc-${this.generation}-${++this.sequence}`;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new T3Error('T3_REQUEST_TIMEOUT', true)); }, method === 'voice.finish' || method === 'refinement.rewrite' ? 90000 : 45000);

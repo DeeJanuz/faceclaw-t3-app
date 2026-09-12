@@ -11,6 +11,7 @@ import {weatherBridge} from './native/weather';
 import {timeFormatSetting} from './ui/dashboard-settings';
 import {T3DictationLayer} from './ui/shell/t3-dictation';
 import {voiceControlBridge} from './native/voice-control';
+import {refineT3Dictation} from './t3/refinement';
 import {setAppViewport} from './ui/shell/geometry';
 import {shell,localShellEvents,setNotificationWakeOrigin} from './ui/shell/shell';
 import {hostState,nativeService,onHostEvent,onHostState,sendHostAction,requestHostAction} from './extensions/host';
@@ -83,7 +84,7 @@ export function initializeAppRuntime():void{
    const home=dashboardTargets(width,height).find(target=>target.id==='assistant')!;
    const fromDashboard=data.origin&&['x','y','width','height'].every(key=>data.origin[key]===home[key as keyof typeof home]);
    const offBackdrop=onHostState(()=>layer.invalidateBackdrop());
-   layer=new T3DictationLayer({origin:data.origin,paintDashboard:fromDashboard?(w,h)=>paintT3Dashboard(w,h,'assistant',visibleT3Alerts().length,'',weatherBridge.snapshot(),timeFormatSetting.get(),new Date(),shell.getBatteryLevels()):undefined,actions:{...noopLayerActions,requestRender:()=>current.requestRender(),startVoiceCapture:()=>voiceControlBridge.startCapture(),stopVoiceCapture:()=>voiceControlBridge.finishCapture()},dismiss:()=>{current.stack.pop();current.requestRender();},onClosed:()=>{offBackdrop();voiceControlBridge.cancelCapture();current.requestRender();},onDraft:data.onDraft,onCancelled:data.onCancelled});
+   layer=new T3DictationLayer({origin:data.origin,paintDashboard:fromDashboard?(w,h)=>paintT3Dashboard(w,h,'assistant',visibleT3Alerts().length,'',weatherBridge.snapshot(),timeFormatSetting.get(),new Date(),shell.getBatteryLevels()):undefined,actions:{...noopLayerActions,requestRender:()=>current.requestRender(),startVoiceCapture:()=>voiceControlBridge.startCapture(),stopVoiceCapture:()=>voiceControlBridge.finishCapture()},refine:refineT3Dictation,dismiss:()=>{current.stack.pop();current.requestRender();},onClosed:()=>{offBackdrop();voiceControlBridge.cancelCapture();current.requestRender();},onDraft:data.onDraft,onCancelled:data.onCancelled});
    current.stack.push(layer);layer.startCapture();current.requestRender();
   }
   if(type==='preview'||type==='preview-update'){
@@ -94,12 +95,12 @@ export function initializeAppRuntime():void{
   }
   if(type==='preview-close'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;renderSurface('ui.notifications');}
  });
- onHostState(()=>{getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
+ onHostState(()=>{if(!hostVisible)return;getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
  onHostEvent((type,data)=>{
   if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
   if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
   if(type==='close'||type==='disconnected'){hostVisible=false;voiceControlBridge.cancelCapture();if(type==='disconnected'){surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;}}
-  if(type==='render'||type==='shared-style')getApp().requestRender();
+ if((type==='render'||type==='shared-style')&&hostVisible)getApp().requestRender();
   if(type==='input'){if(data.type==='pointer-click'&&Number.isInteger(data.x)&&Number.isInteger(data.y)&&data.x>=0&&data.y>=0&&data.x<width&&data.y<height)void getApp().stack.hitTest(data.x,data.y).then(()=>getApp().requestRender());else void deliverInput(data);}
   if(type==='app-menu')void deliverInput('long-press');
   if(type==='extension-surface'){

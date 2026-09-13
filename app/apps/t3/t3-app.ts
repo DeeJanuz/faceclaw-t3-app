@@ -98,6 +98,10 @@ export class T3Layer implements Layer {
     else { this.motion.content = undefined; this.motion.heading = undefined; this.motion.backdrop = undefined; }
   }
   backdropChanged(): void { if (this.motion) this.motion.backdrop = undefined; }
+  hostStateChanged(change?: 'ambient' | 'content'): void {
+    if (change === 'ambient') this.backdropChanged();
+    else this.contentChanged();
+  }
   onRemoved(): void { this.motion?.model.cancel(); this.motion = null; }
   setNotificationOrigin(rect: CardRect): void { this.notificationOrigin = { ...rect }; }
   private paintMotionBackdrop(image: GrayImage, selected: string, dim: boolean): void {
@@ -825,7 +829,7 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
   activeLayer = layer;
   const unsubscribe = state.onChange(() => { layer.contentChanged(); repaint(); });
   const offWeather = weatherBridge.onStateChange(() => { layer.backdropChanged(); repaint(); });
-  const offHostState = onHostState(() => layer.contentChanged());
+  const offHostState = onHostState(change => layer.hostStateChanged(change));
   const offHostEvent = onHostEvent((type,data) => {
     if (type==='extensions' && (!Array.isArray(data.changedFeatures) || data.changedFeatures.some((feature:string)=>['ui.typography','ui.navigation','ui.window-layout','ui.notifications'].includes(feature)))) layer.onRemoved();
     if (['visibility', 'close', 'disconnected', 'destroyed', 'extension-surface', 'shared-style'].includes(type)) layer.onRemoved();

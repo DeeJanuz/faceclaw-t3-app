@@ -1,6 +1,19 @@
 const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const ts=require('typescript');
 function load(path,imports={},globals={}){const module={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module,exports:module.exports,setInterval:()=>1,clearInterval:()=>{},require:name=>{assert.ok(name in imports,`unmocked ${name}`);return imports[name];},...globals});return module.exports;}
 const snapshots=load('app/extensions/notification-snapshot.ts');
+test('host refreshes coalesce by value and remain distinct from private content invalidation',()=>{
+ const b=boundary();b.configure(b.feature('ui.notifications'));
+ const changes=[];b.host.onHostState(change=>changes.push(change));
+ const state={battery:{headset:72,headsetCharging:false}};
+ b.host.receiveHostEvent(b.service,'host-state',state);
+ b.host.receiveHostEvent(b.service,'host-state',JSON.parse(JSON.stringify(state)));
+ b.event('ui.notifications',{event:'host-state',...state});
+ assert.deepEqual(changes,['ambient']);
+ b.event('ui.notifications',{event:'host-state',battery:{headset:71,headsetCharging:false}});
+ assert.deepEqual(changes,['ambient','ambient']);
+ for(const part of fragments())b.event('ui.notifications',{event:'notification-snapshot-fragment',...part});
+ assert.equal(changes.length,3);assert.notEqual(changes.at(-1),'ambient');
+});
 test('messaging heartbeat binds pairing identity and revokes on bridge loss without exposing the bearer',()=>{
  let stateChanged,configChanged,heartbeat,connected=true,cleared=false;
  const messages=[];let config={enabled:true,allowTools:true,assistantProjectId:'project',pairingFingerprint:'a'.repeat(64),token:'PRIVATE-BEARER'};

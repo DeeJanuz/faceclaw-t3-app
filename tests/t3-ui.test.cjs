@@ -899,6 +899,19 @@ test('a confirmed reply closes even if Android already removed its notification'
 });
 
 
+test('ambient host refresh preserves closing progress while content invalidation still cancels', async () => {
+  const clock={now:1000},h=setup(clock,true),ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
+  await h.state.refresh();h.layer.selected='sessions';h.layer.go('sessions');h.layer.paint(ctx);
+  clock.now=1400;h.layer.paint(ctx);h.layer.back();h.layer.paint(ctx);
+  const motion=h.layer.motion,started=motion.model.started;
+  clock.now=1500;h.layer.hostStateChanged('ambient');h.layer.paint(ctx);
+  assert.equal(h.layer.motion,motion);assert.equal(motion.model.started,started);
+  assert.equal(motion.content,undefined,'refresh must not revive outgoing body pixels');
+  clock.now=1600;h.layer.hostStateChanged('ambient');h.layer.paint(ctx);
+  assert.equal(h.layer.motion,motion);
+  h.layer.hostStateChanged('content');assert.equal(h.layer.motion,null,'privacy-sensitive invalidation remains immediate');
+});
+
 test('Sessions clears all body pixels before collapse and Back reverses from the last drawn rectangle', async () => {
   const clock = { now: 1000 }, h = setup(clock, true);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };

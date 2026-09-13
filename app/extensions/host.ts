@@ -19,10 +19,26 @@ function ownRequestKey(feature:string,id:string):string{return `${feature}:${id}
 let sequence=0;
 const snapshotAssembler=new NotificationSnapshotAssembler();
 const events=new Set<(type:string,data:any)=>void>();
-const stateListeners=new Set<()=>void>();
+export type HostStateChange = 'ambient' | 'content';
+const stateListeners=new Set<(change?:HostStateChange)=>void>();
 const pending=new Map<string,{feature:string;generation:number;resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
 export function onHostEvent(listener:(type:string,data:any)=>void):()=>void {events.add(listener);return ()=>events.delete(listener);}
-export function onHostState(listener:()=>void):()=>void {stateListeners.add(listener);return ()=>stateListeners.delete(listener);}
+export function onHostState(listener:(change?:HostStateChange)=>void):()=>void {stateListeners.add(listener);return ()=>stateListeners.delete(listener);}
+function applyAmbientState(value:any,includeWindows=false,includeScreen=false):void {
+ const next:Record<string,unknown>={};
+ if(Array.isArray(value.notificationApps))next.notificationApps=value.notificationApps.slice(0,4096);
+ if(value.battery!=null)next.battery=value.battery;
+ if(value.weather!=null)next.weather=value.weather;
+ if(includeScreen&&typeof value.screenOn==='boolean')next.screenOn=value.screenOn;
+ if(includeWindows){
+  if(Array.isArray(value.windows))next.windows=value.windows.slice(0,256);
+  if(Array.isArray(value.apps))next.apps=value.apps.slice(0,256);
+  if(typeof value.focusedWindowId==='string')next.focusedWindowId=value.focusedWindowId;
+ }
+ let changed=false;
+ for(const [key,item] of Object.entries(next))if(JSON.stringify((hostState as any)[key])!==JSON.stringify(item)){(hostState as any)[key]=item;changed=true;}
+ if(changed)for(const listener of stateListeners)listener('ambient');
+}
 export function nativeService():any{return service;}
 export function effectiveFeature(feature:string):FeatureState|undefined{return featureStates.find(item=>item.feature===feature);}
 export function ownsFeature(feature:string):boolean {const state=effectiveFeature(feature);return Boolean(service && state?.available && state.component.startsWith('com.faceclaw.t3/'));}
@@ -38,7 +54,7 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
  if(type==='own-notification-action-result'){const item=ownPending.get(data.callId);if(item){ownPending.delete(data.callId);clearTimeout(item.timer);data.ok===true?item.resolve(data):item.reject(new Error('HOST_ACTION_FAILED'));}}
 
  if(type==='disconnected'||type==='destroyed') {ownVisible=false;clearOwnNotifications();clearPending();ownRequests.clear();ownCaptureId="";snapshotAssembler.reset();featureStates=[];hostState.notificationApps=[];hostState.notifications=[];hostState.tools=[];service=null;for(const listener of stateListeners)listener();}
- if(type==='host-state'){if(Array.isArray(data.notificationApps))hostState.notificationApps=data.notificationApps.slice(0,4096);hostState.battery=data.battery??hostState.battery;hostState.weather=data.weather??hostState.weather;for(const listener of stateListeners)listener();}
+ if(type==='host-state')applyAmbientState(data);
  if(type==='extensions') {
   const next:FeatureState[]=Array.isArray(data.features)?data.features:[];
   const names=new Set([...featureStates,...next].map(item=>item.feature));
@@ -57,7 +73,7 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
   if((!state || state.generation!==data.generation || !ownsFeature(data.feature))&&ownRequests.get(ownKey)!==data.generation)return;
   if(data.feature==='ui.notifications' && data.type==='event' && data.data?.event==='notification-snapshot-fragment') {const notifications=snapshotAssembler.accept(data.data);if(notifications){hostState.notifications=notifications;hostState.notificationApps=snapshotAssembler.notificationApps;for(const listener of stateListeners)listener();}}
   if(data.feature==='device-tools' && data.type==='event' && data.data?.event==='tool-catalog') {hostState.tools=Array.isArray(data.data.tools)?data.data.tools:[];for(const listener of stateListeners)listener();}
-  if(data.type==='event' && data.data?.event==='host-state') {const value=data.data;if(Array.isArray(value.notificationApps))hostState.notificationApps=value.notificationApps.slice(0,4096);hostState.battery=value.battery??hostState.battery;hostState.weather=value.weather??hostState.weather;if(typeof value.screenOn==='boolean')hostState.screenOn=value.screenOn;if(['ui.launcher','ui.app-menu','ui.notifications'].includes(data.feature)){if(Array.isArray(value.windows))hostState.windows=value.windows.slice(0,256);if(Array.isArray(value.apps))(hostState as any).apps=value.apps.slice(0,256);if(typeof value.focusedWindowId==='string')hostState.focusedWindowId=value.focusedWindowId;}for(const listener of stateListeners)listener();}
+  if(data.type==='event' && data.data?.event==='host-state')applyAmbientState(data.data,['ui.launcher','ui.app-menu','ui.notifications'].includes(data.feature),true);
   if(data.type==='event' && ['action-result','tool-result'].includes(data.data?.event)) {
    const value=data.data;const item=pending.get(value.callId);
    if(item && item.feature===data.feature && item.generation===data.generation){pending.delete(value.callId);clearTimeout(item.timer);(value.event==='tool-result'||value.ok||['sent','draft-saved','unknown','rejected'].includes(value.status))?item.resolve(value.result??value):item.reject(Object.assign(new Error(typeof value.error==='string'?value.error:'HOST_ACTION_FAILED'),{code:'HOST_ACTION_REJECTED'}));}

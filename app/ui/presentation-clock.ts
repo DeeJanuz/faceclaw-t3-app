@@ -7,5 +7,7 @@ export function setPresentationTime(value: unknown): void {
 }
 
 export function presentationNow(): number {
-  return targetPresentationMs ?? Date.now();
+  // Input can start a new motion long after the last render credit. Never
+  // initialize it in the past and then jump to completion on the next credit.
+  return Math.max(targetPresentationMs ?? 0, Date.now());
 }

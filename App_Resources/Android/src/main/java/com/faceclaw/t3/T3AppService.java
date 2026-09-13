@@ -23,7 +23,10 @@ public final class T3AppService extends FaceclawAppService {
   deliver("connected",new JSONObject());
  }
  @Override protected void onHostSnapshot(HostSnapshot snapshot) { deliver("host-snapshot",snapshot.toJson()); }
- @Override protected void onInput(RenderSurface surface,FaceclawInputEvent event) { deliver("input",event.extras); }
+ @Override protected void onInput(RenderSurface surface,FaceclawInputEvent event) {
+  if(surface.id().startsWith("extension:"))deliver("extension-event",Protocol.object("feature",surface.id().substring(10),"generation",surface.generation(),"type","input","data",Protocol.object("input",event.extras)));
+  else deliver("input",event.extras);
+ }
  @Override protected void onControlEvent(ControlEvent event) { deliver(event.type,event.data); }
  @Override protected void onSessionLost(DisconnectInfo info) {
   deliver("disconnected",Protocol.object("category",info.reason.name(),"recoverable",info.recoverable,"detail",info.detail));

@@ -30,6 +30,7 @@ const frames=new Set<(frame:GrayImage)=>void>();
 const surfaces=new Map<string,{width:number;height:number;visible:boolean;generation:number;stack?:LayerStack}>();
 let preview:any=null;let previewLayer:TimedNotificationLayer|null=null;let notificationMode:'preview'|'reader'|'inbox'|undefined;
 let lastProtected:boolean|undefined,previewTimer:ReturnType<typeof setTimeout>|null=null,previewPending:GrayImage|null=null,lastPreviewAt=0;
+const rejectedSceneSurfaces=new Set<string>();
 export function previewBitmap(image:GrayImage):any {
  image.bakeDeferredDrawsInPlace();
  const pixels=image.pixels;
@@ -45,6 +46,7 @@ function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=fals
  return Boolean(service.submitGrayBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame));
 }
 function submitRetained(service:any,source:GrayImage,feature=''):boolean{
+ if(rejectedSceneSurfaces.has(feature||'window'))return false;
  const scene=encodeSdkRetainedScene(service,source);if(!scene)return false;const draws=scene.draws;
  return Boolean(service.submitRetainedScene(scene.patch.buffer,scene.patch.byteOffset,scene.patch.byteLength,scene.patchX,scene.patchY,scene.patchWidth,scene.patchHeight,source.width,source.height,feature,draws?.buffer??null,draws?.byteOffset??0,draws?.byteLength??0));
 }
@@ -84,11 +86,11 @@ function renderSurface(feature:string):void{
    const stack=new LayerStack(previewLayer,noopLayerActions,{width:surface.width,height:surface.height});
    setAppViewport(surface.width,surface.height);
    const image=previewLayer.paint({stack,actions:noopLayerActions},()=>new GrayImage(surface.width,surface.height,0));
-   submitGray(nativeService(),image,feature);
+   submitGray(nativeService(),image,feature,previewLayer.needsAnimation());
   }
   else if(notificationMode){notificationSurface=true;getApp().resize(surface.width,surface.height);setAppViewport(surface.width,surface.height);getApp().requestRender();}return;
  }
- if(surface.stack){const frame=paintStack(surface.stack,surface.width,surface.height);submitGray(nativeService(),frame.image,feature,false,frame.draws);}
+ if(surface.stack){const frame=paintStack(surface.stack,surface.width,surface.height);submitGray(nativeService(),frame.image,feature,surface.stack.needsAnimation(),frame.draws);}
 }
 export function initializeAppRuntime():void{
  getApp();
@@ -112,8 +114,13 @@ export function initializeAppRuntime():void{
   }
   if(type==='preview-close'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;renderSurface('ui.notifications');}
  });
- onHostState(()=>{if(!hostVisible)return;getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
+ onHostState(()=>{if(hostVisible)getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
  onHostEvent((type,data)=>{
+  if(type==='connected')rejectedSceneSurfaces.clear();
+  if(type==='scene-result'&&data.accepted===false){
+   const feature=String(data.surfaceId??'window').replace(/^extension:/,'');rejectedSceneSurfaces.add(feature);
+   if(feature==='window')getApp().requestRender();else renderSurface(feature);
+  }
   if(type==='host-snapshot'){
    width=Number(data.windowWidth)||width;height=Number(data.windowHeight)||height;hostVisible=Boolean(data.windowOpen&&data.windowVisible&&data.screenOn!==false);
    surfaces.clear();if(Array.isArray(data.surfaces))for(const item of data.surfaces){if(typeof item?.id!=='string'||!item.id.startsWith('extension:'))continue;surfaces.set(item.id.slice(10),{width:Number(item.width),height:Number(item.height),visible:Boolean(item.visible&&item.screenOn!==false),generation:Number(item.generation)});}
@@ -122,8 +129,12 @@ export function initializeAppRuntime():void{
   if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
   if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
   if(type==='close'||type==='disconnected'){hostVisible=false;voiceControlBridge.cancelCapture();if(type==='disconnected'){lastProtected=undefined;surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;}}
-  if(type==='render')setPresentationTime(data.targetPresentationTimeMs);
-  if((type==='render'||type==='shared-style')&&hostVisible)getApp().requestRender();
+  if(type==='render'){
+   setPresentationTime(data.targetPresentationTimeMs);
+   if(typeof data.surfaceId==='string'&&data.surfaceId.startsWith('extension:'))renderSurface(data.surfaceId.slice(10));
+   else if(hostVisible)getApp().requestRender();
+  }
+  if(type==='shared-style'&&hostVisible)getApp().requestRender();
   if(type==='input'){if(data.type==='pointer-click'&&Number.isInteger(data.x)&&Number.isInteger(data.y)&&data.x>=0&&data.y>=0&&data.x<width&&data.y<height)void getApp().stack.hitTest(data.x,data.y).then(()=>getApp().requestRender());else void deliverInput(data);}
   if(type==='app-menu')void deliverInput('long-press');
   if(type==='extension-surface'){

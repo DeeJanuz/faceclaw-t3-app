@@ -37,7 +37,7 @@ export function previewBitmap(image:GrayImage):any {
  return com.faceclaw.t3.T3PreviewPixels.bitmapBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height);
 }
 function publishPreview(image:GrayImage):void{
- if(!phoneVisible)return;previewPending=image;const wait=Math.max(0,100-(Date.now()-lastPreviewAt));if(previewTimer!==null)return;
+ if(!phoneVisible)return;previewPending=image;const wait=Math.max(0,33-(Date.now()-lastPreviewAt));if(previewTimer!==null)return;
  previewTimer=setTimeout(()=>{previewTimer=null;const next=previewPending;previewPending=null;if(!next||!phoneVisible)return;lastPreviewAt=Date.now();lastFrame=next;for(const listener of frames)listener(next);},wait);
 }
 function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=false,retainedDraws:readonly DeferredDraw[]=image.draws):boolean{

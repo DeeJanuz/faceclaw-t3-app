@@ -3,7 +3,7 @@ import { paintActivityIndicator } from './activity-indicator';
 import { RenderingComparisonLayer } from "../developer/rendering-comparison";
 import { notificationCardRect, paintNotificationCard } from '../../ui/shell/notification-card';
 import { buildSessionRows, reflowDictationText, paginateMessageText, paginateText, paginateTranscriptWithLiveTurn, retainTranscriptPage, selectResponsePage, transcriptPageHeader, activeActivityMarker, extractActiveActivityLine, type TranscriptPage, type PageBox } from './hub-view-model';
-import { WindowMotion, cardRect, paintCardFace, paintCardContents, paintSelectionChevron, CARD_FRAME_MS, CARD_MOTION_MS, type CardRect } from './card-motion';
+import { WindowMotion, cardRect, paintCardFace, paintCardContents, paintSelectionChevron, CARD_MOTION_MS, type CardRect } from './card-motion';
 import { openT3Alert, dismissT3Alert, visibleT3Alerts, findT3Alert, getT3NotificationReply, openT3NotificationApp } from "./notifications-ui";
 import { Frame } from '@nativescript/core';
 import { paintT3Dashboard, dashboardTargets } from './dashboard';
@@ -14,6 +14,7 @@ import { getDefaultSmallFont } from '../../graphics/ui-fonts';
 import { truncateText, wrapText } from '../../graphics/textwrap';
 import { type Layer, type LayerContext } from '../../ui/layers';
 import { type InputEvent } from '../../ui/gestures';
+import { presentationNow } from '../../ui/presentation-clock';
 import { shell } from '../../ui/shell/shell';
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from '../../ui/shell/in-process-window';
 import { getT3Config } from '../../t3/config';
@@ -520,7 +521,7 @@ export class T3Layer implements Layer {
       const image = new GrayImage(width, height, 0);
       this.paintMotionBackdrop(image, motion.closing ? this.selected : this.returnFocus, !motion.closing);
       // Start after preparing the first lightweight frame, not before layout.
-      const frame = motion.model.sample(Date.now());
+      const frame = motion.model.sample(presentationNow());
       motion.started = motion.model.started;
       if (!frame || frame.done) this.motion = null;
       else {
@@ -608,7 +609,7 @@ export class T3Layer implements Layer {
       const step = cardLineStep(font);
       lines.forEach((line, index) => {
         if (activity?.line === index) paintActivityIndicator(image, font, x + 16, top + index * step,
-          textWidth, step, activity.label, Math.floor(Date.now() / 140));
+          textWidth, step, activity.label, Math.floor(presentationNow() / 140));
         else image.drawText(font, x + 16, top + index * step, line, CARD_TEXT_BRIGHTNESS);
       });
       if (this.screen === 'draft' && (this.draftLocked || state.error)) image.drawText(font, x + 16, height - font.lineHeight - 16, truncateText(font, state.error || 'SENDING TO T3 CODE', textWidth), 180);
@@ -829,14 +830,14 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
     if (type==='extensions' && (!Array.isArray(data.changedFeatures) || data.changedFeatures.some((feature:string)=>['ui.typography','ui.navigation','ui.window-layout','ui.notifications'].includes(feature)))) layer.onRemoved();
     if (['visibility', 'close', 'disconnected', 'destroyed', 'extension-surface', 'shared-style'].includes(type)) layer.onRemoved();
   });
-  const motionTimer = setInterval(() => { if (layer.needsAnimation() && shell.isWindowVisible(T3_WINDOW_ID)) app?.requestRender(); }, CARD_FRAME_MS);
   const clockTimer = setInterval(() => { if (layer.screen === 'dashboard' && shell.isWindowVisible(T3_WINDOW_ID)) repaint(); }, 15000);
   // The general host owns weather refresh and publishes scoped state changes.
   app = createInProcessWindow({
     appId: 't3', windowId: T3_WINDOW_ID, title: 'T3 Assistant', iconLetter: 'T3', icon: 'terminal', closeable: true, heightMode: 'medium',
     actions: options.actions, suppressSystemMenuFallback: true, claimsNotificationDismissGesture: () => layer.claimsNotificationDismissGesture(), baseLayer: layer, menuItems: () => layer.menuItems(), receiveTextInput: text => layer.receiveText(text),
+    retainedSceneEligible: () => layer.screen === 'dashboard' && !layer.needsAnimation(),
     submitFrame: options.submitFrame, setSurfaceVisible: options.setSurfaceVisible, removeSurface: options.removeSurface, reconfigureSurface: options.reconfigureSurface,
-    onClosed: () => { layer.onRemoved(); unsubscribe(); offWeather(); offHostState(); offHostEvent(); clearInterval(clockTimer); clearInterval(motionTimer); if (activeLayer === layer) activeLayer = null; options.onClosed(); },
+    onClosed: () => { layer.onRemoved(); unsubscribe(); offWeather(); offHostState(); offHostEvent(); clearInterval(clockTimer); if (activeLayer === layer) activeLayer = null; options.onClosed(); },
   });
   if (getT3Config().enabled && !state.demo) void connectT3();
   return app;

@@ -1,10 +1,11 @@
-import { WindowMotion, DURATION_MS, FRAME_INTERVAL_MS, type Rect, type MotionFrame } from '@faceclaw/motion';
+import { WindowMotion, DURATION_MS, type Rect, type MotionFrame } from '@faceclaw/motion';
 import { GrayImage } from '../../graphics/image';
 import { getDefaultSmallFont } from '../../graphics/ui-fonts';
 import { notificationCardRect, paintNotificationCard } from './notification-card';
 import type { Layer, LayerContext, PaintBelow } from '../layers';
 import type { InputEvent } from '../gestures';
 import { appViewportRect } from './geometry';
+import { presentationNow } from '../presentation-clock';
 
 /** A five-second arrival uses the same motion/content contract as app windows. */
 export class TimedNotificationLayer implements Layer {
@@ -24,7 +25,7 @@ export class TimedNotificationLayer implements Layer {
       this.repaint();
       // Also expire previews that were never painted or lost their render target.
       if ((Date.now() >= this.deadline && !this.motion) || Date.now() >= this.deadline + DURATION_MS) this.finishClose();
-    }, FRAME_INTERVAL_MS);
+    }, 1000);
   }
   currentRect(): Rect | undefined { return this.lastFrame ? { ...this.lastFrame.rect } : undefined; }
   update(title: string, text: string, restartWindow = false): void {
@@ -61,7 +62,7 @@ export class TimedNotificationLayer implements Layer {
     if (this.viewport && this.viewport !== key) { this.onRemoved(); this.expire(); return image; }
     this.viewport = key;
     if (!this.motion) this.motion = new WindowMotion({ ...target, y: -target.height }, target);
-    const frame = this.motion.sample(Date.now());
+    const frame = this.motion.sample(presentationNow());
     if (frame) this.lastFrame = frame;
     const current = this.lastFrame!;
     if (current.done && current.closing) { this.finishClose(); return image; }
@@ -75,6 +76,13 @@ export class TimedNotificationLayer implements Layer {
     if (this.removed) return;
     if (event.type === 'click') this.open();
     else if (event.type.startsWith('swipe-') || event.type.startsWith('scroll-') || event.type === 'double-click' || event.type === 'short-then-long-press') this.beginClose(this.dismiss);
+  }
+  needsAnimation(): boolean {
+    if (!this.motion || this.removed) return false;
+    const frame = this.motion.sample(presentationNow());
+    if (frame) this.lastFrame = frame;
+    if (frame?.done && frame.closing) { setTimeout(() => this.finishClose(), 0); return false; }
+    return !frame?.done;
   }
   onRemoved(): void {
     if (this.timer !== null) clearInterval(this.timer);

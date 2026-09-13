@@ -112,6 +112,8 @@ export interface Layer {
    * the shell then has no app destination to offer.
    */
   receiveTextInput?(text: string, ctx: LayerContext): void;
+  /** True only while another presentation-time-sampled frame is useful. */
+  needsAnimation?(): boolean;
 }
 
 export class LayerStack {
@@ -200,6 +202,10 @@ export class LayerStack {
 
   isAtBase(): boolean {
     return this.layers.length === 1;
+  }
+
+  needsAnimation(): boolean {
+    return this.layers.some(layer => layer.needsAnimation?.() === true);
   }
 
   getBaseSize(): { width: number; height: number } {

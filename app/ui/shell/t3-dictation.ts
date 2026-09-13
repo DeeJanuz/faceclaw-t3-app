@@ -7,7 +7,8 @@ import type { AnthropicStreamHandle } from "../../native/anthropic";
 import { type InputEvent } from "../gestures";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 import { appViewportRect } from "./geometry";
-import { cardRect, paintCardFace, paintCardContents, CARD_MOTION_MS, CARD_FRAME_MS, type CardRect } from "../../apps/t3/card-motion";
+import { cardRect, paintCardFace, paintCardContents, CARD_MOTION_MS, type CardRect } from "../../apps/t3/card-motion";
+import { presentationNow } from "../presentation-clock";
 
 const FINAL_TIMEOUT_MS = 95000;
 const EXPANSION_MS = CARD_MOTION_MS;
@@ -41,7 +42,7 @@ export class T3DictationLayer implements Layer {
   private expansionStartedAt: number | null = null;
   private closedAt = 0;
   private lastRenderedSecond = -1;
-  private animationTimer: ReturnType<typeof setInterval> | null = null;
+  private elapsedTimer: ReturnType<typeof setInterval> | null = null;
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
   private refineTimer: ReturnType<typeof setTimeout> | null = null;
   private refinement: AnthropicStreamHandle | null = null;
@@ -52,8 +53,16 @@ export class T3DictationLayer implements Layer {
   constructor(private readonly options: T3DictationOptions) {}
 
   isAnimatingCard(): boolean {
-    return !this.removed && (this.phase === "closing" ? Date.now() - this.closedAt < CARD_MOTION_MS
-      : this.expansionStartedAt === null || Date.now() - this.expansionStartedAt < CARD_MOTION_MS);
+    return !this.removed && (this.phase === "closing" ? presentationNow() - this.closedAt < CARD_MOTION_MS
+      : this.expansionStartedAt === null || presentationNow() - this.expansionStartedAt < CARD_MOTION_MS);
+  }
+
+  needsAnimation(): boolean {
+    if (this.phase === "closing" && presentationNow() - this.closedAt >= EXPANSION_MS) {
+      if (!this.removed) this.options.dismiss();
+      return false;
+    }
+    return this.isAnimatingCard();
   }
 
   invalidateBackdrop(): void { this.backdrop = null; }
@@ -74,19 +83,14 @@ export class T3DictationLayer implements Layer {
       }
     });
     subscribing = false;
-    this.animationTimer = setInterval(() => {
-      if (this.removed) return;
-      if (this.phase === "closing" && Date.now() - this.closedAt >= EXPANSION_MS) {
-        this.options.dismiss();
-        return;
-      }
-      const age = Date.now() - this.startedAt;
-      const second = Math.floor(age / 1000);
-      if (!this.isAnimatingCard() && this.lastRenderedSecond === second) return;
-      // Frame-rate rendering is only needed during expansion; mic time ticks once a second.
-      if (age >= EXPANSION_MS) this.lastRenderedSecond = second;
-      this.options.actions.requestRender();
-    }, CARD_FRAME_MS);
+    // Only the elapsed-seconds label is timer driven. Card motion itself asks
+    // for its next host render credit through the submitted frame.
+    this.elapsedTimer = setInterval(() => {
+      if (this.removed || this.isAnimatingCard()) return;
+      const second = Math.floor((Date.now() - this.startedAt) / 1000);
+      if (this.lastRenderedSecond === second) return;
+      this.lastRenderedSecond = second;this.options.actions.requestRender();
+    }, 1000);
     try {
       void Promise.resolve(this.options.actions.startVoiceCapture(false)).catch(() => this.fail("Could not start dictation. Nothing sent."));
     } catch {
@@ -164,7 +168,7 @@ export class T3DictationLayer implements Layer {
     if (this.removed || this.phase === "closing") return;
     if (event.type === "double-click" || (event.type === "click" && this.phase === "error")) {
       this.phase = "closing";
-      this.closedAt = Date.now();
+      this.closedAt = presentationNow();
       this.backdrop = null;
       this.text = "";
       this.cachedLayout = null;
@@ -247,8 +251,8 @@ export class T3DictationLayer implements Layer {
     const image = new GrayImage(viewport.width, viewport.height, 1);
     const left = viewport.x;
     const top = viewport.y;
-    const elapsed = this.phase === "closing" ? Date.now() - this.closedAt
-      : this.expansionStartedAt === null ? 0 : Date.now() - this.expansionStartedAt;
+    const elapsed = this.phase === "closing" ? presentationNow() - this.closedAt
+      : this.expansionStartedAt === null ? 0 : presentationNow() - this.expansionStartedAt;
     const from = this.options.origin ?? { x: 0, y: 0, width: viewport.width - 5, height: viewport.height - 5 };
     const full = { x: 0, y: 0, width: viewport.width - 5, height: viewport.height - 5 };
     const rect = this.phase === "closing"
@@ -276,7 +280,7 @@ export class T3DictationLayer implements Layer {
       }
       paintCardContents(image, this.motionContent, { ...full, x: left, y: top }, face);
       // Font and dashboard rasterization must not consume the first visible frames.
-      if (this.phase !== "closing" && this.expansionStartedAt === null) this.expansionStartedAt = Date.now();
+      if (this.phase !== "closing" && this.expansionStartedAt === null) this.expansionStartedAt = presentationNow();
     } else {
       this.motionContent = null;
       this.backdrop = null;
@@ -313,11 +317,11 @@ export class T3DictationLayer implements Layer {
     this.backdrop = null;
     this.unsubscribeTranscript?.(); this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.(); this.unsubscribeStatus = null;
-    if (this.animationTimer !== null) clearInterval(this.animationTimer);
+    if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
     if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
     if (this.refineTimer !== null) clearTimeout(this.refineTimer);
     this.refinement?.cancel();
-    this.animationTimer = null;
+    this.elapsedTimer = null;
     this.finalizeTimer = null;
     this.refineTimer = null;
     this.text = "";

@@ -1,11 +1,11 @@
 import {Observable,Frame,ImageSource,prompt,type EventData,type Page} from '@nativescript/core';
-import {onFrame,grayBitmap,setPhonePreviewVisible,deliverInput,receiveTypedText,getApp} from './runtime';
+import {onFrame,previewBitmap,setPhonePreviewVisible,deliverInput,receiveTypedText,getApp} from './runtime';
 import {useT3SampleData,connectT3} from './apps/t3/runtime';
 import {shell} from './ui/shell/shell';
 import {t3Client} from './t3/client';
 class MainModel extends Observable{
  private offFrame:()=>void;private stateOff:()=>void;
- constructor(){super();this.set('status',t3Client.state().status);this.offFrame=onFrame(frame=>this.set('preview',new ImageSource(grayBitmap(frame))));this.stateOff=t3Client.onStateChange(state=>this.set('status',state.status));setPhonePreviewVisible(true);}
+ constructor(){super();this.set('status',t3Client.state().status);this.offFrame=onFrame(frame=>this.set('preview',new ImageSource(previewBitmap(frame))));this.stateOff=t3Client.onStateChange(state=>this.set('status',state.status));setPhonePreviewVisible(true);}
  settings=()=>{const frame=Frame.topmost();if(frame?.canGoBack())frame.goBack();else frame?.navigate('phone-ui/t3-settings-page');};
  sample=async()=>{await useT3SampleData();getApp().requestRender();};
  live=async()=>{await connectT3();shell.focusWindow('t3');getApp().requestRender();};

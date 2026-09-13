@@ -1,6 +1,5 @@
 import type { GrayImage, UiFont } from '../graphics/image';
 
-export { FRAME_INTERVAL_MS as CARD_FRAME_MS } from '@faceclaw/motion';
 export const CARD_TEXT_BRIGHTNESS = 190;
 
 /** Inter 17px has a 20px line box; the preferred body pitch is 25px. */

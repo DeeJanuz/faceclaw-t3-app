@@ -10,6 +10,6 @@
  <intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter>
  <meta-data android:name="com.faceclaw.SUPPRESS_PACKAGE" android:value="com.faceclaw.t3"/>
  <meta-data android:name="com.faceclaw.CONFIGURATION" android:value="bridge"/>
- <meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/>
+ <meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="2"/>
  <meta-data android:name="com.faceclaw.CAPABILITIES" android:value="frames,notifications,dictation,configuration,extensions"/>
  </service></application></manifest>

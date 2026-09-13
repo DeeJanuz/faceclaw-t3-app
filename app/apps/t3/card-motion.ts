@@ -1,6 +1,6 @@
 import type { GrayImage } from '../../graphics/image';
 import type { CardRect } from '../../ui/card-presentation';
-export { paintCardFace, CARD_FRAME_MS, type CardRect } from '../../ui/card-presentation';
+export { paintCardFace, type CardRect } from '../../ui/card-presentation';
 
 export { WindowMotion, DURATION_MS as CARD_MOTION_MS, interpolateRect as cardRect } from '@faceclaw/motion';
 

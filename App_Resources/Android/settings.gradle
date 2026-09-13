@@ -1,0 +1,2 @@
+include ':faceclaw-sdk'
+project(':faceclaw-sdk').projectDir = new File(rootDir, '../../../faceclaw-app-platform/android-sdk/sdk')

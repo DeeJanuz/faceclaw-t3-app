@@ -1,6 +1,6 @@
 package com.faceclaw.app;
 
-/** Callbacks for FaceclawWebSocket, delivered on the Android main thread. */
+/** Content callbacks are delivered on the constructing looper; close details are sanitized. */
 public interface FaceclawWebSocketListener {
     void onOpen();
     void onTextMessage(String message);

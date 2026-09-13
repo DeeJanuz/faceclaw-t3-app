@@ -1,7 +1,8 @@
 import {createT3AppWindow,openT3Thread,openT3Inbox,openT3Notification,setT3NotificationOrigin,isT3FlowProtected} from './apps/t3/t3-app';
 import {initializeT3Notifications,handlePhoneNotification,visibleT3Alerts} from './apps/t3/notifications-ui';
 import {t3Workspace} from './apps/t3/runtime';
-import {GrayImage} from './graphics/image';
+import {GrayImage,type DeferredDraw} from './graphics/image';
+import {flattenPlanesWithDraws} from './graphics/plane';
 import {LayerStack,noopLayerActions} from './ui/layers';
 import {TimedNotificationLayer} from './ui/shell/timed-notification';
 import {WindowMenuLayer,appActionItems} from './ui/window-menu';
@@ -19,6 +20,8 @@ import {LauncherListLayer} from './apps/launcher/launcher-app';
 import {paintNotificationCard,notificationCardRect} from './ui/shell/notification-card';
 import {getDefaultSmallFont} from './graphics/ui-fonts';
 import {type InputEvent} from './ui/gestures';
+import {setPresentationTime} from './ui/presentation-clock';
+import {encodeSdkDrawBatch,encodeSdkRetainedScene} from './graphics/sdk-draw-batch';
 declare const com:any;
 let app:ReturnType<typeof createT3AppWindow>|null=null;
 let phoneVisible=false,hostVisible=false,width=576,height=452,notificationSurface=false;
@@ -26,22 +29,36 @@ let lastFrame:GrayImage|null=null;
 const frames=new Set<(frame:GrayImage)=>void>();
 const surfaces=new Map<string,{width:number;height:number;visible:boolean;generation:number;stack?:LayerStack}>();
 let preview:any=null;let previewLayer:TimedNotificationLayer|null=null;let notificationMode:'preview'|'reader'|'inbox'|undefined;
-export function grayBitmap(image:GrayImage,extension=false):any {
+let lastProtected:boolean|undefined,previewTimer:ReturnType<typeof setTimeout>|null=null,previewPending:GrayImage|null=null,lastPreviewAt=0;
+export function previewBitmap(image:GrayImage):any {
  image.bakeDeferredDrawsInPlace();
  const pixels=image.pixels;
- return com.faceclaw.t3.T3Pixels.bitmapBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,extension);
+ return com.faceclaw.t3.T3PreviewPixels.bitmapBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height);
+}
+function publishPreview(image:GrayImage):void{
+ if(!phoneVisible)return;previewPending=image;const wait=Math.max(0,100-(Date.now()-lastPreviewAt));if(previewTimer!==null)return;
+ previewTimer=setTimeout(()=>{previewTimer=null;const next=previewPending;previewPending=null;if(!next||!phoneVisible)return;lastPreviewAt=Date.now();lastFrame=next;for(const listener of frames)listener(next);},wait);
+}
+function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=false,retainedDraws:readonly DeferredDraw[]=image.draws):boolean{
+ const draws=encodeSdkDrawBatch(service,image,retainedDraws);image.bakeDeferredDrawsInPlace();const pixels=image.pixels;
+ if(draws)return Boolean(service.submitGrayBufferWithDraws(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,draws.buffer,draws.byteOffset,draws.byteLength));
+ return Boolean(service.submitGrayBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame));
+}
+function submitRetained(service:any,source:GrayImage,feature=''):boolean{
+ const scene=encodeSdkRetainedScene(service,source);if(!scene)return false;const draws=scene.draws;
+ return Boolean(service.submitRetainedScene(scene.patch.buffer,scene.patch.byteOffset,scene.patch.byteLength,scene.patchX,scene.patchY,scene.patchWidth,scene.patchHeight,source.width,source.height,feature,draws?.buffer??null,draws?.byteOffset??0,draws?.byteLength??0));
 }
 export function onFrame(listener:(frame:GrayImage)=>void):()=>void{frames.add(listener);if(lastFrame)listener(lastFrame);return ()=>frames.delete(listener);}
-export function setPhonePreviewVisible(visible:boolean):void{phoneVisible=visible;if(visible)getApp().requestRender();}
+export function setPhonePreviewVisible(visible:boolean):void{phoneVisible=visible;if(!visible){previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}}else getApp().requestRender();}
 export function getApp(){
  if(app)return app;
  app=createT3AppWindow({actions:{...noopLayerActions,requestRender:()=>app?.requestRender(),startVoiceCapture:()=>voiceControlBridge.startCapture(),stopVoiceCapture:()=>voiceControlBridge.finishCapture()},
-  submitFrame:(frame:GrayImage)=>{
-   lastFrame=frame;if(phoneVisible)for(const listener of frames)listener(frame);
+  submitFrame:(frame:GrayImage,retainedDraws:readonly DeferredDraw[],retainedSource?:GrayImage)=>{
+   publishPreview(frame);
    const service=nativeService();if(!service)return;
-   service.setWindowProtected(isT3FlowProtected());
-   if(notificationSurface){const surface=surfaces.get('ui.notifications');if(surface?.visible&&!preview&&notificationMode)service.submitExtensionBitmap('ui.notifications',grayBitmap(frame,true));}
-   else if(hostVisible)service.submitBitmap(grayBitmap(frame));
+   const protectedState=isT3FlowProtected();if(lastProtected!==protectedState){lastProtected=protectedState;service.setWindowProtected(protectedState);}
+   if(notificationSurface){const surface=surfaces.get('ui.notifications');if(surface?.visible&&!preview&&notificationMode)submitGray(service,frame,'ui.notifications',getApp().needsAnimation(),retainedDraws);}
+   else if(hostVisible&&!(retainedSource&&submitRetained(service,retainedSource)))submitGray(service,frame,'',getApp().needsAnimation(),retainedDraws);
   },onClosed(){app=null;}});
  initializeT3Notifications(async()=>{getApp();});
  return app;
@@ -59,7 +76,7 @@ export async function deliverInput(event:string|InputEvent):Promise<void>{
  await current.handleInput(input);
 }
 export function receiveTypedText(text:string):void{getApp().receiveTextInput(text);}
-function paintStack(stack:LayerStack,w:number,h:number):GrayImage{const frame=new GrayImage(w,h,1);for(const plane of stack.paint())frame.drawImage(plane.image,plane.x,plane.y);frame.bakeDeferredDrawsInPlace();return frame;}
+function paintStack(stack:LayerStack,w:number,h:number){return flattenPlanesWithDraws(stack.paint(),{width:w,height:h});}
 function renderSurface(feature:string):void{
  const surface=surfaces.get(feature);if(!surface?.visible||!nativeService())return;
  if(feature==='ui.notifications'){
@@ -67,11 +84,11 @@ function renderSurface(feature:string):void{
    const stack=new LayerStack(previewLayer,noopLayerActions,{width:surface.width,height:surface.height});
    setAppViewport(surface.width,surface.height);
    const image=previewLayer.paint({stack,actions:noopLayerActions},()=>new GrayImage(surface.width,surface.height,0));
-   nativeService().submitExtensionBitmap(feature,grayBitmap(image,true));
+   submitGray(nativeService(),image,feature);
   }
   else if(notificationMode){notificationSurface=true;getApp().resize(surface.width,surface.height);setAppViewport(surface.width,surface.height);getApp().requestRender();}return;
  }
- if(surface.stack)nativeService().submitExtensionBitmap(feature,grayBitmap(paintStack(surface.stack,surface.width,surface.height),true));
+ if(surface.stack){const frame=paintStack(surface.stack,surface.width,surface.height);submitGray(nativeService(),frame.image,feature,false,frame.draws);}
 }
 export function initializeAppRuntime():void{
  getApp();
@@ -97,10 +114,16 @@ export function initializeAppRuntime():void{
  });
  onHostState(()=>{if(!hostVisible)return;getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
  onHostEvent((type,data)=>{
+  if(type==='host-snapshot'){
+   width=Number(data.windowWidth)||width;height=Number(data.windowHeight)||height;hostVisible=Boolean(data.windowOpen&&data.windowVisible&&data.screenOn!==false);
+   surfaces.clear();if(Array.isArray(data.surfaces))for(const item of data.surfaces){if(typeof item?.id!=='string'||!item.id.startsWith('extension:'))continue;surfaces.set(item.id.slice(10),{width:Number(item.width),height:Number(item.height),visible:Boolean(item.visible&&item.screenOn!==false),generation:Number(item.generation)});}
+   if(data.windowOpen){setAppViewport(width,height);getApp().resize(width,height);}if(hostVisible)getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);
+  }
   if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
   if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
-  if(type==='close'||type==='disconnected'){hostVisible=false;voiceControlBridge.cancelCapture();if(type==='disconnected'){surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;}}
- if((type==='render'||type==='shared-style')&&hostVisible)getApp().requestRender();
+  if(type==='close'||type==='disconnected'){hostVisible=false;voiceControlBridge.cancelCapture();if(type==='disconnected'){lastProtected=undefined;surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;}}
+  if(type==='render')setPresentationTime(data.targetPresentationTimeMs);
+  if((type==='render'||type==='shared-style')&&hostVisible)getApp().requestRender();
   if(type==='input'){if(data.type==='pointer-click'&&Number.isInteger(data.x)&&Number.isInteger(data.y)&&data.x>=0&&data.y>=0&&data.x<width&&data.y<height)void getApp().stack.hitTest(data.x,data.y).then(()=>getApp().requestRender());else void deliverInput(data);}
   if(type==='app-menu')void deliverInput('long-press');
   if(type==='extension-surface'){

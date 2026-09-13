@@ -44,6 +44,7 @@ function setup(animationClock, raster = false) {
       if (raster) { image.drawText(font, 22, 20, 'DASHBOARD', 190); image.drawText(font, 22, 75, 'Synthetic home content', 190); for (const target of targets) { image.drawRoundedRect(target.x, target.y, target.width, target.height, 235, 8, 2); image.drawText(font, target.x + 16, target.y + 10, target.id.toUpperCase(), 190); } }
       return image;
     } }, '../../native/weather': { weatherBridge: { snapshot: () => ({}) } }, '../../ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, '../../graphics/image': { GrayImage: RasterImage }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => font }, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] },
+    '../../ui/presentation-clock': { presentationNow: () => animationClock?.now ?? Date.now() },
     '../../extensions/host': { onHostEvent: () => () => {}, onHostState: () => () => {} },
     '../../ui/shell/shell': { shell }, '../../ui/shell/in-process-window': {},
     '../../t3/config': { getT3Config: () => ({}) }, './runtime': { t3Workspace: state },
@@ -79,7 +80,7 @@ test('notification back leaves a retained T3 reader for the dashboard', async ()
 test('preview timeout leaves inbox untouched; swipe uses dismissal callback once', () => {
   let now = 0, tick, cleared = 0, expired = 0, opened = 0, dismissed = 0;
   const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
-    '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face,
+    '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face, '../presentation-clock': { presentationNow: () => now },
   }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => cleared++ });
   const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => { expired++; layer.onRemoved(); }, () => {});
   now = 4500; tick(); assert.equal(expired, 0);
@@ -707,7 +708,7 @@ test('cancelling a reply still returns to its current reader before exiting the 
   layer.go('inbox');
   layer.paint(ctx);
   assert.equal(counts.length, 1);
-  for (clock.now = 1040; clock.now < 1320; clock.now += face.CARD_FRAME_MS) layer.paint(ctx);
+  for (const target of [1040, 1105, 1190, 1319]) { clock.now = target; layer.paint(ctx); }
   assert.equal(counts.length, 1, 'intermediate frames reuse the dashboard');
   height = 288;
   layer.paint(ctx);
@@ -719,7 +720,7 @@ test('cancelling a reply still returns to its current reader before exiting the 
   await layer.handleInput({ type: 'double-click' });
   layer.paint(ctx);
   const collapsePaints = counts.length;
-  for (clock.now = 1400; clock.now < 1720; clock.now += face.CARD_FRAME_MS) layer.paint(ctx);
+  for (const target of [1400, 1465, 1550, 1679]) { clock.now = target; layer.paint(ctx); }
   assert.equal(counts.length, collapsePaints, 'collapse also reuses its dashboard');
   clock.now = 1720;
   layer.paint(ctx);
@@ -743,7 +744,8 @@ test('Sessions retains its content over the dashboard throughout collapse', asyn
   layer.go('sessions');
   clock.now = 1360;
   await layer.handleInput({ type: 'double-click' });
-  for (; clock.now < 1720; clock.now += face.CARD_FRAME_MS) layer.paint(ctx);
+  for (const target of [1360, 1425, 1510, 1635]) { clock.now = target; layer.paint(ctx); }
+  clock.now = 1720;
   assert.equal(counts.length, 1, 'dashboard is visible during collapse and reused between frames');
   layer.paint(ctx);
   assert.equal(layer.motion, null);
@@ -877,7 +879,7 @@ test('arrival dropdown rests at the top in both band and full-height viewports',
   let now=0,painted;
   const {TimedNotificationLayer}=load('app/ui/shell/timed-notification.ts',{
    '../../graphics/image':{},'../../graphics/ui-fonts':{getDefaultSmallFont:()=>({})},'./geometry':{appViewportRect:()=>({x:0,y:0,width:576,height})},
-   './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect)=>painted=rect},'../card-presentation':face,
+   './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect)=>painted=rect},'../card-presentation':face,'../presentation-clock':{presentationNow:()=>now},
   },{Date:{now:()=>now},setInterval:()=>1,clearInterval(){}});
   const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>{},()=>{},()=>{});
   const ctx={stack:{getBaseSize:()=>({width:576,height})}};layer.paint(ctx,()=>({}));now=360;layer.paint(ctx,()=>({}));assert.equal(painted.y,12);
@@ -924,7 +926,7 @@ test('arrival animation gates body, reverses dismissal without a jump and cancel
  let now=0, painted, tick, dismissed=0, expired=0;
  const {TimedNotificationLayer}=load('app/ui/shell/timed-notification.ts',{
   '../../graphics/image':{},'../../graphics/ui-fonts':{getDefaultSmallFont:()=>({})},'./geometry':{appViewportRect:()=>({x:0,y:0,width:576,height:452})},
-  './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect,_font,content)=>painted={rect,content}},
+  './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect,_font,content)=>painted={rect,content}},'../presentation-clock':{presentationNow:()=>now},
  },{Date:{now:()=>now},setInterval:callback=>{tick=callback;return 1;},clearInterval(){}});
  const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>dismissed++,()=>expired++,()=>{});
  const ctx={stack:{getBaseSize:()=>({width:576,height:452})}};

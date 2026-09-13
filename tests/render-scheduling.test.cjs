@@ -31,6 +31,10 @@ function harness() {
   const frames = [];
   const { createInProcessWindow } = load('app/ui/shell/in-process-window.ts', {
     '../../graphics/image': images, '../layers': layers,
+    '../../graphics/plane': { flattenPlanesWithDraws: (planes, size) => {
+      const image = new Image(size.width, size.height); image.value = planes.at(-1)?.image.value;
+      return { image, draws: [] };
+    } },
   }, {
     setTimeout: (fn, delay) => { assert.equal(delay, 0); timers.set(++next, fn); return next; },
     clearTimeout: id => timers.delete(id),

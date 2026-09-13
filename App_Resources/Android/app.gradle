@@ -1,8 +1,9 @@
-dependencies { implementation 'com.squareup.okhttp3:okhttp:4.12.0' }
+dependencies {
+ implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+ implementation project(':faceclaw-sdk')
+}
 android {
  compileSdkVersion 35
  buildToolsVersion "35.0.0"
- sourceSets.main.assets.srcDirs += ["$rootDir/../../../faceclaw-app-platform/android-sdk/sdk/src/main/assets"]
- sourceSets.main.java.srcDirs += ["$rootDir/../../../faceclaw-app-platform/android-sdk/sdk/src/main/java"]
- defaultConfig { minSdkVersion 24; targetSdkVersion 35; versionCode 1; versionName "0.1.0"; generatedDensities = []; ndk { abiFilters.clear(); abiFilters "arm64-v8a" } }
+ defaultConfig { minSdkVersion 27; targetSdkVersion 35; versionCode 1; versionName "0.1.0"; generatedDensities = []; ndk { abiFilters.clear(); abiFilters "arm64-v8a" } }
 }

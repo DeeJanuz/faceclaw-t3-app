@@ -5,7 +5,9 @@ import android.os.Looper;
 import android.util.Log;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
 
+import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -23,6 +25,11 @@ import okio.ByteString;
 public class FaceclawWebSocket {
     private static final String TAG = "FaceclawWebSocket";
     private static volatile OkHttpClient sharedClient;
+    private static final Dispatcher backendDispatcher = new Dispatcher(Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "FaceclawT3Backend");
+        thread.setDaemon(true);
+        return thread;
+    }));
 
     private final Handler callbackHandler;
     private final WebSocket socket;
@@ -82,7 +89,7 @@ public class FaceclawWebSocket {
             @Override public void onClosed(WebSocket webSocket, int code, String reason) {
                 callbackHandler.post(() -> {
                     try {
-                        listener.onClosed(code, reason == null ? "" : reason);
+                        listener.onClosed(sanitizeCloseCode(code), closeCategory(code));
                     } catch (Throwable t) {
                         Log.w(TAG, "listener onClosed failed", t);
                     }
@@ -93,7 +100,8 @@ public class FaceclawWebSocket {
                 if (closeRequested) {
                     return;
                 }
-                final String message = t == null ? "unknown websocket failure" : String.valueOf(t);
+                final String message = "network:" + (t == null ? "unknown" : t.getClass().getSimpleName())
+                        + (response == null ? "" : ":http=" + response.code());
                 callbackHandler.post(() -> {
                     try {
                         listener.onFailure(message);
@@ -111,6 +119,7 @@ public class FaceclawWebSocket {
             synchronized (FaceclawWebSocket.class) {
                 if (sharedClient == null) {
                     sharedClient = new OkHttpClient.Builder()
+                        .dispatcher(backendDispatcher)
                         .followRedirects(false)
                         .followSslRedirects(false)
                         .pingInterval(20, TimeUnit.SECONDS)
@@ -129,6 +138,18 @@ public class FaceclawWebSocket {
         }
         int len = value.length();
         return "[redacted]";
+    }
+
+    private static int sanitizeCloseCode(int code) {
+        return code >= 1000 && code <= 4999 ? code : 1006;
+    }
+
+    private static String closeCategory(int code) {
+        if (code == 1000) return "normal";
+        if (code == 1001) return "going-away";
+        if (code == 1008) return "policy";
+        if (code >= 4000 && code <= 4999) return "application";
+        return code >= 1000 && code <= 1015 ? "protocol-or-server" : "unknown";
     }
 
     public boolean sendText(String message) {

@@ -47,6 +47,7 @@ function setup({ stop, start, refine, origin, raster = false, firstPaint = true,
     '../../apps/t3/hub-view-model': { reflowDictationText: hubModule.exports.reflowDictationText, paginateMessageText: (value, box) => { result.pageBoxes.push(box); return [value]; } },
     '../../native/voice-control': { voiceControlBridge: bridge },
     './geometry': { appViewportRect: () => viewport },
+    '../presentation-clock': { presentationNow: () => now },
   };
   const code = ts.transpileModule(fs.readFileSync('app/ui/shell/t3-dictation.ts', 'utf8'), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
@@ -135,7 +136,7 @@ test('timeout never promotes an unverified partial and preserves a back path', (
   [...timers.values()].find(timer => timer.delay >= 90000).callback();
   assert.equal(layer.phase, 'error'); assert.deepEqual(result.drafts, []);
   layer.handleInput({ type: 'click' }); advance(400);
-  [...timers.values()].find(timer => timer.interval).callback();
+  layer.needsAnimation();
   assert.equal(result.cancellations, 1); assert.equal(result.closed, 1);
 });
 
@@ -145,7 +146,7 @@ test('cancellation ignores both queued transcript callbacks and late provider fa
   const staleTranscript = listeners.transcript;
   layer.handleInput({ type: 'double-click' });
   staleTranscript({ text: 'Do not deliver', isFinal: true });
-  advance(400); [...timers.values()].find(timer => timer.interval).callback();
+  advance(400); layer.needsAnimation();
   staleTranscript({ text: 'Still stale', isFinal: true }); rejectStart(new Error('private provider error'));
   await Promise.resolve(); await Promise.resolve();
   assert.deepEqual(result.drafts, []); assert.equal(result.cancellations, 1);
@@ -256,8 +257,8 @@ test('completed cancel shrink restores app content before removing its opaque sh
   layer.options.onCancelled = () => { assert.equal(layer.text, ''); assert.equal(listeners.transcript, null); events.push('restore-app'); cancelled(); };
   layer.options.onClosed = () => { events.push('clear-shell'); closed(); };
   layer.handleInput({ type: 'double-click' });
-  advance(350); [...timers.values()].find(timer => timer.interval).callback(); assert.deepEqual(events, []);
-  advance(400); [...timers.values()].find(timer => timer.interval).callback();
+  advance(350); assert.equal(layer.needsAnimation(), true); assert.deepEqual(events, []);
+  advance(400); layer.needsAnimation();
   assert.deepEqual(events, ['restore-app', 'clear-shell']);
   assert.equal(result.stops, 1); assert.equal(result.cancellations, 1); assert.equal(result.closed, 1);
   assert.deepEqual(result.drafts, []); assert.equal(timers.size, 0);
@@ -272,8 +273,8 @@ test('app cancellation callback failure cannot skip voice-owner and shell cleanu
 });
 
 
-test('direct capture uses the shared 40ms card frame cadence', () => {
-  const h = setup(); assert.equal([...h.timers.values()].find(timer => timer.interval).delay, 40); h.layer.onRemoved();
+test('direct capture requests animation through render credits and only times its seconds label', () => {
+  const h = setup(); assert.equal(h.layer.needsAnimation(), true); assert.equal([...h.timers.values()].find(timer => timer.interval).delay, 1000); h.layer.onRemoved();
 });
 
 const captureViewport = { x: 0, y: 0, width: 576, height: 452 };
@@ -364,7 +365,7 @@ test('640x452 capture begins motion after delayed first snapshot while microphon
     paintDashboard: (w, height, Image) => { h.advance(1300); return new Image(w, height, 1); } });
   h.advance(600); assert.equal(h.layer.isAnimatingCard(), true);
   const renders = h.result.renders;
-  [...h.timers.values()].find(timer => timer.interval).callback(); assert.equal(h.result.renders, renders + 1);
+  [...h.timers.values()].find(timer => timer.interval).callback(); assert.equal(h.result.renders, renders); assert.equal(h.layer.needsAnimation(), true);
   const first = h.layer.paint({}, noPrivateBackdrop);
   assert.deepEqual(first.rects[0].slice(0, 4), [291, 95, 288, 44]);
   assert.equal(h.layer.expansionStartedAt, 1300);

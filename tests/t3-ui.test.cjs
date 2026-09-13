@@ -820,7 +820,10 @@ test('transition cache lays out a large session list once, rebuilds on new state
   clock.now = 1345; await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx);
   assert.equal(h.layer.motion.content, undefined, 'closing releases the outgoing body');
   assert.ok(h.layer.motion.heading);
-  h.state.changed(); assert.equal(h.layer.motion, null, 'outgoing snapshot must be released when its source state changes');
+  h.state.changed(); assert.ok(h.layer.motion, 'safe outline keeps its trajectory after source invalidation');
+  assert.equal(h.layer.motion.content,undefined);
+  assert.ok(h.layer.motion.heading.pixels.every(value=>value===0),'outgoing heading is erased immediately');
+  clock.now=1800;
   const fresh = h.layer.paint(ctx); fresh.bakeDeferredDrawsInPlace();
   assert.equal(h.layer.screen, 'dashboard'); assert.ok(contentPixels(fresh, { x: 0, y: 0, width: 230, height: 100 }) > 20);
 });
@@ -909,7 +912,9 @@ test('ambient host refresh preserves closing progress while content invalidation
   assert.equal(motion.content,undefined,'refresh must not revive outgoing body pixels');
   clock.now=1600;h.layer.hostStateChanged('ambient');h.layer.paint(ctx);
   assert.equal(h.layer.motion,motion);
-  h.layer.hostStateChanged('content');assert.equal(h.layer.motion,null,'privacy-sensitive invalidation remains immediate');
+  h.layer.hostStateChanged('content');assert.equal(h.layer.motion,motion);
+  assert.equal(motion.content,undefined);assert.ok(motion.heading.pixels.every(value=>value===0),'privacy-sensitive pixels are erased immediately');
+  clock.now=1800;h.layer.paint(ctx);assert.equal(h.layer.motion,null);
 });
 
 test('Sessions clears all body pixels before collapse and Back reverses from the last drawn rectangle', async () => {

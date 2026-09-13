@@ -14,8 +14,8 @@ function action(name:string,data:Record<string,unknown>={}):boolean{
 }
 onHostEvent((type,data)=>{
  if(type==='visibility')visible=Boolean(data.visible&&data.screenOn!==false);
- if(type==='extension-surface'&&data.feature==='ui.notifications'){if(data.type==='open')notificationSurface=true;if(data.type==='close')notificationSurface=false;}
- if(type==='disconnected'||type==='destroyed')notificationSurface=false;
+ if(type==='extension-surface'&&data.feature==='ui.notifications'){if(data.type==='open')notificationSurface=true;if(data.type==='close'){notificationSurface=false;clearPreview();}}
+ if(type==='disconnected'||type==='destroyed'){notificationSurface=false;clearPreview();}
  if(type==='disconnected'||type==='destroyed'){const previous=capture;capture=null;previous?.cancel();}
  if(type==='dictation-result' && capture && data.requestId===capture.id){const pending=capture;capture=null;if(data.confirmed===true&&typeof data.text==='string'&&pending.current())pending.done(data.text);else pending.cancel();}
 });
@@ -25,7 +25,7 @@ export const shell={
  isWindowFocused:(_id:string)=>visible,
  foregroundWindow:()=>hostState.focusedWindowId?{windowId:hostState.focusedWindowId}:null,
  closeNotificationReader(){if(notificationSurface)sendHostAction('ui.notifications','close-surface');},
- hasOverlay:()=>Boolean(capture||preview),getNotificationPreviewId:()=>preview?.id??null,
+ hasOverlay:()=>Boolean(capture||(notificationSurface&&preview)),getNotificationPreviewId:()=>notificationSurface?preview?.id??null:null,
  focusWindow(id:string){if(notificationSurface){if(id!=='t3')sendHostAction('ui.notifications','close-surface');local('open');}else if(id==='t3'){action('open-self');local('open');}else sendHostAction('ui.launcher','focus-app',{windowId:id});},
  sleepAtAppRoot(){if(notificationSurface)sendHostAction('ui.notifications','close-surface');action('sleep');local('sleep');},wake(_target?:string){action('open-self');local('wake');},
  wakeWindowForNotification(_id:string):boolean{if(!visible)return false;local('wake');return true;},
@@ -43,3 +43,4 @@ export const shell={
  closeNotificationPreview(id:string,_restore=true){if(preview?.id===id){const closed=preview;preview=null;local('preview-close',closed);}},
  openNotificationModal(key:string,returnToSleep=false){void openNotification(key);},
 };
+function clearPreview():void{if(!preview)return;const closed=preview;preview=null;local('preview-close',closed);}

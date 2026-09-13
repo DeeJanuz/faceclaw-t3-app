@@ -81,7 +81,10 @@ export class T3Layer implements Layer {
 
   needsAnimation(): boolean { return Boolean(this.motion) || (this.screen === 'reader' && Boolean(state.transcript?.liveActivity)); }
   private animate(from: CardRect, to: CardRect, closing = false): void {
-    if (this.screen === 'compose' || !this.isBaseVisible() || shell.hasOverlay()) return;
+    if (this.screen === 'compose' || !this.isBaseVisible() || shell.hasOverlay()) {
+      console.info(`[T3Motion] skipped direction=${closing?'close':'open'} compose=${this.screen==='compose'} base=${this.isBaseVisible()} overlay=${shell.hasOverlay()}`);
+      return;
+    }
     const source = closing ? (this.screen === 'inbox' ? this.dropdownRect() : this.fullRect()) : to;
     from = this.motion?.model.lastRect ?? from;
     // Closing never lays out or snapshots the outgoing body.
@@ -89,12 +92,19 @@ export class T3Layer implements Layer {
     heading?.bakeDeferredDrawsInPlace();
     this.motion?.model.cancel();
     this.motion = { model: new WindowMotion(from, to, closing), source, from, to, started: null, closing, heading };
+    console.info(`[T3Motion] started direction=${closing?'close':'open'}`);
 
   }
   /** Data invalidation never keeps pixels from a notification or prior conversation alive. */
   contentChanged(): void {
     if (!this.motion) return;
-    if (this.motion.closing) this.motion = null;
+    if (this.motion.closing) {
+      // Drop private outgoing pixels without abandoning the geometric return.
+      console.info('[T3Motion] invalidated reason=content continuing=neutral-outline');
+      this.motion.content = undefined;
+      this.motion.heading = new GrayImage(this.viewWidth, this.viewHeight, 0);
+      this.motion.backdrop = undefined;
+    }
     else { this.motion.content = undefined; this.motion.heading = undefined; this.motion.backdrop = undefined; }
   }
   backdropChanged(): void { if (this.motion) this.motion.backdrop = undefined; }
@@ -102,7 +112,7 @@ export class T3Layer implements Layer {
     if (change === 'ambient') this.backdropChanged();
     else this.contentChanged();
   }
-  onRemoved(): void { this.motion?.model.cancel(); this.motion = null; }
+  onRemoved(): void { if(this.motion)console.info('[T3Motion] cancelled reason=input-or-lifecycle');this.motion?.model.cancel(); this.motion = null; }
   setNotificationOrigin(rect: CardRect): void { this.notificationOrigin = { ...rect }; }
   private paintMotionBackdrop(image: GrayImage, selected: string, dim: boolean): void {
     const motion = this.motion!;
@@ -513,7 +523,10 @@ export class T3Layer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const { width, height } = ctx.stack.getBaseSize();
-    if (width !== this.viewWidth || height !== this.viewHeight || !this.isBaseVisible() || shell.hasOverlay()) this.motion = null;
+    if (width !== this.viewWidth || height !== this.viewHeight || !this.isBaseVisible() || shell.hasOverlay()) {
+      if(this.motion)console.info(`[T3Motion] cancelled reason=visibility-or-geometry overlay=${shell.hasOverlay()}`);
+      this.motion = null;
+    }
     this.viewWidth = width; this.viewHeight = height;
     const pending = state.plans.get(state.selectedThreadId);
     const identity = pending ? `${state.selectedThreadId}:${pending.request.requestId}:${pending.request.revision}` : '';
@@ -527,7 +540,7 @@ export class T3Layer implements Layer {
       // Start after preparing the first lightweight frame, not before layout.
       const frame = motion.model.sample(presentationNow());
       motion.started = motion.model.started;
-      if (!frame || frame.done) this.motion = null;
+      if (!frame || frame.done) { console.info('[T3Motion] completed');this.motion = null; }
       else {
         let content = motion.heading;
         if (frame.bodyVisible) {

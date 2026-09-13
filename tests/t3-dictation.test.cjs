@@ -81,7 +81,7 @@ test('reviewed draft can capture a follow-up and route it through Luna refinemen
   const { layer, result, listeners } = setup({ refine: options => { refinement = options; return { cancel() {} }; } });
   listeners.transcript({ text: 'Original draft', isFinal: false });
   layer.endCapture(); listeners.transcript({ text: 'Original draft', isFinal: true });
-  layer.handleInput({ type: 'swipe-down' });
+  layer.handleInput({ type: 'scroll-down' });
   listeners.transcript({ text: 'Make it concise', isFinal: false });
   layer.handleInput({ type: 'click' });
   listeners.transcript({ text: 'Make it concise', isFinal: true });

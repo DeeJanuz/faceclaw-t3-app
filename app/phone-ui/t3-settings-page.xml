@@ -5,6 +5,18 @@
       <Label text="T3 for Faceclaw" class="h2"/>
       <Label text="Control T3 here. Faceclaw manages permission for this app to change your glasses experience." textWrap="true"/>
       <Button text="Faceclaw permissions and priority" tap="{{ hostSettings }}"/>
+      <Label text="Global permissions and priority" class="h2 m-t-24"/>
+      <Button text="Launcher and folders permissions and priority" feature="ui.launcher" tap="{{ featureAccess }}"/>
+      <Button text="T3 gestures permissions and priority" feature="ui.navigation" tap="{{ featureAccess }}"/>
+      <Button text="App actions menus permissions and priority" feature="ui.app-menu" tap="{{ featureAccess }}"/>
+      <Button text="Window layout permissions and priority" feature="ui.window-layout" tap="{{ featureAccess }}"/>
+      <Button text="Typography permissions and priority" feature="ui.typography" tap="{{ featureAccess }}"/>
+      <Button text="Notifications permissions and priority" feature="ui.notifications" tap="{{ featureAccess }}"/>
+      <Button text="Own inbox content permissions and priority" feature="notification-content" tap="{{ featureAccess }}"/>
+      <Button text="Assistant permissions and priority" feature="assistant" tap="{{ featureAccess }}"/>
+      <Button text="Transcription permissions and priority" feature="transcription" tap="{{ featureAccess }}"/>
+      <Button text="Draft refinement permissions and priority" feature="refinement" tap="{{ featureAccess }}"/>
+      <Button text="Device tools permissions and priority" feature="device-tools" tap="{{ featureAccess }}"/>
       <Label text="Faceclaw customizations" class="h2 m-t-24"/>
       <GridLayout columns="*,auto"><Label text="Enable T3 customizations" textWrap="true"/><Switch col="1" checked="{{ customizationsEnabled }}" checkedChange="{{ toggleCustomizations }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="Launcher and folders"/><Switch col="1" checked="{{ custom_launcher }}" checkedChange="{{ toggleLauncher }}"/></GridLayout>
@@ -13,7 +25,7 @@
       <GridLayout columns="*,auto"><Label text="App actions menus"/><Switch col="1" checked="{{ custom_app_menu }}" checkedChange="{{ toggleMenus }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="Window layout"/><Switch col="1" checked="{{ custom_window_layout }}" checkedChange="{{ toggleLayout }}"/></GridLayout>
       <GridLayout columns="*,auto"><Label text="Typography"/><Switch col="1" checked="{{ custom_typography }}" checkedChange="{{ toggleTypography }}"/></GridLayout>
-      <Label text="Enable the settings you want, then use Faceclaw permissions and priority above to allow each feature and choose T3 first. Turning a setting off restores Faceclaw behavior for that feature." textWrap="true"/>
+      <Label text="Enable the settings you want, then use the feature permissions and priority buttons above to allow each feature and choose T3 first. Turning a setting off restores Faceclaw behavior for that feature." textWrap="true"/>
       <Label text="{{ overrideStatus }}" textWrap="true"/>
       <Label text="Bridge connection" class="h2" />
       <Label text="Use your private T3 bridge address. Pairing stays on this phone." textWrap="true" class="m-b-12" />
@@ -30,6 +42,7 @@
         <Label col="0" text="Prefer T3 assistant" verticalAlignment="center" />
         <Switch col="1" checked="{{ preferAssistant }}" checkedChange="{{ toggleAssistant }}" />
       </GridLayout>
+      <Button text="Grant and prioritize T3 Assistant in Faceclaw" tap="{{ assistantAccess }}" />
       <Label text="Each invocation starts a fresh conversation. Review the transcript and tap to send. Your normal Faceclaw assistant remains the fallback." textWrap="true" />
       <Button text="{{ projectLabel }}" tap="{{ chooseProject }}" />
       <Button text="{{ modelLabel }}" tap="{{ chooseModel }}" />
@@ -61,6 +74,7 @@
       <Label text="Ask Assistant always uses this bridge. Enable this switch to use it for dictation across Faceclaw too. On-device transcription is the automatic backup when available." textWrap="true" />
       <Label text="Draft refinement" class="h2 m-t-24" />
       <Button text="{{ refinementLabel }}" tap="{{ chooseRefinement }}" />
+      <Button text="Grant and prioritize T3 Draft refinement in Faceclaw" tap="{{ refinementAccess }}" />
       <Label text="Refinement runs only when requested. Luna uses the bridge's existing Codex login; Anthropic uses your existing Faceclaw API configuration." textWrap="true" />
       <Label text="UI testing" class="h2 m-t-24" />
       <Button text="Open T3 with sample data" tap="{{ preview }}" />

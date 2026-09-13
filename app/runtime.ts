@@ -1,4 +1,4 @@
-import {createT3AppWindow,openT3Thread,openT3Inbox,openT3Notification,setT3NotificationOrigin,isT3FlowProtected} from './apps/t3/t3-app';
+import {openT3Assistant,createT3AppWindow,openT3Thread,openT3Inbox,openT3Notification,setT3NotificationOrigin,isT3FlowProtected} from './apps/t3/t3-app';
 import {initializeT3Notifications,handlePhoneNotification,visibleT3Alerts} from './apps/t3/notifications-ui';
 import {t3Workspace} from './apps/t3/runtime';
 import {GrayImage,type DeferredDraw} from './graphics/image';
@@ -116,6 +116,7 @@ export function initializeAppRuntime():void{
  });
  onHostState(()=>{if(hostVisible)getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
  onHostEvent((type,data)=>{
+  if(type==='extension-event' && data.feature==='assistant' && data.type==='event' && data.data?.event==='invoke') { getApp(); openT3Assistant(); }
   if(type==='connected')rejectedSceneSurfaces.clear();
   if(type==='scene-result'&&data.accepted===false){
    const feature=String(data.surfaceId??'window').replace(/^extension:/,'');rejectedSceneSurfaces.add(feature);

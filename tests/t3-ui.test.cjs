@@ -983,3 +983,21 @@ test('expanded notification starts at the preview rectangle and defers its body'
  clock.now=1324;h.layer.paint(ctx);assert.ok(h.layer.motion.content);
  clock.now=1900;h.layer.paint(ctx);assert.equal(h.layer.motion,null,'stalled renderer settles immediately');
 });
+
+
+test('assistant invocation and dashboard button start the same fresh T3 compose flow', () => {
+  const h = setup(); let captures = 0;
+  h.layer.record = () => { captures++; };
+  h.layer.screen = 'dashboard';
+  const assistant = h.layer.rows().find(row => row.id === 'assistant');
+  assistant.action();
+  const expected = JSON.stringify(h.layer.creation);
+  assert.equal(h.layer.screen, 'compose');
+  assert.equal(h.layer.creation.assistant, true);
+  h.layer.screen = 'reader'; h.layer.draft = 'Previous draft';
+  h.layer.askAssistant();
+  assert.equal(h.layer.screen, 'compose');
+  assert.equal(h.layer.draft, '');
+  assert.equal(JSON.stringify(h.layer.creation), expected);
+  assert.equal(captures, 2);
+});

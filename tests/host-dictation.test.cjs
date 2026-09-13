@@ -22,8 +22,9 @@ function setup(available = true) {
   return { bridge: module.exports.voiceControlBridge, requests, finishes, cancels, ids, event: (...args) => event(...args) };
 }
 test('T3 requests host dictation and receives only its own host transcript', () => {
-  const s = setup(), text = [];
+  const s = setup(), text = [], statuses = [];
   s.bridge.onTranscript(value => text.push(value.text));
+  s.bridge.onStatus(value => statuses.push(value.status));
   s.bridge.startCapture();
   const [id, label, ownTranscription] = s.requests[0];
   assert.equal(label, 'Dictate T3 message');
@@ -34,10 +35,31 @@ test('T3 requests host dictation and receives only its own host transcript', () 
   assert.deepEqual(text, ['Offline draft']);
   s.bridge.finishCapture();
   assert.deepEqual(s.finishes, [id]);
-  s.event('capture-dictation-closed', { requestId: id, reason: 'completed' });
+  s.event('capture-dictation-closed', { requestId: id, reason: 'complete' });
+  assert.deepEqual(statuses, []);
   s.bridge.cancelCapture();
   assert.deepEqual(s.cancels, []);
   assert.equal(s.ids.at(-1), '');
+});
+test('legacy successful close spelling remains compatible', () => {
+  const s = setup(), statuses = [];
+  s.bridge.onStatus(value => statuses.push(value.status));
+  s.bridge.startCapture();
+  const id = s.requests[0][0];
+  s.event('capture-dictation-closed', { requestId: id, reason: 'completed' });
+  assert.deepEqual(statuses, []);
+  assert.equal(s.ids.at(-1), '');
+});
+test('failed capture close reports unavailable and releases ownership', () => {
+  const s = setup(), statuses = [];
+  s.bridge.onStatus(value => statuses.push(value.status));
+  s.bridge.startCapture();
+  const id = s.requests[0][0];
+  s.event('capture-dictation-closed', { requestId: id, reason: 'transcript-timeout' });
+  assert.deepEqual(statuses, ['Could not start: capture closed']);
+  assert.equal(s.ids.at(-1), '');
+  s.bridge.startCapture();
+  assert.equal(s.requests.length, 2);
 });
 test('host rejection clears capture ownership and permits a later attempt', () => {
   const s = setup(false);

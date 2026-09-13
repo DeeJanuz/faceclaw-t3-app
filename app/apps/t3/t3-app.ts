@@ -31,6 +31,7 @@ type Navigation = { screen: Screen; selected: string; scroll: number; projectId:
 type Row = { id: string; title: string; detail?: string; disabled?: boolean; section?: boolean; action: () => void | Promise<void> };
 let activeLayer: T3Layer | null = null;
 
+export function openT3Assistant(): void { if (!isT3FlowProtected()) activeLayer?.askAssistant(); }
 export function openT3Thread(threadId: string, returnWindowId?: string): void { activeLayer?.openThread(threadId, returnWindowId, true); }
 export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question-text", "choices", "plan-review", "proposed-plan", "plan-approve", "session-reasoning", "session-model"].includes(activeLayer.screen)); }
 export function showT3AlertInCurrentConversation(alert: T3Alert): boolean { return activeLayer?.showAlertInCurrentConversation(alert) ?? false; }
@@ -290,6 +291,13 @@ export class T3Layer implements Layer {
     shell.startT3Dictation(text => { if (canStart()) this.receiveText(text, true); }, () => { if (canStart()) this.cancelCompose(); }, canStart, targetHistory?.screen === 'dashboard' ? this.homeRect() : this.fullRect());
   }
 
+  askAssistant(): void {
+    const config = getT3Config();
+    if (state.demo) { this.startCompose({ projectId: 'assistant', assistant: true, modelSelection: { instanceId: 'demo', model: 'preview-astra', reasoningId: 'high' } }); return; }
+    if (!config.assistantProjectId || !config.assistantModel || !config.assistantProvider) { this.settings(); return; }
+    this.startCompose({ projectId: config.assistantProjectId, environmentId: config.assistantEnvironmentId || undefined, assistant: true, modelSelection: { instanceId: config.assistantProvider, model: config.assistantModel, ...(config.assistantReasoning ? { reasoningId: config.assistantReasoning } : {}) } });
+  }
+
   private startCompose(creation: T3Layer['creation'] = null): void {
     this.creation = creation; this.dictatingAnswer = false; this.draft = ''; this.draftMode = undefined; this.draftLocked = false;
     this.go('compose'); this.record();
@@ -375,10 +383,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'dashboard') return [
       { id: 'inbox', title: 'Notifications', action: () => this.go('inbox') },
       { id: 'assistant', title: 'Ask Assistant', detail: 'Fresh conversation in your assistant project', action: () => {
-        const config = getT3Config();
-        if (state.demo) { this.startCompose({ projectId: 'assistant', assistant: true, modelSelection: { instanceId: 'demo', model: 'preview-astra', reasoningId: 'high' } }); return; }
-        if (!config.assistantProjectId || !config.assistantModel || !config.assistantProvider) { this.settings(); return; }
-        this.startCompose({ projectId: config.assistantProjectId, assistant: true, modelSelection: { instanceId: config.assistantProvider, model: config.assistantModel, ...(config.assistantReasoning ? { reasoningId: config.assistantReasoning } : {}) } });
+        this.askAssistant();
       } },
       { id: 'sessions', title: 'Sessions', action: () => { this.projectId = ''; this.go('sessions'); } },
     ];

@@ -13,5 +13,5 @@ onHostEvent((type,data)=>{
  if(!captureId||data.requestId!==captureId)return;
  if(type==='capture-dictation-transcript'&&data.purpose==='capture'&&typeof data.text==='string'&&typeof data.isFinal==='boolean'){for(const listener of transcripts)listener({text:data.text,isFinal:data.isFinal});}
  if(type==='capture-dictation-status')for(const listener of statuses)listener({status:String(data.status)});
- if(type==='capture-dictation-closed'){captureId='';setOwnCaptureId('');if(data.reason!=='completed')for(const listener of statuses)listener({status:'Could not start: capture closed'});}
+ if(type==='capture-dictation-closed'){captureId='';setOwnCaptureId('');if(data.reason!=='complete'&&data.reason!=='completed')for(const listener of statuses)listener({status:'Could not start: capture closed'});}
 });

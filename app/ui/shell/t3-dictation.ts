@@ -178,7 +178,7 @@ export class T3DictationLayer implements Layer {
         this.stopCapture();
       }
       this.options.actions.requestRender();
-    } else if (this.phase === "review" && event.type === "swipe-down") {
+    } else if (this.phase === "review" && (event.type === "swipe-down" || event.type === "scroll-down")) {
       this.startContinuation();
     } else if (this.phase === "review" && event.type === "click") {
       this.sendDraft();

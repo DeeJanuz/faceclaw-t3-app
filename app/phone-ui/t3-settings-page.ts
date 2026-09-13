@@ -49,7 +49,7 @@ class T3SettingsModel extends Observable {
   toggleMenus=(args:EventData)=>{if(this.ready)setCustomizationEnabled('app-menu',this.checked(args));this.syncCustomizations();};
   toggleLayout=(args:EventData)=>{if(this.ready)setCustomizationEnabled('window-layout',this.checked(args));this.syncCustomizations();};
   toggleTypography=(args:EventData)=>{if(this.ready)setCustomizationEnabled('typography',this.checked(args));this.syncCustomizations();};
-  hostSettings = async () => {
+  private openHostSettings = async (feature?: string) => {
     const context = Utils.android.getApplicationContext();
     const manager = context.getPackageManager();
     const matches = manager.queryIntentActivities(new android.content.Intent('com.faceclaw.action.MANAGE_APPS'), 0);
@@ -68,10 +68,15 @@ class T3SettingsModel extends Observable {
     try {
       const intent=new android.content.Intent('com.faceclaw.action.MANAGE_APPS')
         .setComponent(new android.content.ComponentName(selected.packageName,selected.name)).putExtra('appPackage',context.getPackageName());
+      if (feature) intent.putExtra('feature', feature);
       const activity=Application.android.foregroundActivity;
       if(activity) activity.startActivity(intent); else context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
     } catch { await alert({title:'Open Faceclaw',message:'Could not open Faceclaw permissions. Open your Faceclaw app and try again.',okButtonText:'OK'}); }
   };
+  featureAccess = (args: EventData) => { void this.openHostSettings(String((args.object as any).get('feature'))); };
+  hostSettings = () => { void this.openHostSettings(); };
+  assistantAccess = () => { void this.openHostSettings('assistant'); };
+  refinementAccess = () => { void this.openHostSettings('refinement'); };
   private save(update: Partial<T3Config>): void {
     try { saveT3Config(update); this.config = getT3Config(); this.sync(); }
     catch (error) { this.set('status', error instanceof Error ? error.message : 'T3_CONFIG_FAILED'); }

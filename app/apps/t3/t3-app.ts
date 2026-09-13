@@ -1,3 +1,4 @@
+import { resourceKey } from './resource';
 import { CARD_TEXT_BRIGHTNESS, cardLineStep } from '../../ui/card-presentation';
 import { paintActivityIndicator } from './activity-indicator';
 import { RenderingComparisonLayer } from "../developer/rendering-comparison";
@@ -51,7 +52,7 @@ export class T3Layer implements Layer {
   private reasoningModel: NewSessionModelSelection | null = null;
   private reasoningThreadId = '';
   private reviewedPlan: { threadId: string; plan: ProposedPlan } | null = null;
-  private creation: { projectId: string; modelSelection?: NewSessionModelSelection; assistant?: boolean } | null = null;
+  private creation: { projectId: string; environmentId?: string; modelSelection?: NewSessionModelSelection; assistant?: boolean } | null = null;
   private pickedModel: ModelSummary | null = null;
   private questionIndex = 0;
   private checked: number[] = [];
@@ -158,7 +159,7 @@ export class T3Layer implements Layer {
 
   private matchesAlertConversation(alert: T3Alert): boolean {
     if (alert.kind === 't3') return this.screen === 'reader' && Boolean(alert.threadId) &&
-      state.selectedThreadId === alert.threadId && state.transcript?.session.id === alert.threadId;
+      state.selectedThreadId === alert.threadId && state.selectedEnvironmentId === alert.environmentId && state.transcript?.session.id === alert.threadId;
     if (this.screen !== 'notification') return false;
     const current = this.currentNotification();
     return current?.kind === 'phone' && (alert.groupId
@@ -174,7 +175,7 @@ export class T3Layer implements Layer {
     if (animateTransition && screen === 'dashboard' && this.screen !== 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
     if (animateTransition && this.screen === 'inbox' && screen === 'notification') this.animate(this.dropdownRect(), this.fullRect());
     if (animateTransition && this.screen === 'notification' && screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
-    if (remember) this.history.push({ screen: this.screen, selected: this.selected, scroll: this.scroll, projectId: this.projectId, threadId: state.selectedThreadId });
+    if (remember) this.history.push({ screen: this.screen, selected: this.selected, scroll: this.scroll, projectId: this.projectId, threadId: state.selectedThreadKey });
     this.screen = screen; this.selected = screen === 'dashboard' ? 'assistant' : ''; this.scroll = 0; this.atReaderEnd = false; this.repaint();
   }
 
@@ -252,7 +253,7 @@ export class T3Layer implements Layer {
       if (animateTransition && previous.screen === 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
       if (previous.screen === 'new-summary') this.creation = draftCreation;
       this.screen = previous.screen; this.selected = previous.selected; this.scroll = previous.scroll; this.projectId = previous.projectId;
-      if (previous.threadId && previous.threadId !== state.selectedThreadId) void state.openThread(previous.threadId);
+      if (previous.threadId && previous.threadId !== state.selectedThreadKey) void state.openThread(previous.threadId);
     } else { this.go('dashboard', false, animateTransition); return; }
     this.repaint();
   }
@@ -295,7 +296,7 @@ export class T3Layer implements Layer {
   }
 
   private question(): PlanQuestion | null {
-    return state.plans.get(state.selectedThreadId)?.request.questions[this.questionIndex] ?? null;
+    return state.getPlan(state.selectedThreadId)?.request.questions[this.questionIndex] ?? null;
   }
 
   private canChangeSession(): boolean {
@@ -343,7 +344,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'session-reasoning') {
       const model = this.reasoningModel;
       const threadId = this.reasoningThreadId;
-      const choices = state.models.find(item => item.instanceId === model?.instanceId && item.model === model.model)?.reasoningChoices ?? [];
+      const choices = state.modelsFor(state.selectedEnvironmentId).find(item => item.instanceId === model?.instanceId && item.model === model.model)?.reasoningChoices ?? [];
       return choices.map(choice => ({ id: choice.id, title: `${choice.label}${choice.id === state.transcript?.session.modelSelection?.reasoningId ? ' (current)' : ''}`,
         disabled: state.busy, action: async () => {
           if (model && await state.setReasoning(threadId, choice.id, model) && this.screen === 'session-reasoning') this.back();
@@ -352,7 +353,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'session-model') {
       const session = state.transcript?.session;
       const expected = session?.modelSelection;
-      return state.models.map(model => ({
+      return state.modelsFor(state.selectedEnvironmentId).map(model => ({
         id: `${model.instanceId}/${model.model}`,
         title: `${model.name}${model.instanceId === expected?.instanceId && model.model === expected.model ? ' (current)' : ''}`,
         detail: model.providerName,
@@ -382,18 +383,18 @@ export class T3Layer implements Layer {
       { id: 'sessions', title: 'Sessions', action: () => { this.projectId = ''; this.go('sessions'); } },
     ];
     if (this.screen === 'projects' || this.screen === 'new-project') return state.projects.map(project => ({
-      id: project.id, title: project.title, detail: this.screen === 'new-project' ? 'Start a new conversation' : `${state.sessions.filter(s => s.projectId === project.id).length} conversations`,
+      id: resourceKey(project.id, project.environmentId), title: `${project.title}${project.environmentLabel ? " · " + project.environmentLabel : ""}`, detail: this.screen === 'new-project' ? 'Start a new conversation' : `${state.sessions.filter(s => s.projectId === project.id && s.environmentId === project.environmentId).length} conversations`,
       disabled: this.screen === 'new-project' && !project.canStartSession,
       action: () => {
-        if (this.screen === 'new-project') { this.creation = { projectId: project.id }; this.go('new-model'); }
-        else { this.projectId = project.id; this.go('sessions'); }
+        if (this.screen === 'new-project') { this.creation = { projectId: project.id, environmentId: project.environmentId }; this.go('new-model'); }
+        else { this.projectId = resourceKey(project.id, project.environmentId); this.go('sessions'); }
       },
     }));
-    if (this.screen === 'sessions') return buildSessionRows({ snapshotId: '', frozenAt: '', unsettled: state.sessions.filter(session => !session.settled), settled: state.sessions.filter(session => session.settled) }, Date.now(), state.projects).map(row => ({
+    if (this.screen === 'sessions') return buildSessionRows({ snapshotId: '', frozenAt: '', unsettled: state.sessions.filter(session => !session.settled), settled: state.sessions.filter(session => session.settled), environments: state.environments }, Date.now(), state.projects).map(row => ({
       id: row.key === 'new' ? 'new' : row.value || row.key, title: row.text, section: !row.selectable,
       action: () => { if (row.key === 'new') this.go('new-project'); else if (row.value) this.openThread(row.value); },
     }));
-    if (this.screen === 'new-model') return state.models.map(model => ({
+    if (this.screen === 'new-model') return state.modelsFor(this.creation?.environmentId).map(model => ({
       id: `${model.instanceId}/${model.model}`, title: model.name, detail: model.providerName,
       action: () => {
         this.pickedModel = model;
@@ -443,7 +444,7 @@ export class T3Layer implements Layer {
       return alert ? `${alert.title}\n\n${alert.body}` : 'Notification no longer available.';
     }
     if (this.screen === 'phone-settings') return 'Check your phone\n\nManage your T3 connection, assistant, models, and dictation in T3 Assistant settings on your phone.\n\nDouble-tap to return.';
-    if (this.screen === 'new-summary') return `${state.projects.find(project => project.id === this.creation?.projectId)?.title || 'New session'}\n\n${this.pickedModel?.name || ''}\nReasoning: ${this.pickedModel?.reasoningChoices.find(choice => choice.id === this.creation?.modelSelection?.reasoningId)?.label || 'Provider default'}\nSpeed: Normal`;
+    if (this.screen === 'new-summary') return `${state.projects.find(project => project.id === this.creation?.projectId && project.environmentId === this.creation?.environmentId)?.title || 'New session'}\n\n${this.pickedModel?.name || ''}\nReasoning: ${this.pickedModel?.reasoningChoices.find(choice => choice.id === this.creation?.modelSelection?.reasoningId)?.label || 'Provider default'}\nSpeed: Normal`;
     if (this.screen === 'question-text') {
       const question = this.question();
       return question?.question || 'This question has been resolved.';
@@ -451,7 +452,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'compose') return state.demo ? 'Use Dictate to try a sample draft, or type into this app from the phone keyboard.' : 'Dictate using the microphone, or type into this app from the phone keyboard. Your text will appear for review before sending.';
     if (this.screen === 'draft') return this.draftIsDictated ? reflowDictationText(this.draft) : this.draft;
     if (this.screen === 'plan-review') {
-      const draft = state.plans.get(state.selectedThreadId);
+      const draft = state.getPlan(state.selectedThreadId);
       if (!draft) return 'This request has been resolved.';
       return draft.request.questions.map((question, index) => {
         const answer = draft.answers.find(a => a.questionId === question.id);
@@ -467,7 +468,7 @@ export class T3Layer implements Layer {
   }
 
   private nextPlanQuestion(index?: number): void {
-    const plan = state.plans.get(state.selectedThreadId);
+    const plan = state.getPlan(state.selectedThreadId);
     if (!plan || plan.locked) return;
     const unanswered = plan.request.questions.findIndex(question => !plan.answers.some(answer => answer.questionId === question.id));
     this.questionIndex = index === undefined ? Math.max(0, unanswered) : (index + plan.request.questions.length) % plan.request.questions.length;
@@ -475,7 +476,7 @@ export class T3Layer implements Layer {
   }
 
   private planPages(): { title: string; text: string }[] {
-    const plan = state.plans.get(state.selectedThreadId);
+    const plan = state.getPlan(state.selectedThreadId);
     if (!plan) return [{ title: 'T3', text: 'This request has been resolved.' }];
     if (plan.locked) return [{ title: 'CHECKING SUBMISSION', text: plan.notice || 'Answers are locked to prevent duplicates.' }];
     const pages = (text: string) => paginateText(text, this.pageBox());
@@ -500,13 +501,13 @@ export class T3Layer implements Layer {
     if (transcript !== this.transcriptSource || layoutKey !== this.transcriptLayoutKey || box.font !== this.transcriptFont) {
       const old = this.transcriptPages;
       const last = this.scroll === old.length - 1;
-      const fresh = this.readerThread !== transcript.session.id;
+      const fresh = this.readerThread !== resourceKey(transcript.session.id, transcript.session.environmentId);
       this.transcriptPages = paginateTranscriptWithLiveTurn(transcript.turns, transcript.liveActivities || [], transcript.liveActivity, box);
       const working = ['running', 'starting'].includes(transcript.session.status);
       if (this.followResponse && (fresh || last)) this.scroll = selectResponsePage(this.transcriptPages, this.followResponse, working).pageIndex;
       else this.scroll = fresh || last ? this.transcriptPages.length - 1 : retainTranscriptPage(old, this.scroll, this.transcriptPages);
       if (!working) this.followResponse = null;
-      this.transcriptSource = transcript; this.transcriptLayoutKey = layoutKey; this.transcriptFont = box.font; this.readerThread = transcript.session.id;
+      this.transcriptSource = transcript; this.transcriptLayoutKey = layoutKey; this.transcriptFont = box.font; this.readerThread = resourceKey(transcript.session.id, transcript.session.environmentId);
     }
     this.pageCount = this.transcriptPages.length;
     this.scroll = Math.max(0, Math.min(this.scroll, this.pageCount - 1));
@@ -528,7 +529,7 @@ export class T3Layer implements Layer {
       this.motion = null;
     }
     this.viewWidth = width; this.viewHeight = height;
-    const pending = state.plans.get(state.selectedThreadId);
+    const pending = state.getPlan(state.selectedThreadId);
     const identity = pending ? `${state.selectedThreadId}:${pending.request.requestId}:${pending.request.revision}` : '';
     if (this.screen === 'reader' && identity && identity !== this.planIdentity) { this.planIdentity = identity; this.nextPlanQuestion(); }
     if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; }
@@ -557,7 +558,7 @@ export class T3Layer implements Layer {
 
   private paintStatic(includeBackdrop = true, headingOnly = false): GrayImage {
     const width = this.viewWidth, height = this.viewHeight;
-    const pending = state.plans.get(state.selectedThreadId);
+    const pending = state.getPlan(state.selectedThreadId);
     const image = new GrayImage(width, height, 0);
     const font = getDefaultSmallFont();
     if (this.screen === 'dashboard') {
@@ -666,7 +667,7 @@ export class T3Layer implements Layer {
       if (this.screen === 'notification') await this.dismissSelectedNotification(); else this.back();
       return;
     }
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen) && state.plans.get(state.selectedThreadId)?.locked) return;
+    if (['question-text', 'choices', 'plan-review'].includes(this.screen) && state.getPlan(state.selectedThreadId)?.locked) return;
     const direction = event.type === 'scroll-down' || event.type === 'swipe-down' ? 1 : event.type === 'scroll-up' || event.type === 'swipe-up' ? -1 : 0;
     if (direction) {
       if (this.screen === 'choices') { this.optionPage = Math.max(0, Math.min(this.pageCount - 1, this.optionPage + direction)); return; }
@@ -687,7 +688,7 @@ export class T3Layer implements Layer {
       return;
     }
     if (this.screen === 'notification') { this.replyToCurrentNotification(); return; }
-    if (this.screen === 'question-text') { this.checked = [...(state.plans.get(state.selectedThreadId)?.answers.find(answer => answer.questionId === this.question()?.id)?.optionIndexes || [])]; this.optionPage = 0; this.go('choices', false); return; }
+    if (this.screen === 'question-text') { this.checked = [...(state.getPlan(state.selectedThreadId)?.answers.find(answer => answer.questionId === this.question()?.id)?.optionIndexes || [])]; this.optionPage = 0; this.go('choices', false); return; }
     if (this.screen === 'reader') { this.startCompose(); return; }
     if (this.screen === 'new-summary') { this.startCompose(this.creation); return; }
     if (this.screen === 'compose') { this.record(); return; }
@@ -700,7 +701,7 @@ export class T3Layer implements Layer {
       }
       this.followResponse = new Set(state.transcript?.turns.flatMap(turn => turn.messages.map(message => message.id)) || []);
       this.draftLocked = true;
-      const options = this.creation?.modelSelection ? { projectId: this.creation.projectId, modelSelection: this.creation.modelSelection, assistant: this.creation.assistant } : undefined;
+      const options = this.creation?.modelSelection ? { projectId: this.creation.projectId, environmentId: this.creation.environmentId, modelSelection: this.creation.modelSelection, assistant: this.creation.assistant } : undefined;
       const sent = await state.send(this.draft, options, !options && this.draftMode ? { interactionMode: this.draftMode } : undefined);
       if (!sent && state.canRetryLastSend) this.draftLocked = false;
       if (sent) { this.draft = ''; this.draftMode = undefined; this.creation = null; this.draftLocked = false; this.history = this.history.filter(item => !['compose', 'draft', 'new-project', 'new-model', 'new-reasoning', 'new-summary'].includes(item.screen)); this.readerThread = ''; this.go('reader', false); }
@@ -772,14 +773,14 @@ export class T3Layer implements Layer {
       ] : [];
     }
     if (['compose', 'draft', 'phone-settings'].includes(this.screen)) return [];
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen)) return state.plans.get(state.selectedThreadId)?.locked ? [] : [
+    if (['question-text', 'choices', 'plan-review'].includes(this.screen)) return state.getPlan(state.selectedThreadId)?.locked ? [] : [
       { label: 'Next question', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.nextPlanQuestion(this.questionIndex + 1); } },
       { label: 'Previous question', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.nextPlanQuestion(this.questionIndex - 1); } },
       { label: 'Review answers', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.go('plan-review', false); } },
     ];
     if (this.screen === 'inbox') return visibleT3Alerts().length ? [{ label: 'Dismiss notification', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.dismissSelectedNotification(); } }] : [];
-    const selectedSession = this.screen === 'sessions' ? state.sessions.find(session => session.id === this.selected) : this.screen === 'reader' ? state.transcript?.session : null;
-    const canSettle = selectedSession && !['running', 'starting'].includes(selectedSession.status) && !state.plans.has(selectedSession.id);
+    const selectedSession = this.screen === 'sessions' ? state.sessions.find(session => resourceKey(session.id, session.environmentId) === this.selected) : this.screen === 'reader' ? state.transcript?.session : null;
+    const canSettle = selectedSession && !['running', 'starting'].includes(selectedSession.status) && !state.plans.has(resourceKey(selectedSession.id, selectedSession.environmentId));
     return [
       ...(this.screen === 'reader' && state.transcript?.pendingProposedPlan ? [{ label: 'Review plan', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openProposedPlan(); } }] : []),
       ...(this.screen === 'reader' && this.canChangeSession() && state.transcript?.session.modelSelection ? [
@@ -788,7 +789,7 @@ export class T3Layer implements Layer {
       ] : []),
       { label: 'Display comparison', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); ctx.stack.push(new RenderingComparisonLayer()); } },
       { label: 'Ask assistant', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); const homeScreen = this.screen; this.screen = 'dashboard'; const assistant = this.rows().find(row => row.id === 'assistant'); this.screen = homeScreen; void assistant?.action(); } },
-      ...(canSettle ? [{ label: 'Settle session', onSelect: async (ctx: LayerContext) => { ctx.stack.pop(); await state.settle(selectedSession.id); } }] : []),
+      ...(canSettle ? [{ label: 'Settle session', onSelect: async (ctx: LayerContext) => { ctx.stack.pop(); await state.settle(selectedSession.id, selectedSession.environmentId); } }] : []),
     ];
   }
 

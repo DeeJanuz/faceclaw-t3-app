@@ -9,7 +9,7 @@ import { requestPostNotificationsPermission } from '../g2/android-permissions';
 import { openConnectionNotificationSettings } from '../native/foreground-service';
 import { dashboardController } from '../g2/dashboard-controller';
 import { connectT3, useT3SampleData, t3Workspace } from '../apps/t3/runtime';
-import type { ModelSummary, ProjectSummary } from '../apps/t3/protocol';
+import type { EnvironmentSummary, ModelSummary, ProjectSummary } from '../apps/t3/protocol';
 
 class T3SettingsModel extends Observable {
   private config: T3Config;
@@ -32,8 +32,8 @@ class T3SettingsModel extends Observable {
     this.syncCustomizations();
     this.set('phoneNotifications', readT3PhoneNotificationsEnabled());
     for (const key of ['enabled', 'preferAssistant', 'bridgeDictation', 'allowTools', 'notificationOverride'] as const) this.set(key, this.config[key]);
-    const project = t3Workspace.projects.find(p => p.id === this.config.assistantProjectId);
-    this.set('projectLabel', project ? `Project: ${project.title}` : this.config.assistantProjectId ? 'Change assistant project' : 'Choose assistant project');
+    const project = t3Workspace.projects.find(p => p.id === this.config.assistantProjectId && (this.config.assistantEnvironmentId ? p.environmentId === this.config.assistantEnvironmentId : t3Workspace.environments?.find(e => e.isPrimary)?.environmentId === p.environmentId));
+    this.set('projectLabel', project ? `Project: ${project.title}${project.environmentLabel ? " · " + project.environmentLabel : ""}` : this.config.assistantProjectId ? 'Change assistant project' : 'Choose assistant project');
     this.set('modelLabel', this.config.assistantModel ? `Model: ${this.config.assistantModel}` : 'Choose assistant model');
     this.set('reasoningLabel', `Reasoning: ${this.config.assistantReasoning || 'Default'}`);
     this.set('refinementLabel', this.config.refinementProvider === 't3' ? 'Luna · low · T3 bridge' : 'Anthropic · Faceclaw configuration');
@@ -111,21 +111,30 @@ class T3SettingsModel extends Observable {
     finally { this.set('canPair', true); }
   };
 
+  private async assistantModels(): Promise<ModelSummary[]> {
+    let environmentId = this.config.assistantEnvironmentId;
+    if (!environmentId) {
+      const result = await t3Client.rpc<{ environments: EnvironmentSummary[] }>('environments.list');
+      environmentId = result.environments.find(environment => environment.isPrimary)?.environmentId;
+    }
+    return (await t3Client.rpc<{ models: ModelSummary[] }>('models.list', environmentId ? { environmentId } : {})).models;
+  }
   chooseProject = async () => {
     try {
       await t3Client.connect();
-      const result = await t3Client.rpc<{ projects: ProjectSummary[] }>('projects.list');
-      const labels = result.projects.map(p => result.projects.filter(other => other.title === p.title).length > 1 ? `${p.title} · ${p.id.slice(0, 8)}` : p.title);
+      const catalog = await t3Client.rpc<{ projects: ProjectSummary[] }>('projects.list');
+      const result = catalog;
+      const labels = result.projects.map(p => result.projects.filter(other => other.title === p.title).length > 1 ? `${p.title} · ${p.environmentLabel || 'This computer'}` : p.title);
       const selected = await action({ title: 'Assistant project', cancelButtonText: 'Cancel', actions: labels });
       const index = labels.indexOf(selected);
-      if (index >= 0) { this.save({ assistantProjectId: result.projects[index].id }); this.set('projectLabel', `Project: ${result.projects[index].title}`); }
+      if (index >= 0) { const project = result.projects[index]; this.save({ assistantProjectId: project.id, assistantEnvironmentId: project.environmentId || '', assistantProvider: '', assistantModel: '', assistantReasoning: '' }); this.set('projectLabel', `Project: ${project.title}${project.environmentLabel ? ' · ' + project.environmentLabel : ''}`); }
     } catch (error) { this.set('status', error instanceof Error ? error.message : 'T3_PROJECTS_FAILED'); }
   };
 
   chooseModel = async () => {
     try {
       await t3Client.connect();
-      this.models = (await t3Client.rpc<{ models: ModelSummary[] }>('models.list')).models;
+      this.models = await this.assistantModels();
       const labels = this.models.map(m => `${m.providerName} · ${m.name}`);
       const selected = await action({ title: 'Assistant model', cancelButtonText: 'Cancel', actions: labels });
       const model = this.models[labels.indexOf(selected)];
@@ -136,7 +145,7 @@ class T3SettingsModel extends Observable {
   chooseReasoning = async () => {
     try {
       await t3Client.connect();
-      this.models = (await t3Client.rpc<{ models: ModelSummary[] }>('models.list')).models;
+      this.models = await this.assistantModels();
       const model = this.models.find(m => m.instanceId === this.config.assistantProvider && m.model === this.config.assistantModel);
       if (!model) { this.set('status', 'Choose an available model first.'); return; }
       const choices = model.reasoningChoices;

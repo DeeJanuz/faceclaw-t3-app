@@ -66,3 +66,7 @@ T3 requests Faceclaw’s default dictation engine instead of forcing bridge Whis
 ## Changing a session model
 
 While viewing an idle T3 conversation, long press to open the app actions menu and choose **Change model**. The picker uses the current bridge model catalog, applies the selected model to the existing session, and returns to the conversation. The bridge rejects the change while a turn or pending plan input is active, or if another client changed the session first.
+
+## Multiple T3 computers
+
+Use the [bridge federation setup](../faceclaw-t3-bridge/docs/peers.md) to pair the bridges on your computers. This APK routes sessions, projects, models, plan answers, and actions by environment ID. Lists show the owning computer and unavailable peers. Changing the phone's host clears the old workspace and subscriptions; it does not replay actions or switch hosts automatically. Legacy assistant settings still select the host's local primary project.

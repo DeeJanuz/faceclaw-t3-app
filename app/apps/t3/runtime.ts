@@ -55,7 +55,7 @@ export function initializeT3(): void {
   });
   t3Client.onEvent(event => {
     if (t3Workspace.demo) return;
-    if (event.event === 'transcript.changed' && event.payload?.threadId === t3Workspace.selectedThreadId) {
+    if (event.event === 'transcript.changed' && event.payload?.threadId === t3Workspace.selectedThreadId && (event.payload?.environmentId ?? undefined) === t3Workspace.selectedEnvironmentId) {
       void t3Workspace.refreshTranscript();
     }
     if (event.event === 'sessions.changed' && !eventTimer) {

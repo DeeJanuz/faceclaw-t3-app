@@ -1,3 +1,4 @@
+import { resourceKey } from './resource';
 import {ownsFeature} from '../../extensions/host';
 import { invokeExternalNotification, hasExternalNotification, invalidateExternalNotificationReplies, type NotificationReplyStatus } from "../../native/external-notifications";
 import { getT3Config, onT3ConfigChanged } from "../../t3/config";
@@ -245,7 +246,7 @@ export async function openT3Alert(alert: T3Alert, returnToSleep = false): Promis
   const previous = shell.foregroundWindow()?.windowId;
   await openWindow();
   if (!state.alerts.includes(alert) || state.demo !== demo || pairing !== pairingIdentity()) return false;
-  shell.focusWindow('t3'); openT3Thread(alert.threadId, previous);
+  shell.focusWindow('t3'); openT3Thread(resourceKey(alert.threadId, alert.environmentId), previous);
   shell.closeNotificationPreview(alert.id, false);
   dismissT3Alert(alert);
   return true;

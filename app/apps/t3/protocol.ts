@@ -3,7 +3,11 @@ import type { PhoneSnapshot, PhoneCommandResult, PhonePairing } from './phone-pr
 export const PROTOCOL_VERSION = 1 as const
 export const BRIDGE_PROTOCOL = 'even-t3-v1'
 
+export interface EnvironmentSummary { environmentId: string; label: string; kind: string; status: string; isPrimary: boolean; errorCode?: string }
+
 export interface SessionSummary {
+  environmentId?: string
+  environmentLabel?: string
   interactionMode?: 'default' | 'plan'
   modelSelection?: NewSessionModelSelection
   id: string
@@ -33,6 +37,8 @@ export interface WeatherCurrentResult {
 }
 
 export interface SessionsListResult {
+  environments?: EnvironmentSummary[]
+  partial?: boolean
   snapshotId: string
   frozenAt: string
   unsettled: SessionSummary[]
@@ -40,6 +46,8 @@ export interface SessionsListResult {
 }
 
 export interface ProjectSummary {
+  environmentId?: string
+  environmentLabel?: string
   id: string
   title: string
   canStartSession: boolean
@@ -47,6 +55,8 @@ export interface ProjectSummary {
 }
 
 export interface ProjectsListResult {
+  environments?: EnvironmentSummary[]
+  partial?: boolean
   snapshotId: string
   projects: ProjectSummary[]
 }
@@ -58,6 +68,8 @@ export interface ReasoningChoice {
 }
 
 export interface ModelSummary {
+  environmentId?: string
+  environmentLabel?: string
   instanceId: string
   providerName: string
   model: string
@@ -171,9 +183,9 @@ export interface SentTurnResult {
 }
 
 export type VoiceTarget =
-  | { kind: 'thread'; threadId: string }
-  | { kind: 'project'; projectId: string; modelSelection: NewSessionModelSelection }
-  | { kind: 'assistant'; projectId: string; modelSelection: NewSessionModelSelection }
+  | { kind: 'thread'; threadId: string; environmentId?: string }
+  | { kind: 'project'; projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection }
+  | { kind: 'assistant'; projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection }
 
 export interface BridgeEvent {
   v: typeof PROTOCOL_VERSION

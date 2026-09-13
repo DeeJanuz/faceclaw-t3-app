@@ -6,7 +6,7 @@ const ts = require('typescript');
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { if (!(name in imports)) throw new Error(name); return imports[name]; }, URL, setTimeout, clearTimeout, ...globals });
+  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (!(name in imports)) throw new Error(name); return imports[name]; }, URL, setTimeout, clearTimeout, ...globals });
   return module.exports;
 }
 const security = load('app/t3/security.ts');
@@ -89,6 +89,63 @@ test('provider-scoped tool calls require explicit provenance and bounded lifetim
 const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': security });
 const planRequest = { requestId: 'r1', revision: 'v1', questions: [{ id: 'q1', options: [{ label: 'Yes' }] }] };
 const plan = () => ({ request: planRequest, answers: [{ questionId: 'q1', text: '', optionIndexes: [0] }], locked: false, notice: '' });
+test('federated session actions, drafts and subscriptions stay bound to their owning environment', async () => {
+  const calls = [], saved = new Map();
+  const session = environmentId => ({ id: 'same', environmentId, projectId: 'same-project', projectTitle: 'Project',
+    title: environmentId, status: 'ready', settled: false, interactionMode: 'plan', modelSelection: { instanceId: 'provider', model: 'model' } });
+  const sessions = ['a', 'b'].map(session);
+  const api = { rpc: async (method, params = {}) => {
+    calls.push({ method, params });
+    if (method === 'transcript.get') return { session: session(params.environmentId), turns: [], pendingPlanInput: planRequest };
+    if (method === 'sessions.list') return { unsettled: sessions, settled: [] };
+    if (method === 'projects.list') return { projects: [] };
+    if (method === 'models.list') return { models: [] };
+    return { threadId: 'same', environmentId: params.environmentId, sequence: 1 };
+  } };
+  const workspace = new T3Workspace(api);
+  workspace.setDraftStorage({ scope: () => 'host', save: (k, v) => saved.set(k, JSON.parse(JSON.stringify(v))), load: k => saved.get(k) ?? null, remove: k => saved.delete(k) });
+  await workspace.openThread('same', 'a');
+  workspace.setAnswer('same', { questionId: 'q1', text: 'Only A', optionIndexes: [] });
+  await workspace.openThread('same', 'b');
+  assert.equal(workspace.getPlan('same').answers.length, 0);
+  workspace.setAnswer('same', { questionId: 'q1', text: 'Only B', optionIndexes: [] });
+  assert.equal(await workspace.submitPlan('same'), true);
+  assert.equal(calls.find(c => c.method === 'plan.submit').params.environmentId, 'b');
+  assert.equal(calls.find(c => c.method === 'transcript.unsubscribe').params.environmentId, 'a');
+  assert.equal(await workspace.setReasoning('same', 'high', { instanceId: 'provider', model: 'model' }), true);
+  assert.equal(await workspace.setModel('same', { instanceId: 'provider', model: 'other' }, { instanceId: 'provider', model: 'model' }), true);
+  assert.equal(await workspace.send('Only B'), true);
+  assert.equal(calls.find(c => c.method === 'turn.send').params.environmentId, 'b');
+  assert.equal(calls.find(c => c.method === 'thread.model.set').params.environmentId, 'b');
+  assert.equal(calls.find(c => c.method === 'thread.reasoning.set').params.environmentId, 'b');
+  await workspace.settle('same', 'a');
+  assert.equal(calls.find(c => c.method === 'thread.settle').params.environmentId, 'a');
+  await workspace.openThread('same', 'a');
+  assert.equal(workspace.getPlan('same').answers[0].text, 'Only A');
+  assert.notEqual([...saved.keys()][0], [...saved.keys()][1]);
+});
+test('federated creation filters models and rejects a response from the wrong environment', async () => {
+  const f = controlWorkspace();
+  f.workspace.environments = [{ environmentId: 'a', isPrimary: true }];
+  f.workspace.models = [{ instanceId: 'same', model: 'same', environmentId: 'a' }, { instanceId: 'same', model: 'same', environmentId: 'b' }];
+  assert.equal(f.workspace.modelsFor('b').length, 1);
+  assert.equal(f.workspace.modelsFor('b')[0].environmentId, 'b');
+  f.api.rpc = async (method, params) => { f.calls.push({ method, params }); return { threadId: 'new', environmentId: 'a' }; };
+  assert.equal(await f.workspace.send('hello', { environmentId: 'b', projectId: 'same', modelSelection: { instanceId: 'same', model: 'same' } }), false);
+  assert.equal(f.calls[0].params.environmentId, 'b');
+  assert.equal(f.workspace.selectedThreadId, 'thread');
+  assert.equal(f.workspace.canRetryLastSend, false);
+});
+test('host switching with a reused transport cannot queue an old unsubscribe onto the new host', async () => {
+  const calls = [], api = { rpc: async (...args) => { calls.push(args); return {}; } };
+  const workspace = new T3Workspace(api);
+  workspace.selectedThreadId = 'old'; workspace.selectedEnvironmentId = 'old-computer';
+  workspace.useApi(api, false);
+  await Promise.resolve();
+  assert.equal(calls.length, 0);
+  assert.equal(workspace.selectedThreadId, '');
+  assert.equal(workspace.selectedEnvironmentId, undefined);
+});
 test('plan lock must persist successfully before any dispatch', async () => {
   let dispatched = false;
   const workspace = new T3Workspace({ rpc: async () => { dispatched = true; } });
@@ -471,4 +528,25 @@ test('notification review remains current after admission while duplicate review
  h.config.pairingFingerprint='changed';assert.equal(checks(),false);h.config.pairingFingerprint='pair-one';
  sources.length=0;assert.equal(checks(),false);
  finish({status:'sent'});assert.equal(await pending,'sent');
+});
+test('assistant pins remote creation, transcript and unsubscribe to the selected environment', async () => {
+  const config={assistantProjectId:'same-project',assistantEnvironmentId:'mac',assistantProvider:'codex',assistantModel:'model'};
+  const calls=[],errors=[];let done=false;
+  const client={configure(){},connect:async()=>{},rpc:async(method,params)=>{
+    calls.push({method,params});
+    if(method==='assistant.start') return {threadId:'same-thread',environmentId:'mac'};
+    if(method==='transcript.get') return {environmentId:'mac',session:{id:'same-thread',status:'ready'},turns:[{endedAt:'now',messages:[{role:'assistant',text:'OK'}]}]};
+    return {};
+  }};
+  const api=load('app/t3/assistant.ts',{'./config':{getT3Config:()=>config},'./client':{t3Client:client}});
+  api.sendT3Assistant('hello',{onTextDelta(){},onTurnDone(){done=true},onError:e=>errors.push(e)},()=>{throw Error('fallback')});
+  await flush();assert.equal(done,true);assert.deepEqual(errors,[]);
+  assert.deepEqual(calls.map(c=>[c.method,c.params.environmentId]),[['assistant.start','mac'],['transcript.get','mac'],['transcript.unsubscribe','mac']]);
+});
+test('assistant rejects an owner mismatch without retrying or reading the wrong transcript', async () => {
+  const calls=[],errors=[];
+  const client={configure(){},connect:async()=>{},rpc:async(method)=>{calls.push(method);return {threadId:'same-thread',environmentId:'local'}}};
+  const api=load('app/t3/assistant.ts',{'./config':{getT3Config:()=>({assistantEnvironmentId:'mac',assistantProjectId:'p',assistantProvider:'codex',assistantModel:'model'})},'./client':{t3Client:client}});
+  api.sendT3Assistant('hello',{onError:e=>errors.push(e)},()=>{throw Error('fallback')});await flush();
+  assert.deepEqual(calls,['assistant.start']);assert.deepEqual(errors,['T3_OPERATION_UNCERTAIN']);
 });

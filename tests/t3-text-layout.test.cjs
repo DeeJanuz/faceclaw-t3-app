@@ -6,7 +6,7 @@ const ts = require('typescript');
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText,
-    { module, exports: module.exports, require: name => { assert.ok(name in imports, name); return imports[name]; }, ...globals });
+    { module, exports: module.exports, require: name => { if (name === './resource') return load('app/apps/t3/resource.ts'); assert.ok(name in imports, name); return imports[name]; }, ...globals });
   return module.exports;
 }
 const wrap = load('app/graphics/textwrap.ts');

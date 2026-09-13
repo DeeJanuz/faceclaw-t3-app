@@ -5,13 +5,13 @@ import { readT3NotificationApps, saveT3NotificationApps } from './notification-p
 declare const com: any;
 export interface T3Config {
   enabled: boolean; pairingFingerprint: string; bridgeUrl: string; token: string; allowInsecureLocal: boolean;
-  preferAssistant: boolean; assistantProjectId: string; assistantProvider: string;
+  preferAssistant: boolean; assistantProjectId: string; assistantEnvironmentId?: string; assistantProvider: string;
   assistantModel: string; assistantReasoning: string; bridgeDictation: boolean;
   notificationOverride: boolean;
   notificationExcludedApps: string[];
   refinementProvider: 'anthropic' | 't3'; allowTools: boolean; deviceId: string;
 }
-const defaults: T3Config = { enabled: false, pairingFingerprint: '', bridgeUrl: 'ws://10.0.2.2:8787', token: '', allowInsecureLocal: false, preferAssistant: false, assistantProjectId: '', assistantProvider: '', assistantModel: '', assistantReasoning: '', bridgeDictation: false, notificationOverride: false, notificationExcludedApps: [], refinementProvider: 't3', allowTools: false, deviceId: 'faceclaw-t3' };
+const defaults: T3Config = { enabled: false, pairingFingerprint: '', bridgeUrl: 'ws://10.0.2.2:8787', token: '', allowInsecureLocal: false, preferAssistant: false, assistantProjectId: '', assistantEnvironmentId: '', assistantProvider: '', assistantModel: '', assistantReasoning: '', bridgeDictation: false, notificationOverride: false, notificationExcludedApps: [], refinementProvider: 't3', allowTools: false, deviceId: 'faceclaw-t3' };
 const key = 't3.config';
 function secrets(): any { return com.faceclaw.app.FaceclawT3Secrets; }
 export function getT3Config(): T3Config {
@@ -24,6 +24,7 @@ export function saveT3Config(update: Partial<T3Config>): void {
   // Notification app choices are local preferences, not a bridge reconfiguration.
   if (Object.keys(update).length === 1 && update.notificationExcludedApps !== undefined) { saveT3NotificationApps(update.notificationExcludedApps); return; }
   const next = { ...getT3Config(), ...update };
+  if (next.assistantEnvironmentId && !/^[A-Za-z0-9_-]{1,256}$/.test(next.assistantEnvironmentId)) throw new Error('T3_CONFIG_INVALID');
   bridgeEndpoint(next.bridgeUrl, next.allowInsecureLocal);
   if (next.token) validateToken(next.token);
   if (next.refinementProvider !== 'anthropic' && next.refinementProvider !== 't3') throw new Error('T3_CONFIG_INVALID');

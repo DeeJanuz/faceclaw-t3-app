@@ -1,3 +1,4 @@
+import { resourceKey, resourceRef } from './resource';
 import { isDefiniteBridgeRejection, parseProposedPlan, sanitizeSessionControls } from "../../t3/security";
 import type {
   ModelSummary, NewSessionModelSelection, PendingPlanInput, PlanAnswer,
@@ -11,6 +12,7 @@ export interface T3Api {
 export interface T3Alert {
   id: string;
   kind: 't3' | 'phone';
+  environmentId?: string;
   title: string;
   body: string;
   threadId: string;
@@ -44,6 +46,14 @@ export class T3Workspace {
   models: ModelSummary[] = [];
   transcript: TranscriptResult | null = null;
   selectedThreadId = '';
+  selectedEnvironmentId: string | undefined;
+  environments: import('./protocol').EnvironmentSummary[] = [];
+  get selectedThreadKey(): string { return resourceKey(this.selectedThreadId, this.selectedEnvironmentId); }
+  getPlan(threadId: string) { return this.plans.get(resourceKey(threadId, this.selectedEnvironmentId)); }
+  modelsFor(environmentId?: string) {
+    const target = environmentId ?? this.environments.find(e => e.isPrimary)?.environmentId;
+    return this.models.filter(m => m.environmentId === target || (!m.environmentId && !environmentId));
+  }
   status = 'Connect to your T3 bridge';
   error = '';
   busy = false;
@@ -70,7 +80,7 @@ export class T3Workspace {
   setDraftStorage(storage: PlanDraftStorage): void { this.draftStorage = storage; }
   private get storage(): PlanDraftStorage | null { return this.demo ? null : this.draftStorage; }
   private draftKey(threadId: string, request: PendingPlanInput): string {
-    return JSON.stringify([this.storage?.scope() || '', threadId, request.requestId, request.revision]);
+    return JSON.stringify([this.storage?.scope() || '', resourceKey(threadId, this.selectedEnvironmentId), request.requestId, request.revision]);
   }
 
   onChange(listener: () => void): () => void {
@@ -84,12 +94,16 @@ export class T3Workspace {
   changed(): void { this.listeners.forEach(listener => listener()); }
 
   useApi(api: T3Api, demo: boolean): void {
+    const previousApi = this.api;
+    const previous = { threadId: this.selectedThreadId, ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}) };
+    // A reused transport is closed/reconfigured by runtime.ts. Never queue an old unsubscribe onto its new host.
+    if (previous.threadId && previousApi !== api) void Promise.resolve().then(() => previousApi.rpc('transcript.unsubscribe', previous)).catch(() => undefined);
     this.generation++;
     this.transcriptRequest++;
     this.api = api;
     this.demo = demo;
     this.projects = []; this.sessions = []; this.models = [];
-    this.transcript = null; this.selectedThreadId = ''; this.alerts = [];
+    this.transcript = null; this.selectedThreadId = ''; this.selectedEnvironmentId = undefined; this.environments = []; this.alerts = [];
     this.completions.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
     this.refreshPending = null; this.busy = false; this.error = ''; this.canRetryLastSend = true;
     this.sessionsRefreshPending = null;
@@ -119,9 +133,10 @@ export class T3Workspace {
         if (generation !== this.generation) return;
         this.projects = projects.projects;
         this.models = models.models;
+        this.environments = sessions.environments ?? [];
         this.applySessions([...sessions.unsettled, ...sessions.settled]);
         this.error = '';
-        this.status = this.demo ? 'Sample data · no live actions' : 'Connected to T3';
+        this.status = this.demo ? 'Sample data · no live actions' : sessions.partial ? `Connected · unavailable: ${this.environments.filter(e => e.status !== 'connected').map(e => e.label).join(', ')}` : 'Connected to T3';
         this.changed();
       } catch (error) {
         if (generation === this.generation) this.fail(error);
@@ -143,9 +158,18 @@ export class T3Workspace {
       try {
         const sessions = await api.rpc<SessionsListResult>('sessions.list');
         if (generation !== this.generation) return;
+        const environmentsChanged = JSON.stringify(this.environments) !== JSON.stringify(sessions.environments ?? []);
+        this.environments = sessions.environments ?? [];
+        if (environmentsChanged) {
+          const [projects, models] = await Promise.all([
+            api.rpc<{ projects: ProjectSummary[] }>('projects.list'), api.rpc<{ models: ModelSummary[] }>('models.list'),
+          ]);
+          if (generation !== this.generation) return;
+          this.projects = projects.projects; this.models = models.models;
+        }
         this.applySessions([...sessions.unsettled, ...sessions.settled]);
         this.error = '';
-        this.status = this.demo ? 'Sample data · no live actions' : 'Connected to T3';
+        this.status = this.demo ? 'Sample data · no live actions' : sessions.partial ? `Connected · unavailable: ${this.environments.filter(e => e.status !== 'connected').map(e => e.label).join(', ')}` : 'Connected to T3';
         this.changed();
       } catch (error) {
         if (generation === this.generation) this.fail(error);
@@ -160,12 +184,12 @@ export class T3Workspace {
     const next = new Map<string, string>();
     for (const session of sessions) {
       const completion = session.completedTurn?.id;
-      if (completion) next.set(session.id, completion);
-      if (this.initialized && completion && this.completions.get(session.id) !== completion && !session.settled) {
+      if (completion) next.set(resourceKey(session.id, session.environmentId), completion);
+      if (this.initialized && completion && this.completions.get(resourceKey(session.id, session.environmentId)) !== completion && !session.settled) {
         const timestamp = Date.parse(session.completedTurn!.completedAt);
         if (Number.isFinite(timestamp) && Date.now() - timestamp < 30_000) {
           this.addAlert({
-            id: `t3:${session.id}:${completion}`, kind: 't3', threadId: session.id,
+            id: `t3:${resourceKey(session.id, session.environmentId)}:${completion}`, environmentId: session.environmentId, kind: 't3', threadId: session.id,
             title: session.projectTitle, body: session.title, createdAt: timestamp,
           });
         }
@@ -174,13 +198,13 @@ export class T3Workspace {
     this.completions = next;
     this.initialized = true;
     this.sessions = sessions;
-    const allowed = new Set(sessions.filter(s => !s.settled).map(s => s.id));
-    this.alerts = this.alerts.filter(a => a.kind === 'phone' || allowed.has(a.threadId));
+    const allowed = new Set(sessions.filter(s => !s.settled).map(s => resourceKey(s.id, s.environmentId)));
+    this.alerts = this.alerts.filter(a => a.kind === 'phone' || allowed.has(resourceKey(a.threadId, a.environmentId)));
   }
 
   addAlert(alert: T3Alert, notifyArrival = true): void {
     if (this.alerts.some(existing => existing.id === alert.id && existing.title === alert.title && existing.body === alert.body && existing.arrivalFingerprint === alert.arrivalFingerprint)) return;
-    this.alerts = [alert, ...this.alerts.filter(a => (a.groupId || a.threadId) !== (alert.groupId || alert.threadId) || a.kind !== alert.kind)].slice(0, 50);
+    this.alerts = [alert, ...this.alerts.filter(a => (a.groupId || resourceKey(a.threadId, a.environmentId)) !== (alert.groupId || resourceKey(alert.threadId, alert.environmentId)) || a.kind !== alert.kind)].slice(0, 50);
     if (notifyArrival) this.arrivals.forEach(listener => listener(alert));
     this.changed();
   }
@@ -190,13 +214,15 @@ export class T3Workspace {
     this.changed();
   }
 
-  async openThread(threadId: string): Promise<void> {
+  async openThread(threadId: string, environmentId?: string): Promise<void> {
+    const ref = resourceRef(threadId); threadId = ref.id; environmentId = environmentId ?? ref.environmentId;
     const generation = this.generation;
     const previousThreadId = this.selectedThreadId;
-    if (previousThreadId && previousThreadId !== threadId) {
-      void this.api.rpc('transcript.unsubscribe', { threadId: previousThreadId }).catch(() => undefined);
+    if (previousThreadId && resourceKey(previousThreadId, this.selectedEnvironmentId) !== resourceKey(threadId, environmentId)) {
+      void this.api.rpc('transcript.unsubscribe', { threadId: previousThreadId, ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}) }).catch(() => undefined);
     }
     this.selectedThreadId = threadId;
+    this.selectedEnvironmentId = environmentId;
     this.transcript = null;
     this.changed();
     if (generation === this.generation) await this.refreshTranscript();
@@ -204,11 +230,13 @@ export class T3Workspace {
 
   async refreshTranscript(): Promise<void> {
     const threadId = this.selectedThreadId;
+    const environmentId = this.selectedEnvironmentId;
+    const threadKey = resourceKey(threadId, environmentId);
     if (!threadId) return;
     // The bridge may report a live turn every poll interval. Keep one fetch in
     // flight and coalesce arrivals so a slow mobile link cannot build an
     // unbounded queue that starves gesture handling.
-    if (this.transcriptRefreshPending && this.transcriptRefreshPendingThread === threadId) {
+    if (this.transcriptRefreshPending && this.transcriptRefreshPendingThread === threadKey) {
       this.transcriptRefreshQueued = true;
       return this.transcriptRefreshPending;
     }
@@ -216,22 +244,22 @@ export class T3Workspace {
     const generation = this.generation;
     const pending = (async () => {
       try {
-      const transcript = await this.api.rpc<TranscriptResult>('transcript.get', { threadId });
-      if (request !== this.transcriptRequest || generation !== this.generation || threadId !== this.selectedThreadId) return;
-      if (!transcript?.session || transcript.session.id !== threadId) throw new Error('T3_INVALID_RESPONSE');
+      const transcript = await this.api.rpc<TranscriptResult>('transcript.get', { threadId, ...(environmentId ? { environmentId } : {}) });
+      if (request !== this.transcriptRequest || generation !== this.generation || threadKey !== this.selectedThreadKey) return;
+      if (!transcript?.session || transcript.session.id !== threadId || (environmentId && transcript.session.environmentId !== environmentId)) throw new Error('T3_INVALID_RESPONSE');
       sanitizeSessionControls(transcript.session);
       transcript.pendingProposedPlan = parseProposedPlan(transcript.pendingProposedPlan);
       this.transcript = transcript;
       const pending = transcript.pendingPlanInput;
-      const old = this.plans.get(threadId);
+      const old = this.plans.get(resourceKey(threadId, this.selectedEnvironmentId));
       if (!pending) {
         if (old) this.storage?.remove(this.draftKey(threadId, old.request));
-        this.plans.delete(threadId);
+        this.plans.delete(threadKey);
       }
       else if (!old || old.request.revision !== pending.revision || old.request.requestId !== pending.requestId) {
         if (old) this.storage?.remove(this.draftKey(threadId, old.request));
         const saved = this.storage?.load(this.draftKey(threadId, pending));
-        this.plans.set(threadId, saved && saved.request?.requestId === pending.requestId && saved.request?.revision === pending.revision && typeof saved.locked === "boolean" && Array.isArray(saved.answers) && saved.answers.every(a => typeof a.questionId === "string" && typeof a.text === "string" && Array.isArray(a.optionIndexes) && a.optionIndexes.every(Number.isInteger))
+        this.plans.set(threadKey, saved && saved.request?.requestId === pending.requestId && saved.request?.revision === pending.revision && typeof saved.locked === "boolean" && Array.isArray(saved.answers) && saved.answers.every(a => typeof a.questionId === "string" && typeof a.text === "string" && Array.isArray(a.optionIndexes) && a.optionIndexes.every(Number.isInteger))
           ? { ...saved, request: pending } : { request: pending, answers: [], locked: false, notice: '' });
       }
       this.error = '';
@@ -239,7 +267,7 @@ export class T3Workspace {
       } catch (error) { if (request === this.transcriptRequest && generation === this.generation) this.fail(error); }
     })();
     this.transcriptRefreshPending = pending;
-    this.transcriptRefreshPendingThread = threadId;
+    this.transcriptRefreshPendingThread = threadKey;
     void pending.finally(() => {
       if (this.transcriptRefreshPending !== pending) return;
       this.transcriptRefreshPending = null;
@@ -252,15 +280,16 @@ export class T3Workspace {
     return pending;
   }
 
-  async send(text: string, options?: { projectId: string; modelSelection: NewSessionModelSelection; assistant?: boolean }, controls?: { interactionMode?: 'default' | 'plan' }): Promise<boolean> {
+  async send(text: string, options?: { projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection; assistant?: boolean }, controls?: { interactionMode?: 'default' | 'plan' }): Promise<boolean> {
     if (this.busy) return false;
     if (!text.trim() || (!options && !this.selectedThreadId)) { this.canRetryLastSend = true; return false; }
     const generation = this.generation;
     const api = this.api;
+    const targetEnvironmentId = options ? options.environmentId : this.selectedEnvironmentId;
     this.busy = true; this.canRetryLastSend = false; this.error = ''; this.changed();
     try {
       if (generation !== this.generation) return false;
-      const selected = this.transcript?.session?.id === this.selectedThreadId ? this.transcript.session : this.sessions.find(session => session.id === this.selectedThreadId);
+      const selected = this.transcript?.session?.id === this.selectedThreadId ? this.transcript.session : this.sessions.find(session => resourceKey(session.id, session.environmentId) === this.selectedThreadKey);
       const running = selected?.status === 'running' || selected?.status === 'starting';
       if (controls?.interactionMode !== undefined &&
           (options || !selected?.interactionMode || !['default', 'plan'].includes(controls.interactionMode) ||
@@ -269,12 +298,12 @@ export class T3Workspace {
       }
       const method = options ? (options.assistant ? 'assistant.start' : 'thread.start') : running ? 'turn.steer' : 'turn.send';
       const params = options
-        ? { projectId: options.projectId, modelSelection: options.modelSelection, text: text.trim() }
-        : { threadId: this.selectedThreadId, text: text.trim(), ...(!running && controls?.interactionMode ? { interactionMode: controls.interactionMode } : {}) };
-      const result = await api.rpc<{ threadId: string }>(method, params);
+        ? { ...(options.environmentId ? { environmentId: options.environmentId } : {}), projectId: options.projectId, modelSelection: options.modelSelection, text: text.trim() }
+        : { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId: this.selectedThreadId, text: text.trim(), ...(!running && controls?.interactionMode ? { interactionMode: controls.interactionMode } : {}) };
+      const result = await api.rpc<{ threadId: string; environmentId?: string }>(method, params);
       if (generation !== this.generation) return false;
-      if (typeof result?.threadId !== 'string' || !result.threadId) throw new Error('T3_INVALID_RESPONSE');
-      await this.openThread(result.threadId);
+      if (typeof result?.threadId !== 'string' || !result.threadId || (targetEnvironmentId && result.environmentId !== targetEnvironmentId)) throw new Error('T3_INVALID_RESPONSE');
+      await this.openThread(result.threadId, result.environmentId ?? targetEnvironmentId);
       if (generation !== this.generation) return false;
       await this.refresh();
       return true;
@@ -297,7 +326,7 @@ export class T3Workspace {
     const generation = this.generation; const api = this.api;
     this.busy = true; this.error = ''; this.changed();
     try {
-      await api.rpc('thread.reasoning.set', { threadId, reasoningId, expectedModel: { instanceId: expectedModel.instanceId, model: expectedModel.model } });
+      await api.rpc('thread.reasoning.set', { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId, reasoningId, expectedModel: { instanceId: expectedModel.instanceId, model: expectedModel.model } });
       if (generation !== this.generation) return false;
       if (threadId === this.selectedThreadId) await this.refreshTranscript();
       return generation === this.generation;
@@ -313,7 +342,7 @@ export class T3Workspace {
     const generation = this.generation; const api = this.api;
     this.busy = true; this.error = ''; this.changed();
     try {
-      await api.rpc('thread.model.set', { threadId, selection, expectedModel });
+      await api.rpc('thread.model.set', { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId, selection, expectedModel });
       if (generation !== this.generation) return false;
       if (threadId === this.selectedThreadId) await this.refreshTranscript();
       return generation === this.generation;
@@ -322,7 +351,7 @@ export class T3Workspace {
   }
 
   private approvalKey(threadId: string, plan: ProposedPlan): string {
-    return JSON.stringify([this.demo ? 'demo' : this.storage?.scope() || '', 'plan-approval', threadId, plan.planId, plan.revision]);
+    return JSON.stringify([this.demo ? 'demo' : this.storage?.scope() || '', 'plan-approval', resourceKey(threadId, this.selectedEnvironmentId), plan.planId, plan.revision]);
   }
   isPlanApprovalLocked(threadId: string, plan: ProposedPlan): boolean {
     try {
@@ -356,7 +385,7 @@ export class T3Workspace {
       if (!this.demo) storage!.saveApproval!(key);
       if (generation !== this.generation) return false;
       dispatched = true;
-      await api.rpc('plan.approve', { threadId, planId: plan.planId, revision: plan.revision });
+      await api.rpc('plan.approve', { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId, planId: plan.planId, revision: plan.revision });
       if (generation !== this.generation) return false;
       if (threadId === this.selectedThreadId) await this.refreshTranscript();
       if (generation !== this.generation) return false;
@@ -372,13 +401,13 @@ export class T3Workspace {
     } finally { if (generation === this.generation) { this.busy = false; this.changed(); } }
   }
 
-  async settle(threadId: string): Promise<boolean> {
+  async settle(threadId: string, environmentId = this.selectedEnvironmentId): Promise<boolean> {
     const generation = this.generation;
     const api = this.api;
     try {
-      await api.rpc('thread.settle', { threadId });
+      await api.rpc('thread.settle', { threadId, ...(environmentId ? { environmentId } : {}) });
       if (generation !== this.generation) return false;
-      this.alerts = this.alerts.filter(alert => alert.kind !== 't3' || alert.threadId !== threadId);
+      this.alerts = this.alerts.filter(alert => alert.kind !== 't3' || resourceKey(alert.threadId, alert.environmentId) !== resourceKey(threadId, environmentId));
       await this.refresh();
       this.changed();
       return true;
@@ -386,7 +415,7 @@ export class T3Workspace {
   }
 
   setAnswer(threadId: string, answer: PlanAnswer): void {
-    const draft = this.plans.get(threadId);
+    const draft = this.plans.get(resourceKey(threadId, this.selectedEnvironmentId));
     if (!draft || draft.locked) return;
     const question = draft.request.questions.find(q => q.id === answer.questionId);
     if (!question) return;
@@ -400,7 +429,7 @@ export class T3Workspace {
   }
 
   async submitPlan(threadId: string): Promise<boolean> {
-    const draft = this.plans.get(threadId);
+    const draft = this.plans.get(resourceKey(threadId, this.selectedEnvironmentId));
     if (!draft || draft.locked || !draft.request.questions.every(q => draft.answers.some(a => a.questionId === q.id && (a.text.trim() || a.optionIndexes.length)))) return false;
     const generation = this.generation;
     const api = this.api;
@@ -410,7 +439,7 @@ export class T3Workspace {
       // Persist the submission lock before crossing the transport boundary.
       this.storage?.save(this.draftKey(threadId, draft.request), draft);
       await api.rpc('plan.submit', {
-        threadId, requestId: draft.request.requestId, revision: draft.request.revision,
+        ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId, requestId: draft.request.requestId, revision: draft.request.revision,
         answers: draft.answers.map(a => ({ ...a, optionIndexes: [...a.optionIndexes] })),
       });
       if (generation !== this.generation) return false;

@@ -1,3 +1,4 @@
+import { resourceKey } from './resource'
 // Adapted from the MIT-licensed Even Hub T3 plugin. Keep interaction and pagination rules aligned.
 // Use explicit Unicode ranges: the NativeScript Android V8 build lacks ICU
 // property-escape support and rejects those regex literals at bundle startup.
@@ -51,7 +52,7 @@ export function projectAbbreviations(projects: readonly Pick<ProjectSummary, 'id
 
 /** Working sessions lead Unsettled; each section otherwise follows recency. */
 export function buildSessionRows(result: SessionsListResult, now = Date.now(), projects: readonly ProjectSummary[] = []): MenuRow[] {
-  const sessions = sortSessionsByLastActivity([...new Map([...result.settled, ...result.unsettled].map(session => [session.id, session])).values()])
+  const sessions = sortSessionsByLastActivity([...new Map([...result.settled, ...result.unsettled].map(session => [resourceKey(session.id, session.environmentId), session])).values()])
   const abbreviations = projectAbbreviations([
     ...sessions.map(session => ({ id: session.projectId, title: session.projectTitle })), ...projects,
   ])
@@ -65,6 +66,7 @@ export function buildSessionRows(result: SessionsListResult, now = Date.now(), p
   ] : [])
   return [
     { key: 'new', text: 'START NEW SESSION', selectable: true },
+    ...(result.environments ?? []).filter(e => e.status !== 'connected').map(e => ({ key: `offline:${e.environmentId}`, text: `${e.label} · UNAVAILABLE`, selectable: false })),
     ...(rows.length ? rows : [{ key: 'sessions-empty', text: 'NO SESSIONS', selectable: false }]),
   ]
 }
@@ -146,10 +148,10 @@ export function buildProjectRows(projects: readonly ProjectSummary[]): MenuRow[]
     return [{ key: 'projects-empty', text: 'NO PROJECTS AVAILABLE', selectable: false }]
   }
   return available.map((project) => ({
-    key: `project:${project.id}`,
-    text: truncate(project.title, 38),
+    key: `project:${resourceKey(project.id, project.environmentId)}`,
+    text: truncate(projects.filter(other => other.title === project.title).length > 1 && project.environmentLabel ? `${project.title} · ${project.environmentLabel}` : project.title, 60),
     selectable: true,
-    value: project.id,
+    value: resourceKey(project.id, project.environmentId),
   }))
 }
 
@@ -611,10 +613,10 @@ function sessionRow(session: SessionSummary, now: number, abbreviation: string):
     ? 'WORKING'
     : formatRelativeTime(session.lastActivityAt, now)
   return {
-    key: `session:${session.id}`,
-    text: `${abbreviation} - ${truncate(session.title, 24).padEnd(24)} ${status}`,
+    key: `session:${resourceKey(session.id, session.environmentId)}`,
+    text: `${session.environmentLabel ? session.environmentLabel + " · " : ""}${abbreviation} - ${truncate(session.title, 24).padEnd(24)} ${status}`,
     selectable: true,
-    value: session.id,
+    value: resourceKey(session.id, session.environmentId),
   }
 }
 

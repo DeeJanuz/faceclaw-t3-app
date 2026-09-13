@@ -127,3 +127,19 @@ test('an unrelated snapshot update preserves a partially received winning notifi
  b.event('ui.notifications',{event:'notification-snapshot-fragment',...parts[1]},7);
  assert.equal(b.host.hostState.notifications.length,1);
 });
+test('remote assistant cannot register host device tools or use a colliding local project grant', async()=>{
+ let deliver;const calls=[],actions=[];
+ const config={enabled:true,allowTools:true,assistantProjectId:'same',assistantEnvironmentId:'mac'};
+ const api=load('app/t3/tools.ts',{
+ './tool-rate-limit':load('app/t3/tool-rate-limit.ts'),'./assistant':{isT3AssistantTurnActive:()=>false},
+ './config':{getT3Config:()=>config,onT3ConfigChanged:()=>()=>{}},'./security':load('app/t3/security.ts'),
+ './client':{t3Client:{connected:true,onEvent:fn=>{deliver=fn;return()=>{}},onStateChange:()=>()=>{},rpc:async(...args)=>{calls.push(args);return{}}}},
+ '../extensions/host':{hostState:{tools:[]},onHostState:()=>()=>{},onHostEvent:()=>()=>{},ownsFeature:()=>true,sendHostAction:(...args)=>actions.push(args),requestHostAction:async()=>{throw Error('wrong owner')}},
+ });
+ const stop=api.startT3ToolRelay();
+ deliver({event:'bridge.status',payload:{environments:[{isPrimary:true,environmentId:'local'}]}});
+ deliver({event:'faceclaw.capability.call',payload:{callId:'c',projectId:'same',threadId:'t',name:'apps.list',arguments:{},issuedAt:Date.now(),expiresAt:Date.now()+10000}});
+ await Promise.resolve();assert.equal(calls.length,0);assert.equal(actions.length,0);
+ config.assistantEnvironmentId='local';deliver({event:'bridge.status',payload:{environments:[{isPrimary:true,environmentId:'local'}]}});
+ assert.equal(calls[0][0],'faceclaw.capabilities.register');stop();
+});

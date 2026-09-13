@@ -6,12 +6,29 @@ const ts = require('typescript');
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports, require: name => { if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; }, ...globals });
+  vm.runInNewContext(code, { module, exports: module.exports, require: name => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; }, ...globals });
   return module.exports;
 }
 const face = load('app/ui/card-presentation.ts');
 const notificationCard = load('app/ui/shell/notification-card.ts', { '../card-presentation': face, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] } });
 let hub;
+test('session menu preserves duplicate IDs across computers and shows unavailable peers', () => {
+  const sessions = ['a', 'b'].map(environmentId => ({ id: 'same', projectId: 'project', projectTitle: 'Project',
+    title: 'Session', environmentId, environmentLabel: environmentId, status: 'ready', settled: false, lastActivityAt: new Date().toISOString() }));
+  const rows = hub.buildSessionRows({ unsettled: sessions, settled: [], environments: [{ environmentId: 'c', label: 'Computer C', status: 'offline' }] });
+  const targets = rows.filter(row => row.key.startsWith('session:')).map(row => row.value);
+  assert.equal(targets.length, 2);
+  assert.notEqual(targets[0], targets[1]);
+  assert.ok(rows.some(row => row.text.includes('Computer C') && !row.selectable));
+});
+test('duplicate project labels use computer names and preserve both resource identities', () => {
+  const rows = hub.buildProjectRows(['Deej-7i', "Daenon's Pro14"].map((environmentLabel, index) => ({
+    id: 'same', title: 'Even Realities', environmentId: String(index), environmentLabel, canStartSession: true,
+  })));
+  assert.equal(rows[0].text, 'Even Realities · Deej-7i');
+  assert.equal(rows[1].text, "Even Realities · Daenon's Pro14");
+  assert.notEqual(rows[0].value, rows[1].value);
+});
 test.before(async () => { hub = load('app/apps/t3/hub-view-model.ts', { '@evenrealities/pretext': await import('@evenrealities/pretext'), '../../graphics/textwrap': load('app/graphics/textwrap.ts') }); });
 const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': load('app/t3/security.ts') });
 const { T3DemoApi } = load('app/apps/t3/demo.ts');

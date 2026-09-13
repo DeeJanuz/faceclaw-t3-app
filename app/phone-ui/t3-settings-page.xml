@@ -38,7 +38,7 @@
         <Label col="0" text="Allow assistant device tools" verticalAlignment="center" textWrap="true" />
         <Switch col="1" checked="{{ allowTools }}" checkedChange="{{ toggleTools }}" />
       </GridLayout>
-      <Label text="Use Faceclaw tools from the configured assistant project, including background interactions authorized by your project rules." textWrap="true" />
+      <Label text="Device tools are available when the assistant project is on the connected host computer. Remote projects can run T3 conversations without host device tools." textWrap="true" />
       <Label text="Notifications" class="h2 m-t-24" />
       <GridLayout columns="*,auto">
         <Label col="0" text="Use T3 for Faceclaw notifications" verticalAlignment="center" textWrap="true" />

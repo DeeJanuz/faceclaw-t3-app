@@ -114,6 +114,8 @@ export interface Layer {
   receiveTextInput?(text: string, ctx: LayerContext): void;
   /** True only while another presentation-time-sampled frame is useful. */
   needsAnimation?(): boolean;
+  /** Delay until the next useful state sample when continuous frames would be wasteful. */
+  nextAnimationDelayMs?(): number | null;
 }
 
 export class LayerStack {
@@ -206,6 +208,16 @@ export class LayerStack {
 
   needsAnimation(): boolean {
     return this.layers.some(layer => layer.needsAnimation?.() === true);
+  }
+
+  nextAnimationDelayMs(): number | null {
+    let next: number | null = null;
+    for (const layer of this.layers) {
+      const delay = layer.nextAnimationDelayMs?.();
+      if (delay === null || delay === undefined || !Number.isFinite(delay)) continue;
+      next = next === null ? Math.max(1, delay) : Math.min(next, Math.max(1, delay));
+    }
+    return next;
   }
 
   getBaseSize(): { width: number; height: number } {

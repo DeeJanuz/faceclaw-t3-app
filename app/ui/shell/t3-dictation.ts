@@ -21,7 +21,7 @@ type T3DictationOptions = {
   paintDashboard?: (width: number, height: number) => GrayImage;
   dismiss: () => void;
   onClosed: () => void;
-  /** Local draft handoff only. The owning T3 screen requires a separate send tap. */
+  /** Called after the sole review surface's send tap. */
   onDraft: (text: string) => void;
   onCancelled: () => void;
   refine?: (options: { original: string; followup: string; onDone: (text: string) => void; onError: (error: string) => void }) => AnthropicStreamHandle;
@@ -29,9 +29,9 @@ type T3DictationOptions = {
 
 /** T3's direct capture surface, independent of the shell's generic send menu. */
 export class T3DictationLayer implements Layer {
-  private phase: "capturing" | "finalizing" | "review" | "continuing" | "refining" | "error" | "closing" = "capturing";
+  private phase: "capturing" | "finalizing" | "review" | "continuing" | "finalizing-refinement" | "refining" | "error" | "closing" = "capturing";
   private text = "";
-  private cachedLayout: { source: string; font: ReturnType<typeof getDefaultSmallFont>; width: number; height: number; lines: string[] } | null = null;
+  private cachedLayout: { source: string; font: ReturnType<typeof getDefaultSmallFont>; width: number; height: number; pages: string[][]; lines: string[] } | null = null;
   private motionContent: GrayImage | null = null;
   private backdrop: GrayImage | null = null;
   private error = "";
@@ -44,9 +44,10 @@ export class T3DictationLayer implements Layer {
   private lastRenderedSecond = -1;
   private elapsedTimer: ReturnType<typeof setInterval> | null = null;
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
-  private refineTimer: ReturnType<typeof setTimeout> | null = null;
   private refinement: AnthropicStreamHandle | null = null;
   private baseText = "";
+  private operation = 0;
+  private reviewPage = 0;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
 
@@ -120,6 +121,7 @@ export class T3DictationLayer implements Layer {
 
   private onTranscript(event: VoiceTranscriptEvent): void {
     if (this.removed || this.phase === "closing" || this.phase === "error" || this.delivered) return;
+    if (this.phase === "refining" || this.phase === "review") return;
     // Events contain the entire current utterance, not incremental deltas.
     this.text = event.text.trim();
     this.cachedLayout = null;
@@ -132,12 +134,18 @@ export class T3DictationLayer implements Layer {
         return;
       }
       this.phase = "review";
+      this.reviewPage = 0;
+      this.error = "";
       if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
       this.finalizeTimer = null;
       this.options.actions.requestRender();
       return;
     }
-    if (event.isFinal && this.phase === "continuing") {
+    if (event.isFinal && this.phase === "finalizing-refinement") {
+      if (!this.text) {
+        this.restoreRefinementFailure("No edit instruction was captured");
+        return;
+      }
       this.beginRefinement();
       return;
     }
@@ -146,6 +154,10 @@ export class T3DictationLayer implements Layer {
 
   private fail(message: string): void {
     if (this.removed || this.delivered || this.phase === "closing" || this.phase === "error") return;
+    if (this.phase === "continuing" || this.phase === "finalizing-refinement" || this.phase === "refining") {
+      this.restoreRefinementFailure(message);
+      return;
+    }
     this.phase = "error";
     this.error = message;
     this.text = "";
@@ -153,8 +165,6 @@ export class T3DictationLayer implements Layer {
     this.motionContent = null;
     if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
     this.finalizeTimer = null;
-    if (this.refineTimer !== null) clearTimeout(this.refineTimer);
-    this.refineTimer = null;
     this.refinement?.cancel();
     this.refinement = null;
     if (this.capturing) {
@@ -180,6 +190,8 @@ export class T3DictationLayer implements Layer {
       this.options.actions.requestRender();
     } else if (this.phase === "review" && (event.type === "swipe-down" || event.type === "scroll-down")) {
       this.startContinuation();
+    } else if (this.phase === "review" && (event.type === "swipe-up" || event.type === "scroll-up")) {
+      this.nextReviewPage();
     } else if (this.phase === "review" && event.type === "click") {
       this.sendDraft();
     } else if (this.phase === "continuing" && event.type === "click") {
@@ -203,6 +215,8 @@ export class T3DictationLayer implements Layer {
     if (this.removed || this.phase !== "review" || !this.text.trim()) return;
     this.baseText = this.text.trim();
     this.text = "";
+    this.error = "";
+    this.reviewPage = 0;
     this.phase = "continuing";
     this.capturing = true;
     try {
@@ -216,31 +230,104 @@ export class T3DictationLayer implements Layer {
   private endContinuation(): void {
     if (!this.capturing || this.phase !== "continuing") return;
     this.capturing = false;
+    this.phase = "finalizing-refinement";
+    this.finalizeTimer = setTimeout(() => this.restoreRefinementFailure("Edit transcription timed out"), FINAL_TIMEOUT_MS);
     this.stopCapture();
-    this.refineTimer = setTimeout(() => this.beginRefinement(), 1200);
     this.options.actions.requestRender();
   }
 
   private beginRefinement(): void {
-    if (this.refineTimer !== null) clearTimeout(this.refineTimer);
-    this.refineTimer = null;
-    if (this.removed || this.phase !== "continuing") return;
+    if (this.removed || this.phase !== "finalizing-refinement") return;
+    if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
+    this.finalizeTimer = null;
     const followup = this.text.trim();
-    if (!followup) { this.text = this.baseText; this.phase = "review"; this.options.actions.requestRender(); return; }
+    if (!followup) { this.restoreRefinementFailure("No edit instruction was captured"); return; }
     this.phase = "refining";
     this.text = "";
+    this.reviewPage = 0;
     if (!this.options.refine) {
-      this.text = this.baseText;
-      this.phase = "review";
+      this.restoreRefinementFailure("Luna refinement is not configured");
+      return;
+    }
+    const operation = ++this.operation;
+    let handle: AnthropicStreamHandle;
+    try {
+      handle = this.options.refine({
+        original: this.baseText,
+        followup,
+        onDone: text => {
+          if (this.removed || this.phase !== "refining" || operation !== this.operation) return;
+          this.refinement = null;
+          const revised = text.trim();
+          if (!revised) { this.restoreRefinementFailure("Luna returned empty text"); return; }
+          this.text = revised;
+          this.error = "";
+          this.reviewPage = 0;
+          this.phase = "review";
+          this.cachedLayout = null;
+          this.options.actions.requestRender();
+        },
+        onError: error => {
+          if (this.removed || this.phase !== "refining" || operation !== this.operation) return;
+          this.refinement = null;
+          this.restoreRefinementFailure(this.refinementError(error));
+        },
+      });
+    } catch (error) {
+      this.restoreRefinementFailure(this.refinementError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
+    if (this.removed || this.phase !== "refining" || operation !== this.operation) handle.cancel();
+    else this.refinement = handle;
+    this.options.actions.requestRender();
+  }
+
+  private refinementError(error: unknown): string {
+    const code = String(error || "").trim();
+    const labels: Record<string, string> = {
+      T3_REFINEMENT_EMPTY: "Luna returned no changes",
+      T3_REFINEMENT_FAILED: "the bridge could not complete the rewrite",
+      T3_REQUEST_TIMEOUT: "the bridge timed out",
+      T3_CONNECTION_DROPPED: "the bridge connection dropped",
+      T3_NOT_CONNECTED: "the bridge is disconnected",
+      refinement_unavailable: "the bridge has no Luna runtime configured",
+      refinement_isolation_failed: "the Luna runtime failed its safety check",
+      refinement_timeout: "the bridge timed out",
+      refinement_invalid: "the bridge returned invalid text",
+      refinement_failed: "the bridge could not complete the rewrite",
+    };
+    return labels[code] ?? "the bridge could not complete the rewrite";
+  }
+
+  private restoreRefinementFailure(message: string): void {
+    if (this.removed || this.phase === "closing") return;
+    const wasCapturing = this.capturing;
+    this.capturing = false;
+    if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
+    this.finalizeTimer = null;
+    this.refinement?.cancel();
+    this.refinement = null;
+    this.operation++;
+    this.text = this.baseText;
+    this.error = message;
+    this.reviewPage = 0;
+    this.phase = "review";
+    this.cachedLayout = null;
+    if (wasCapturing) {
+      // We are already back on the last good draft. A late stop rejection must
+      // not replace that draft with a second fatal error state.
+      try { void Promise.resolve(this.options.actions.stopVoiceCapture()).catch(() => {}); } catch { /* Best effort cleanup. */ }
+    }
+    this.options.actions.requestRender();
+  }
+
+  private nextReviewPage(): void {
+    if (!this.cachedLayout || this.cachedLayout.source !== this.text) {
+      this.cachedLayout = null;
       this.options.actions.requestRender();
       return;
     }
-    this.refinement = this.options.refine({
-      original: this.baseText,
-      followup,
-      onDone: text => { this.refinement = null; this.text = text.trim(); this.phase = "review"; this.options.actions.requestRender(); },
-      onError: () => { this.refinement = null; this.text = this.baseText; this.phase = "review"; this.options.actions.requestRender(); },
-    });
+    this.reviewPage = Math.min(this.cachedLayout.pages.length - 1, this.reviewPage + 1);
     this.options.actions.requestRender();
   }
 
@@ -293,37 +380,47 @@ export class T3DictationLayer implements Layer {
     const left = viewport.x, top = viewport.y;
     const font = getDefaultSmallFont();
     const lineHeight = cardLineStep(font);
-    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "continuing" ? "REFINEMENT INPUT" : this.phase === "refining" ? "REFINING" : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : this.phase === "review" ? "REVIEW DRAFT" : "DICTATION";
+    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "continuing" ? "REFINEMENT INPUT" : this.phase === "finalizing-refinement" ? "FINISHING EDIT" : this.phase === "refining" ? "REFINING" : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : this.phase === "review" ? "REVIEW DRAFT" : "DICTATION";
     image.drawText(font, left + 16, top + 14, title, 190);
-    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : this.phase === "continuing" ? "Say an edit or follow-up..." : this.phase === "refining" ? "Luna is refining..." : "Nothing sent.");
+    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : this.phase === "continuing" ? "Say an edit or follow-up..." : this.phase === "finalizing-refinement" ? "Waiting for final edit..." : this.phase === "refining" ? "Luna is refining..." : "Nothing sent.");
     const textWidth = viewport.width - 37;
     const textHeight = viewport.height - 65 - font.lineHeight - 28;
     let layout = this.cachedLayout;
     if (!layout || layout.source !== body || layout.font !== font || layout.width !== textWidth || layout.height !== textHeight) {
       const displayBody = this.phase === "error" ? body : reflowDictationText(body);
       const pages = paginateMessageText(displayBody, { font, width: textWidth, height: textHeight, lineHeight });
-      // Capture follows the last measured page until the user opens draft review.
-      layout = { source: body, font, width: textWidth, height: textHeight, lines: pages[pages.length - 1]!.split("\n") };
+      const pageLines = pages.map(page => page.split("\n"));
+      // During capture, keep the newest page visible. Review starts at page
+      // one and lets the wearer page forward before sending.
+      const page = this.phase === "review" ? Math.min(this.reviewPage, pageLines.length - 1) : pageLines.length - 1;
+      layout = { source: body, font, width: textWidth, height: textHeight, pages: pageLines, lines: pageLines[page]! };
       this.cachedLayout = layout;
+    }
+    if (this.phase === "review" && this.cachedLayout.pages.length > 0) {
+      this.reviewPage = Math.min(this.reviewPage, this.cachedLayout.pages.length - 1);
+      this.cachedLayout.lines = this.cachedLayout.pages[this.reviewPage]!;
     }
     const lines = layout.lines;
     lines.forEach((line, index) => image.drawText(font, left + 16, top + 65 + index * lineHeight, line, CARD_TEXT_BRIGHTNESS));
-    if (this.phase === "review") image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, "Tap send · swipe down to refine", 145);
+    if (this.phase === "review") {
+      const pageHint = this.cachedLayout.pages.length > 1 ? ` · ${this.reviewPage + 1}/${this.cachedLayout.pages.length}` : "";
+      const errorHint = this.error ? `Luna: ${this.error} · tap send · swipe down to retry` : "";
+      image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, errorHint || `Tap send · swipe down to refine${pageHint}`, errorHint ? 180 : 145);
+    }
   }
 
   onRemoved(): void {
     if (this.removed) return;
     this.removed = true;
+    this.operation++;
     this.backdrop = null;
     this.unsubscribeTranscript?.(); this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.(); this.unsubscribeStatus = null;
     if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
     if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
-    if (this.refineTimer !== null) clearTimeout(this.refineTimer);
     this.refinement?.cancel();
     this.elapsedTimer = null;
     this.finalizeTimer = null;
-    this.refineTimer = null;
     this.text = "";
     this.cachedLayout = null;
     this.motionContent = null;

@@ -486,11 +486,23 @@ test('thinking and tool activity use a visible geometric indicator without shift
     transcript.liveActivity = { phase, label: phase === 'tool' ? 'Read project files' : 'Thinking', updatedAt: '2026-09-07T00:00:01Z' };
     h.layer.screen = 'reader'; h.layer.motion = null;
     h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } });
+    assert.equal(h.layer.needsAnimation(), false, 'activity uses a sparse deadline rather than every host credit');
+    assert.ok(h.layer.nextAnimationDelayMs() > 0 && h.layer.nextAnimationDelayMs() <= 140);
     const label = h.placements.find(row => row.text === (phase === 'tool' ? 'Read project files' : 'thinking'));
     assert.ok(label); assert.equal(label.x, 46); // 22px indicator + 8px gap after x=16
     assert.ok(h.drawn.every(text => !/[◐◓◑◒]/.test(text)));
     assert.ok(h.placements.every(row => row.y + 17 <= 452));
   }
+});
+
+test('disconnect preserves transcript text but stops stale live animation', () => {
+  const h = setup();
+  h.state.transcript = { snapshotId: 'one', session: { id: 'thread', status: 'running' }, turns: [], liveActivities: [],
+    liveActivity: { phase: 'thinking', label: 'Thinking', updatedAt: new Date().toISOString() } };
+  const previousSession = h.state.transcript.session;
+  h.state.disconnected();
+  assert.equal(h.state.transcript.liveActivity, null);
+  assert.equal(h.state.transcript.session, previousSession);
 });
 
 

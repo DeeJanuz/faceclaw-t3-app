@@ -36,6 +36,14 @@ declare const global: any;
  * per-font is safe but changing it per-draw is not possible.
  */
 const DEFAULT_TTF_GAMMA = 1.0;
+const MAX_LOADED_FONTS = 64;
+const MAX_GLYPHS_PER_FONT = 4096;
+const MAX_KERN_PAIRS_PER_FONT = 8192;
+
+function setBounded<K,V>(map: Map<K,V>, key: K, value: V, limit: number): void {
+  if (!map.has(key) && map.size >= limit) map.delete(map.keys().next().value!);
+  map.set(key, value);
+}
 
 export type TtfRasterMode = "antialiased" | "crisp" | "hinted";
 
@@ -91,7 +99,7 @@ export class TtfFont implements GlyphFont {
         console.warn(`TtfFont.load failed for ${path}: ${error}`);
       }
     }
-    loadedFonts.set(key, font);
+    setBounded(loadedFonts, key, font, MAX_LOADED_FONTS);
     return font;
   }
 
@@ -105,7 +113,7 @@ export class TtfFont implements GlyphFont {
     let glyph = this.glyphCache.get(codePoint);
     if (glyph === undefined) {
       glyph = this.loadGlyph(codePoint);
-      this.glyphCache.set(codePoint, glyph);
+      setBounded(this.glyphCache, codePoint, glyph, MAX_GLYPHS_PER_FONT);
     }
     return glyph ?? undefined;
   }
@@ -198,7 +206,7 @@ export class TtfFont implements GlyphFont {
     } catch {
       kern = 0;
     }
-    this.kernCache.set(key, kern);
+    setBounded(this.kernCache, key, kern, MAX_KERN_PAIRS_PER_FONT);
     return kern;
   }
 

@@ -116,6 +116,9 @@ export class T3Workspace {
     // A new snapshot is a baseline, never a replay of missed notifications.
     this.initialized = false;
     this.status = 'Disconnected';
+    // Preserve readable history, but never animate a backend activity marker
+    // whose owner is offline and can no longer advance or complete it.
+    if (this.transcript?.liveActivity) this.transcript = { ...this.transcript, liveActivity: null };
     this.changed();
   }
 

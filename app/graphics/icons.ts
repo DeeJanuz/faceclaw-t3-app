@@ -143,6 +143,7 @@ const TERMINAL_GLYPH_SHAPES: Record<string, string> = {
 export const TERMINAL_ICON_GLYPHS = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 const cache = new Map<string, GrayImage | null>();
+const MAX_ICON_CACHE_ENTRIES = 512;
 
 /** Render an icon SVG to a size×size grayscale bitmap, rendered once and cached. */
 export function renderIcon(name: IconName, size: number): GrayImage | null {
@@ -184,6 +185,7 @@ function renderSvgCached(cacheName: string, svg: string, size: number): GrayImag
       console.warn(`renderIcon(${cacheName}) failed: ${error}`);
     }
   }
+  if (cache.size >= MAX_ICON_CACHE_ENTRIES) cache.delete(cache.keys().next().value!);
   cache.set(key, icon);
   return icon;
 }

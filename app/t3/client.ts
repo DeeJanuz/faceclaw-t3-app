@@ -95,7 +95,12 @@ export class T3Client {
     ++this.generation;
     const ws = this.ws; this.ws = null; this.listener = null;
     this.rejectConnect?.(new T3Error(code)); this.clearConnect(); this.connecting = null;
-    try { ws?.close(1000, 'closed'); } catch { /* Already closed. */ }
+    try {
+      // A WebSocket that never opened must be cancelled, otherwise OkHttp can
+      // keep its handshake occupying a worker while a replacement is queued.
+      if (!this.current.connected && typeof ws?.cancel === 'function') ws.cancel();
+      else ws?.close(1000, 'closed');
+    } catch { /* Already closed. */ }
     for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(new T3Error(code, true)); }
     this.pending.clear(); this.setState('failed', code);
   }

@@ -3,6 +3,7 @@ import { grayToNibble, type DeferredDraw, type GrayImage } from "./image";
 const RECORD_BYTES = 9;
 let resourceEpoch = -1;
 const resourceIds = new Map<string, number>();
+const MAX_RESOURCE_ALIASES = 8192;
 const objectIds = new WeakMap<object, number>();
 let nextObjectId = 1;
 
@@ -23,6 +24,7 @@ export type SdkRetainedScene = {
 export function encodeSdkDrawBatch(service: any, image: GrayImage, retainedDraws: readonly DeferredDraw[] = image.draws): Uint8Array | null {
   const draws = retainedDraws;
   if (!draws.length || !service) return null;
+  if (service.isResourceFallback?.() === true) { resourceIds.clear(); return null; }
   const epoch = Number(service.getResourceEpoch?.() ?? 0);
   if (epoch !== resourceEpoch) {
     resourceEpoch = epoch;
@@ -67,18 +69,23 @@ export function encodeSdkRetainedScene(service: any, source: GrayImage): SdkReta
 }
 
 function registerDraw(service: any, draw: DeferredDraw): { id: number; x: number; y: number } | null {
+  if (service.isResourceFallback?.() === true) return null;
   if (draw.kind === "fwtext") return null;
   if (draw.kind === "image") {
+    const key = `image:${objectId(draw.source)}:${draw.source.width}x${draw.source.height}`;
+    const cached = resourceIds.get(key);
+    if (cached) return { id: cached, x: draw.x, y: draw.y };
     const source = draw.source.withDrawsBaked();
-    const key = `image:${objectId(draw.source)}:${source.width}x${source.height}`;
     const id = register(service, key, source.pixels, source.width, source.height, false);
     return id ? { id, x: draw.x, y: draw.y } : null;
   }
   const glyph = draw.glyph;
   if (glyph.bbxWidth <= 0 || glyph.bbxHeight <= 0) return null;
-  const pixels = glyphPixels(draw);
   const fontKey = draw.font.atlasKey ?? `process-${objectId(draw.font)}`;
   const key = `glyph:${fontKey}:${objectId(glyph)}:${glyph.encoding}:${draw.value}:${glyph.bbxWidth}x${glyph.bbxHeight}`;
+  const cached = resourceIds.get(key);
+  if (cached) return { id: cached, x: draw.x + glyph.bbxX, y: draw.y + draw.font.ascent - (glyph.bbxHeight + glyph.bbxY) };
+  const pixels = glyphPixels(draw);
   const id = register(service, key, pixels, glyph.bbxWidth, glyph.bbxHeight, true);
   return id ? {
     id,
@@ -98,6 +105,7 @@ function objectId(value: object): number {
 function register(service: any, key: string, pixels: Uint8Array, width: number, height: number, glyph: boolean): number {
   const cached = resourceIds.get(key);
   if (cached) return cached;
+  if (resourceIds.size >= MAX_RESOURCE_ALIASES) return 0;
   const id = Number(service.registerGrayResource(key, pixels.buffer, pixels.byteOffset, pixels.byteLength, width, height, glyph));
   if (id > 0) resourceIds.set(key, id);
   return id;

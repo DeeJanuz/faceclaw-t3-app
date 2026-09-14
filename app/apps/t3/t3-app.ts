@@ -20,9 +20,15 @@ import { shell } from '../../ui/shell/shell';
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from '../../ui/shell/in-process-window';
 import { getT3Config } from '../../t3/config';
 import { onHostEvent, onHostState } from '../../extensions/host';
-import { t3Workspace as state, initializeT3, connectT3 } from './runtime';
+import { t3Workspace as state, initializeT3, connectT3, setT3ReaderVisible } from './runtime';
 import type { ModelSummary, NewSessionModelSelection, PlanQuestion, ProposedPlan } from './protocol';
 import type { T3Alert } from './workspace';
+
+// Keep this signal additive for reduced test harnesses and embedders that do
+// not expose the optional reader-demand hook yet.
+function updateReaderVisibility(visible: boolean): void {
+  if (typeof setT3ReaderVisible === 'function') setT3ReaderVisible(visible);
+}
 
 export const T3_WINDOW_ID = 't3';
 export const T3_SURFACE_ID = 'window:t3';
@@ -80,8 +86,14 @@ export class T3Layer implements Layer {
   private pageCount = 1;
   private planIdentity = '';
   private optionPage = 0;
+  private visibleActivity = false;
 
-  needsAnimation(): boolean { return Boolean(this.motion) || (this.screen === 'reader' && Boolean(state.transcript?.liveActivity)); }
+  needsAnimation(): boolean { return Boolean(this.motion); }
+  nextAnimationDelayMs(): number | null {
+    if (this.motion || !this.visibleActivity) return null;
+    const phaseMs = 140;
+    return phaseMs - (presentationNow() % phaseMs);
+  }
   private animate(from: CardRect, to: CardRect, closing = false): void {
     if (this.screen === 'compose' || !this.isBaseVisible() || shell.hasOverlay()) {
       console.info(`[T3Motion] skipped direction=${closing?'close':'open'} compose=${this.screen==='compose'} base=${this.isBaseVisible()} overlay=${shell.hasOverlay()}`);
@@ -177,7 +189,7 @@ export class T3Layer implements Layer {
     if (animateTransition && this.screen === 'inbox' && screen === 'notification') this.animate(this.dropdownRect(), this.fullRect());
     if (animateTransition && this.screen === 'notification' && screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
     if (remember) this.history.push({ screen: this.screen, selected: this.selected, scroll: this.scroll, projectId: this.projectId, threadId: state.selectedThreadKey });
-    this.screen = screen; this.selected = screen === 'dashboard' ? 'assistant' : ''; this.scroll = 0; this.atReaderEnd = false; this.repaint();
+    this.screen = screen; this.selected = screen === 'dashboard' ? 'assistant' : ''; this.scroll = 0; this.atReaderEnd = false; updateReaderVisibility(screen === 'reader'); this.repaint();
   }
 
   openThread(threadId: string, returnWindowId?: string, fromNotification = false): void {
@@ -253,7 +265,7 @@ export class T3Layer implements Layer {
       if (animateTransition && this.screen === 'notification' && previous.screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
       if (animateTransition && previous.screen === 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
       if (previous.screen === 'new-summary') this.creation = draftCreation;
-      this.screen = previous.screen; this.selected = previous.selected; this.scroll = previous.scroll; this.projectId = previous.projectId;
+      this.screen = previous.screen; this.selected = previous.selected; this.scroll = previous.scroll; this.projectId = previous.projectId; updateReaderVisibility(this.screen === 'reader');
       if (previous.threadId && previous.threadId !== state.selectedThreadKey) void state.openThread(previous.threadId);
     } else { this.go('dashboard', false, animateTransition); return; }
     this.repaint();
@@ -265,6 +277,40 @@ export class T3Layer implements Layer {
     this.draft = text.trim();
     this.draftIsDictated = dictated;
     this.go('draft', false);
+  }
+
+  private async submitDictatedText(text: string): Promise<void> {
+    if (!text.trim() || state.busy || this.draftLocked) return;
+    this.draft = text.trim();
+    this.draftIsDictated = true;
+    await this.submitDraft();
+  }
+
+  private async submitDraft(): Promise<void> {
+    if (this.draftLocked || !this.draft.trim()) return;
+    if (this.dictatingAnswer) {
+      const question = this.question();
+      if (question) state.setAnswer(state.selectedThreadId, { questionId: question.id, optionIndexes: [], text: this.draft });
+      this.dictatingAnswer = false; this.draft = '';
+      this.history = this.history.filter(item => !['question-text', 'choices', 'compose', 'draft'].includes(item.screen));
+      this.nextPlanQuestion();
+      return;
+    }
+    this.followResponse = new Set(state.transcript?.turns.flatMap(turn => turn.messages.map(message => message.id)) || []);
+    this.draftLocked = true;
+    const options = this.creation?.modelSelection ? { projectId: this.creation.projectId, environmentId: this.creation.environmentId, modelSelection: this.creation.modelSelection, assistant: this.creation.assistant } : undefined;
+    const sent = await state.send(this.draft, options, !options && this.draftMode ? { interactionMode: this.draftMode } : undefined);
+    if (!sent && state.canRetryLastSend) this.draftLocked = false;
+    if (sent) {
+      this.draft = ''; this.draftMode = undefined; this.creation = null; this.draftLocked = false;
+      this.history = this.history.filter(item => !['compose', 'draft', 'new-project', 'new-model', 'new-reasoning', 'new-summary'].includes(item.screen));
+      this.readerThread = ''; this.go('reader', false);
+    } else if (this.screen !== 'draft') {
+      // A failed direct send keeps the text reachable for the existing retry
+      // path without making a second review part of the successful flow.
+      this.go('draft', false);
+    }
+    this.repaint();
   }
 
   private record(): void {
@@ -288,7 +334,10 @@ export class T3Layer implements Layer {
         this.history[this.history.length - 1] === targetHistory && this.questionIndex === targetQuestion &&
         this.dictatingAnswer === targetAnswer && JSON.stringify([current.bridgeUrl, current.pairingFingerprint]) === identity;
     };
-    shell.startT3Dictation(text => { if (canStart()) this.receiveText(text, true); }, () => { if (canStart()) this.cancelCompose(); }, canStart, targetHistory?.screen === 'dashboard' ? this.homeRect() : this.fullRect());
+    shell.startT3Dictation(text => {
+      if (!canStart()) return;
+      void this.submitDictatedText(text);
+    }, () => { if (canStart()) this.cancelCompose(); }, canStart, targetHistory?.screen === 'dashboard' ? this.homeRect() : this.fullRect());
   }
 
   askAssistant(): void {
@@ -454,7 +503,7 @@ export class T3Layer implements Layer {
       const question = this.question();
       return question?.question || 'This question has been resolved.';
     }
-    if (this.screen === 'compose') return state.demo ? 'Use Dictate to try a sample draft, or type into this app from the phone keyboard.' : 'Dictate using the microphone, or type into this app from the phone keyboard. Your text will appear for review before sending.';
+    if (this.screen === 'compose') return state.demo ? 'Use Dictate to try a sample draft, or type into this app from the phone keyboard.' : 'Dictate using the microphone, or type into this app from the phone keyboard. Review dictated text on the capture card before sending.';
     if (this.screen === 'draft') return this.draftIsDictated ? reflowDictationText(this.draft) : this.draft;
     if (this.screen === 'plan-review') {
       const draft = state.getPlan(state.selectedThreadId);
@@ -537,7 +586,7 @@ export class T3Layer implements Layer {
     const pending = state.getPlan(state.selectedThreadId);
     const identity = pending ? `${state.selectedThreadId}:${pending.request.requestId}:${pending.request.revision}` : '';
     if (this.screen === 'reader' && identity && identity !== this.planIdentity) { this.planIdentity = identity; this.nextPlanQuestion(); }
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; }
+    if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; updateReaderVisibility(true); }
     const motion = this.motion;
     if (motion) {
       if (!motion.heading) { motion.heading = this.paintStatic(false, true); motion.heading.bakeDeferredDrawsInPlace(); }
@@ -562,6 +611,7 @@ export class T3Layer implements Layer {
   }
 
   private paintStatic(includeBackdrop = true, headingOnly = false): GrayImage {
+    this.visibleActivity = false;
     const width = this.viewWidth, height = this.viewHeight;
     const pending = state.getPlan(state.selectedThreadId);
     const image = new GrayImage(width, height, 0);
@@ -617,7 +667,7 @@ export class T3Layer implements Layer {
     if (reader) {
       let text = this.body();
       let activity: { line: number; label: string } | undefined;
-      if (this.screen === 'reader') { const page = this.readerPage(); title = page.title; text = page.text; activity = page.activity; }
+      if (this.screen === 'reader') { const page = this.readerPage(); title = page.title; text = page.text; activity = page.activity; this.visibleActivity = Boolean(activity); }
       else {
         const pages = paginateMessageText(text, this.pageBox(this.screen === 'draft' || this.screen === 'notification'));
         this.pageCount = pages.length;
@@ -698,18 +748,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'new-summary') { this.startCompose(this.creation); return; }
     if (this.screen === 'compose') { this.record(); return; }
     if (this.screen === 'draft') {
-      if (this.draftLocked || !this.draft.trim()) return;
-      if (this.dictatingAnswer) {
-        const question = this.question();
-        if (question) state.setAnswer(state.selectedThreadId, { questionId: question.id, optionIndexes: [], text: this.draft });
-        this.dictatingAnswer = false; this.draft = ''; this.history = this.history.filter(item => !['question-text', 'choices', 'compose'].includes(item.screen)); this.nextPlanQuestion(); return;
-      }
-      this.followResponse = new Set(state.transcript?.turns.flatMap(turn => turn.messages.map(message => message.id)) || []);
-      this.draftLocked = true;
-      const options = this.creation?.modelSelection ? { projectId: this.creation.projectId, environmentId: this.creation.environmentId, modelSelection: this.creation.modelSelection, assistant: this.creation.assistant } : undefined;
-      const sent = await state.send(this.draft, options, !options && this.draftMode ? { interactionMode: this.draftMode } : undefined);
-      if (!sent && state.canRetryLastSend) this.draftLocked = false;
-      if (sent) { this.draft = ''; this.draftMode = undefined; this.creation = null; this.draftLocked = false; this.history = this.history.filter(item => !['compose', 'draft', 'new-project', 'new-model', 'new-reasoning', 'new-summary'].includes(item.screen)); this.readerThread = ''; this.go('reader', false); }
+      await this.submitDraft();
       return;
     }
     if (this.screen === 'plan-review') { if (this.atReaderEnd) await state.submitPlan(state.selectedThreadId); else this.scroll = Math.min(this.pageCount - 1, this.scroll + 1); return; }
@@ -858,6 +897,7 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
   app = createInProcessWindow({
     appId: 't3', windowId: T3_WINDOW_ID, title: 'T3 Assistant', iconLetter: 'T3', icon: 'terminal', closeable: true, heightMode: 'medium',
     actions: options.actions, suppressSystemMenuFallback: true, claimsNotificationDismissGesture: () => layer.claimsNotificationDismissGesture(), baseLayer: layer, menuItems: () => layer.menuItems(), receiveTextInput: text => layer.receiveText(text),
+    canPaint: options.canPaint, requestPaintPermission: options.requestPaintPermission,
     retainedSceneEligible: () => layer.screen === 'dashboard' && !layer.needsAnimation(),
     submitFrame: options.submitFrame, setSurfaceVisible: options.setSurfaceVisible, removeSurface: options.removeSurface, reconfigureSurface: options.reconfigureSurface,
     onClosed: () => { layer.onRemoved(); unsubscribe(); offWeather(); offHostState(); offHostEvent(); clearInterval(clockTimer); if (activeLayer === layer) activeLayer = null; options.onClosed(); },

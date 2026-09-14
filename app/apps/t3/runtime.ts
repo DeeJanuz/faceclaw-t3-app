@@ -11,17 +11,41 @@ let started = false;
 let demoApi: T3DemoApi | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let eventTimer: ReturnType<typeof setTimeout> | null = null;
+let stableTimer: ReturnType<typeof setTimeout> | null = null;
 let retries = 0;
 let modeGeneration = 0;
 let connectionAttempt = 0;
 let liveIdentity = '';
+let readerVisible = false;
+let hostSurfaceVisible = false;
+let phonePreviewVisible = false;
+
+/** The full transcript is a reader resource, not a background subscription. */
+export function setT3ReaderVisible(visible: boolean): void {
+  if (readerVisible === visible) return;
+  readerVisible = visible;
+  if (visible && (hostSurfaceVisible || phonePreviewVisible) && t3Workspace.selectedThreadId) {
+    void t3Workspace.refreshTranscript();
+  }
+}
+export function setT3HostVisible(visible: boolean): void {
+  if (hostSurfaceVisible === visible) return;
+  hostSurfaceVisible = visible;
+  if (visible && readerVisible && t3Workspace.selectedThreadId) void t3Workspace.refreshTranscript();
+}
+export function setT3PhonePreviewVisible(visible: boolean): void {
+  if (phonePreviewVisible === visible) return;
+  phonePreviewVisible = visible;
+  if (visible && readerVisible && t3Workspace.selectedThreadId) void t3Workspace.refreshTranscript();
+}
 function pairingScope(config: T3Config): string {
   return JSON.stringify([bridgeEndpoint(config.bridgeUrl, config.allowInsecureLocal), config.pairingFingerprint]);
 }
 function clearTimers(): void {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   if (eventTimer) clearTimeout(eventTimer);
-  reconnectTimer = null; eventTimer = null;
+  if (stableTimer) clearTimeout(stableTimer);
+  reconnectTimer = null; eventTimer = null; stableTimer = null;
 }
 function current(mode: number, attempt?: number): boolean {
   return mode === modeGeneration && !t3Workspace.demo && (attempt === undefined || attempt === connectionAttempt);
@@ -42,20 +66,30 @@ export function initializeT3(): void {
   onT3ConfigChanged(() => { if (!t3Workspace.demo) void connectT3(); });
   t3Client.onStateChange(state => {
     if (t3Workspace.demo) return;
-    if (state.connected) { retries = 0; void t3Workspace.refresh(); }
+    if (state.connected) {
+      if (stableTimer) clearTimeout(stableTimer);
+      const mode = modeGeneration, attempt = connectionAttempt;
+      stableTimer = setTimeout(() => {
+        stableTimer = null;
+        if (current(mode, attempt) && t3Client.connected) retries = 0;
+      }, 60_000);
+      void t3Workspace.refresh();
+    }
     else {
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = null;
       t3Workspace.disconnected();
       if (getT3Config().enabled && state.phase === 'failed' && !reconnectTimer) {
         const mode = modeGeneration;
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null; if (current(mode)) void connectT3();
-        }, Math.min(30_000, 1000 * 2 ** Math.min(retries++, 5)));
+        }, t3ReconnectDelayMs(retries++));
       }
     }
   });
   t3Client.onEvent(event => {
     if (t3Workspace.demo) return;
-    if (event.event === 'transcript.changed' && event.payload?.threadId === t3Workspace.selectedThreadId && (event.payload?.environmentId ?? undefined) === t3Workspace.selectedEnvironmentId) {
+    if (readerVisible && (hostSurfaceVisible || phonePreviewVisible) && event.event === 'transcript.changed' && event.payload?.threadId === t3Workspace.selectedThreadId && (event.payload?.environmentId ?? undefined) === t3Workspace.selectedEnvironmentId) {
       void t3Workspace.refreshTranscript();
     }
     if (event.event === 'sessions.changed' && !eventTimer) {
@@ -67,6 +101,13 @@ export function initializeT3(): void {
   // workspace before a new authenticated socket can produce events.
   startT3ToolRelay();
   if (getT3Config().enabled) void connectT3();
+}
+
+/** Exponential reconnect delay with bounded downward jitter to avoid synchronized reconnect storms. */
+export function t3ReconnectDelayMs(attempt: number, entropy = Math.random()): number {
+  const base = Math.min(30_000, 1000 * 2 ** Math.min(Math.max(0,Math.floor(attempt)),5));
+  const boundedEntropy = Math.max(0,Math.min(1,Number.isFinite(entropy)?entropy:0.5));
+  return Math.round(base*(0.8+boundedEntropy*0.2));
 }
 
 export async function connectT3(): Promise<void> {

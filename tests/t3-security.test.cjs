@@ -225,6 +225,14 @@ function runtimeHarness() {
   });
   return { api, pending, config, rpcCalls: () => rpcCalls };
 }
+test('reconnect backoff escalates with bounded jitter and caps at thirty seconds', () => {
+  const { api } = runtimeHarness();
+  assert.equal(api.t3ReconnectDelayMs(0, 0), 800);
+  assert.equal(api.t3ReconnectDelayMs(0, 1), 1000);
+  assert.equal(api.t3ReconnectDelayMs(3, 0.5), 7200);
+  assert.equal(api.t3ReconnectDelayMs(20, 1), 30000);
+  assert.equal(api.t3ReconnectDelayMs(-5, 0), 800);
+});
 test('late live connect success/failure cannot refresh or change sample mode', async () => {
   for (const fail of [false, true]) {
     const { api, pending, rpcCalls } = runtimeHarness();

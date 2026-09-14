@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function setup({ stop, start, refine, origin, raster = false, firstPaint = true, paintDashboard, replay = '', viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
+function setup({ stop, start, refine, origin, raster = false, firstPaint = true, paintDashboard, replay = '', paginate, viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
   const module = { exports: {} };
   const listeners = { transcript: null, status: null };
   const timers = new Map(); let nextTimer = 0; let now = 0;
@@ -44,7 +44,7 @@ function setup({ stop, start, refine, origin, raster = false, firstPaint = true,
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => font },
     '../../graphics/textwrap': { truncateText: (_font, value) => value, wrapText: (_font, value) => value.split('\n') },
     '../../apps/t3/card-motion': motion.exports,
-    '../../apps/t3/hub-view-model': { reflowDictationText: hubModule.exports.reflowDictationText, paginateMessageText: (value, box) => { result.pageBoxes.push(box); return [value]; } },
+    '../../apps/t3/hub-view-model': { reflowDictationText: hubModule.exports.reflowDictationText, paginateMessageText: (value, box) => { result.pageBoxes.push(box); return paginate ? paginate(value, box) : [value]; } },
     '../../native/voice-control': { voiceControlBridge: bridge },
     './geometry': { appViewportRect: () => viewport },
     '../presentation-clock': { presentationNow: () => now },
@@ -90,6 +90,51 @@ test('reviewed draft can capture a follow-up and route it through Luna refinemen
   refinement.onDone('Concise draft');
   layer.handleInput({ type: 'click' });
   assert.deepEqual(result.drafts, ['Concise draft']);
+});
+
+test('refinement waits for the authoritative edit final and ignores late transcripts', () => {
+  let refinement;
+  const { layer, listeners } = setup({ refine: options => { refinement = options; return { cancel() {} }; } });
+  listeners.transcript({ text: 'Original draft', isFinal: false });
+  layer.endCapture(); listeners.transcript({ text: 'Original draft', isFinal: true });
+  layer.handleInput({ type: 'scroll-down' });
+  listeners.transcript({ text: 'Make it concise', isFinal: false });
+  layer.handleInput({ type: 'click' });
+  assert.equal(layer.phase, 'finalizing-refinement');
+  assert.equal(refinement, undefined, 'partial edit text must not start Luna');
+  listeners.transcript({ text: 'Make it concise', isFinal: true });
+  assert.ok(refinement);
+  refinement.onDone('Concise draft');
+  listeners.transcript({ text: 'late stale transcript', isFinal: true });
+  assert.equal(layer.text, 'Concise draft');
+});
+
+test('refinement failures retain the last good draft and expose a recovery action', () => {
+  let refinement;
+  const { layer, listeners, advance } = setup({ refine: options => { refinement = options; return { cancel() {} }; } });
+  listeners.transcript({ text: 'Original draft', isFinal: false });
+  layer.endCapture(); listeners.transcript({ text: 'Original draft', isFinal: true });
+  layer.handleInput({ type: 'scroll-down' }); listeners.transcript({ text: 'Fix it', isFinal: false }); layer.handleInput({ type: 'click' });
+  listeners.transcript({ text: 'Fix it', isFinal: true });
+  refinement.onError('refinement_unavailable');
+  assert.equal(layer.phase, 'review');
+  assert.equal(layer.text, 'Original draft');
+  advance(400);
+  const image = layer.paint({}, () => assert.fail('underlying content must stay hidden'));
+  assert.ok(image.labels.some(label => /Luna: .*tap send.*swipe down to retry/.test(label)));
+});
+
+test('sole review surface pages long drafts and sends the authoritative full text', () => {
+  const raw = 'First page\nSecond page';
+  const { layer, result, listeners, advance } = setup({ paginate: value => value.includes('First page') ? ['First page', 'Second page'] : [value] });
+  listeners.transcript({ text: raw, isFinal: false }); layer.endCapture(); listeners.transcript({ text: raw, isFinal: true });
+  advance(400); let image = layer.paint({}, () => assert.fail());
+  assert.ok(image.labels.includes('First page'));
+  layer.handleInput({ type: 'scroll-up' });
+  image = layer.paint({}, () => assert.fail());
+  assert.ok(image.labels.includes('Second page'));
+  layer.handleInput({ type: 'click' });
+  assert.deepEqual(result.drafts, [raw]);
 });
 
 test('finish tap waits for the actual final and hands off a local draft once', () => {
@@ -173,20 +218,20 @@ test('capture paints an opaque surface without exposing the screen underneath', 
 function draftDestination() {
   const source = ts.createSourceFile('t3-app.ts', fs.readFileSync('app/apps/t3/t3-app.ts', 'utf8'), ts.ScriptTarget.Latest, true);
   const declaration = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'T3Layer');
-  const record = declaration.members.find(node => node.name?.getText(source) === 'record').getText(source);
-  const module = { exports: {} }; const calls = []; const drafts = []; let cancelled = 0;
-  const state = { busy: false, demo: false, selectedThreadId: 'thread-one' };
+  const methods = ['record', 'submitDictatedText', 'submitDraft'].map(name => declaration.members.find(node => node.name?.getText(source) === name).getText(source)).join('\n');
+  const module = { exports: {} }; const calls = []; const drafts = []; const sent = []; let cancelled = 0;
+  const state = { busy: false, demo: false, selectedThreadId: 'thread-one', transcript: undefined, canRetryLastSend: false, send: async text => { sent.push(text); return true; } };
   const config = { enabled: true, bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'original' };
   const globals = { module, exports: module.exports, state, getT3Config: () => config,
     shell: { startT3Dictation: (...args) => calls.push(args) }, activeLayer: null };
-  vm.runInNewContext(ts.transpileModule(`export class Destination { ${record} }`, {
+  vm.runInNewContext(ts.transpileModule(`export class Destination { ${methods} }`, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
   }).outputText, globals);
   const layer = new module.exports.Destination(); globals.activeLayer = layer;
   Object.assign(layer, { screen: 'compose', draftLocked: false, history: [{}], creation: {}, questionIndex: 0, dictatingAnswer: false,
-    fullRect: () => ({ x: 0, y: 0, width: 635, height: 447 }), receiveText: text => drafts.push(text), cancelCompose: () => cancelled++ });
+    fullRect: () => ({ x: 0, y: 0, width: 635, height: 447 }), receiveText: text => drafts.push(text), cancelCompose: () => cancelled++, go: screen => { layer.screen = screen; }, repaint: () => {} });
   layer.record();
-  return { state, config, layer, globals, drafts, calls, cancelled: () => cancelled };
+  return { state, config, layer, globals, drafts, sent, calls, cancelled: () => cancelled };
 }
 
 test('T3 capture destination rejects changed pairing, session, mode, owner, or compose invocation', () => {
@@ -207,10 +252,19 @@ test('T3 capture destination rejects changed pairing, session, mode, owner, or c
   }
 });
 
-test('unchanged T3 destination accepts local review text and cancellation callback', () => {
-  const destination = draftDestination(); const [onDraft, onCancelled, canStart] = destination.calls[0];
-  assert.equal(canStart(), true); onDraft('Review this'); onCancelled();
-  assert.deepEqual(destination.drafts, ['Review this']); assert.equal(destination.cancelled(), 1);
+test('unchanged T3 destination accepts the cancellation callback', () => {
+  const destination = draftDestination(); const [, onCancelled, canStart] = destination.calls[0];
+  assert.equal(canStart(), true); onCancelled();
+  assert.deepEqual(destination.sent, []); assert.equal(destination.cancelled(), 1);
+});
+
+test('unchanged T3 destination submits a dictated draft from the capture review tap', async () => {
+  const destination = draftDestination(); const [onDraft, , canStart] = destination.calls[0];
+  assert.equal(canStart(), true); onDraft('Review this');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(destination.sent, ['Review this']);
+  assert.equal(destination.layer.screen, 'reader');
+  assert.equal(destination.layer.draft, '');
 });
 
 test('dictation expands to the configured full viewport and renders the measured page without a second wrap', () => {

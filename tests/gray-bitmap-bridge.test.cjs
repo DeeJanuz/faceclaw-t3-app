@@ -1,7 +1,7 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm'), ts = require('typescript');
 test('display submission is Gray8 while the optional phone preview has the only Bitmap conversion', () => {
  const source=fs.readFileSync('app/runtime.ts','utf8');
- assert.match(source,/submitGrayBuffer\(pixels\.buffer,pixels\.byteOffset,pixels\.byteLength,image\.width,image\.height,feature,requestNextFrame\)/);
+ assert.match(source,/submitGrayBuffer\(pixels\.buffer,pixels\.byteOffset,pixels\.byteLength,image\.width,image\.height,feature,requestNextFrame,traceId\)/);
  assert.doesNotMatch(source,/submitBitmap|submitExtensionBitmap|T3Pixels/);
  const module = { exports: {} }, calls = [], bitmap = {};
  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText,

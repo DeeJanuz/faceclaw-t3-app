@@ -14,5 +14,10 @@ public final class T3PreviewPixels {
   for(int i=0;i<length;i++){int c=view.get()&255;colors[i]=0xff000000|(c<<16)|(c<<8)|c;}
   bitmap.setPixels(colors,0,width,0,0,width,height);return bitmap;
  }
+ public static synchronized void release() {
+  // Drop the cache after the page clears its ImageSource. Do not recycle the
+  // Bitmap here: Android's ImageView may still be finishing its final draw.
+  bitmap=null;colors=null;
+ }
  private T3PreviewPixels() {}
 }

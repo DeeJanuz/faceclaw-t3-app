@@ -15,7 +15,7 @@ function load(file, imports, globals = {}) {
   return module.exports;
 }
 
-function harness() {
+function harness(canPaint) {
   class Image {
     constructor(width, height) { this.width = width; this.height = height; }
     drawImage(source) { this.value = source.value; }
@@ -36,18 +36,28 @@ function harness() {
       return { image, draws: [] };
     } },
   }, {
-    setTimeout: (fn, delay) => { assert.equal(delay, 0); timers.set(++next, fn); return next; },
+    setTimeout: (fn, delay) => { assert.ok(delay >= 0); timers.set(++next, { fn, delay }); return next; },
     clearTimeout: id => timers.delete(id),
   });
   const base = {
     paint(ctx) { painted++; const size = ctx.stack.getBaseSize(); const frame = new Image(size.width, size.height); frame.value = value; return frame; },
     async handleInput() { value++; app.requestRender(); },
   };
-  const app = createInProcessWindow({ baseLayer: base, submitFrame: frame => frames.push(frame), onClosed: () => closed++ });
+  const app = createInProcessWindow({ baseLayer: base, canPaint, submitFrame: frame => frames.push(frame), onClosed: () => closed++ });
   return { app, base, frames, timers, setValue: n => { value = n; }, paints: () => painted, closes: () => closed,
-    flush() { const entry = timers.entries().next().value; assert.ok(entry, 'a frame should be scheduled'); timers.delete(entry[0]); entry[1](); },
+    delays: () => [...timers.values()].map(item => item.delay),
+    flush() { const entry = timers.entries().next().value; assert.ok(entry, 'a frame should be scheduled'); timers.delete(entry[0]); entry[1].fn(); },
   };
 }
+
+test('hidden surfaces coalesce dirty state without painting until visible', () => {
+  let visible = false;
+  const h = harness(() => visible);
+  h.app.requestRender(); h.setValue(7);
+  assert.equal(h.paints(), 0); assert.equal(h.timers.size, 0);
+  visible = true; h.app.requestRender(); assert.equal(h.timers.size, 1);
+  h.flush(); assert.equal(h.paints(), 1); assert.equal(h.frames[0].value, 7);
+});
 
 test('a burst of render requests publishes one frame containing the latest state and viewport', () => {
   const h = harness();
@@ -94,4 +104,39 @@ test('a state update during painting schedules the next frame without recursive 
   h.app.requestRender(); h.flush();
   assert.equal(h.frames.length, 1); assert.equal(h.timers.size, 1);
   h.flush(); assert.equal(h.frames.length, 2); assert.equal(h.frames[1].value, 2);
+});
+
+test('a sparse animation deadline schedules one useful repaint instead of continuous frames', () => {
+  const h = harness();
+  h.base.nextAnimationDelayMs = () => 140;
+  h.app.requestRender(); h.flush();
+  assert.deepEqual(h.delays(), [140]);
+  h.flush();
+  assert.deepEqual(h.delays(), [0]);
+  h.flush();
+  assert.equal(h.frames.length, 2);
+  assert.deepEqual(h.delays(), [140]);
+  h.app.close();
+  assert.equal(h.timers.size, 0);
+});
+
+test('the real T3 window factory forwards paint permission controls', () => {
+  const imports = {};
+  const source = fs.readFileSync('app/apps/t3/t3-app.ts', 'utf8');
+  for (const match of source.matchAll(/from\s*['"]([^'"]+)['"]/g)) imports[match[1]] = {};
+  let captured;
+  imports['./runtime'] = { t3Workspace: { onChange: () => () => {}, demo: true }, initializeT3() {}, connectT3() {}, setT3ReaderVisible() {} };
+  imports['../../native/weather'] = { weatherBridge: { onStateChange: () => () => {} } };
+  imports['../../extensions/host'] = { onHostState: () => () => {}, onHostEvent: () => () => {} };
+  imports['../../ui/shell/shell'] = { shell: { isWindowVisible: () => false } };
+  imports['../../t3/config'] = { getT3Config: () => ({ enabled: false }) };
+  imports['../../ui/shell/in-process-window'] = { createInProcessWindow: options => {
+    captured = options;
+    return { stack: { isAtBase: () => true } };
+  } };
+  const api = load('app/apps/t3/t3-app.ts', imports, { setInterval: () => 1, clearInterval() {} });
+  const canPaint = () => false, requestPaintPermission = () => {};
+  api.createT3AppWindow({ canPaint, requestPaintPermission, onClosed() {} });
+  assert.equal(captured.canPaint, canPaint);
+  assert.equal(captured.requestPaintPermission, requestPaintPermission);
 });

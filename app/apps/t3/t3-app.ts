@@ -249,7 +249,8 @@ export class T3Layer implements Layer {
     const returnToSleep = this.screen === 'notification' && this.notificationReturnToSleep;
     this.notificationReturnToSleep = false;
     if (returnToSleep) shell.sleepAtAppRoot();
-    if (this.screen === 'dashboard') { this.history = []; this.returnWindowId = null; shell.sleepAtAppRoot(); return; }
+    if (this.screen === 'dashboard') { this.history = []; this.returnWindowId = null; shell.respondToBack(true); return; }
+    shell.respondToBack(false);
     const draftCreation = this.creation;
     if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftLocked = false; this.dictatingAnswer = false; this.creation = null; }
     if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) { const id = this.returnWindowId; this.returnWindowId = null; shell.focusWindow(id); return; }

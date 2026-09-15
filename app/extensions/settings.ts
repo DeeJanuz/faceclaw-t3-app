@@ -26,6 +26,6 @@ export function extensionDeclarations(){
 }
 export function initializeExtensionSettings():void{
  const publish=()=>publishExtensions(extensionDeclarations());
- onHostEvent(type=>{if(type==='connected')publish();});onT3ConfigChanged(publish);
+ onHostEvent(type=>{if(type==='connected'||type==='contract-result')publish();});onT3ConfigChanged(publish);
  onSettingsStoreChanged(key=>{if(key.startsWith('t3.customizations.'))publish();});
 }

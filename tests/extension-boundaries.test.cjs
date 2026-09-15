@@ -1,5 +1,5 @@
 const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const ts=require('typescript');
-function load(path,imports={},globals={}){const module={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module,exports:module.exports,setInterval:()=>1,clearInterval:()=>{},require:name=>{assert.ok(name in imports,`unmocked ${name}`);return imports[name];},...globals});return module.exports;}
+function load(path,imports={},globals={}){const module={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module,exports:module.exports,setInterval:()=>1,clearInterval:()=>{},require:name=>{if(name==='@faceclaw/motion')return require('@faceclaw/motion');assert.ok(name in imports,`unmocked ${name}`);return imports[name];},...globals});return module.exports;}
 const snapshots=load('app/extensions/notification-snapshot.ts');
 test('host refreshes coalesce by value and remain distinct from private content invalidation',()=>{
  const b=boundary();b.configure(b.feature('ui.notifications'));

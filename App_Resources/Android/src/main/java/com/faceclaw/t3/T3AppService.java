@@ -24,6 +24,7 @@ public final class T3AppService extends FaceclawAppService {
  @Override public void onDestroy() { deliver("destroyed",new JSONObject()); instance=null; super.onDestroy(); }
  @Override protected synchronized void onSessionReady(FaceclawSession session) {
   if(resourceSession!=session){resourceSession=session;resourcesByKey.clear();resourcesById.clear();sceneFingerprints.clear();sceneFingerprintVersions.clear();resourceEpoch=nextResourceEpoch++;resourceFallback=false;}
+  session.controls().onReady(()->session.controls().setWindowPolicy(new WindowPolicy(WindowPolicy.Height.MIN,true,false,false,false,false),result->{}));
   deliver("connected",new JSONObject());
  }
  @Override protected void onHostSnapshot(HostSnapshot snapshot) { deliver("host-snapshot",snapshot.toJson()); }

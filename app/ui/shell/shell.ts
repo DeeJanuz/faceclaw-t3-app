@@ -1,6 +1,6 @@
 import {openNotification} from '../../native/notification-icons';
 /** Retained T3 UI's host facade. Every privileged operation crosses SDK IPC. */
-import { hostState,nativeService,onHostEvent,requestHostAction,sendHostAction,ownsFeature } from '../../extensions/host';
+import { hostState,nativeService,sdkControls,onHostEvent,requestHostAction,sendHostAction,ownsFeature } from '../../extensions/host';
 import { t3Workspace } from '../../apps/t3/runtime';
 type NotificationPreview = { id:string; title:string; text:string; open:(woke:boolean)=>Promise<boolean>; dismiss:()=>Promise<boolean>|boolean; woke:boolean; started:number; presentationId:string; hostPresentationId?:string };
 let visible=true,notificationSurface=false,preview:NotificationPreview|null=null;let previewSequence=0;let nextWakeOrigin:boolean|undefined;
@@ -9,6 +9,7 @@ export const localShellEvents=new Set<(type:string,data:any)=>void>();
 function local(type:string,data:any={}){for(const listener of localShellEvents)listener(type,data);}
 function action(name:string,data:Record<string,unknown>={}):boolean{
  const service=nativeService();
+ if(name==='sleep'&&sdkControls().supports('control.result')){void sdkControls().request('window.sleep');return true;}
  if(service?.requestSleep && name==='sleep')return Boolean(service.requestSleep());
  if(name==='open-self')return Boolean(service?.requestOpenWindow());
  return sendHostAction('ui.launcher',name,data);
@@ -35,6 +36,7 @@ export const shell={
  closeNotificationReader(){if(notificationSurface)sendHostAction('ui.notifications','close-surface');},
  hasOverlay:()=>Boolean(capture||(notificationSurface&&preview)),getNotificationPreviewId:()=>notificationSurface?preview?.id??null:null,
  focusWindow(id:string){if(notificationSurface){if(id!=='t3')sendHostAction('ui.notifications','close-surface');local('open');}else if(id==='t3'){action('open-self');local('open');}else sendHostAction('ui.launcher','focus-app',{windowId:id});},
+ respondToBack(atRoot:boolean){if(sdkControls().supports('window.policy'))void sdkControls().request('window.back',{response:atRoot?'at-root':'handled'},500);else if(atRoot){action('sleep');local('sleep');}},
  sleepAtAppRoot(){if(notificationSurface)sendHostAction('ui.notifications','close-surface');action('sleep');local('sleep');},wake(_target?:string){action('open-self');local('wake');},
  wakeWindowForNotification(_id:string):boolean{if(!visible)return false;local('wake');return true;},
  startT3Dictation(done:(text:string)=>void,cancel:()=>void,current:()=>boolean,_rect?:any){

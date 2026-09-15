@@ -1,3 +1,4 @@
+import {appControls} from '@faceclaw/motion';
 import {NotificationSnapshotAssembler} from './notification-snapshot';
 /** Only the SDK's mutually approved, certificate-pinned host can reach this boundary. */
 import type { WeatherState } from '../native/weather';
@@ -40,6 +41,7 @@ function applyAmbientState(value:any,includeWindows=false,includeScreen=false):v
  if(changed)for(const listener of stateListeners)listener('ambient');
 }
 export function nativeService():any{return service;}
+export function sdkControls(){return appControls(service);}
 export function effectiveFeature(feature:string):FeatureState|undefined{return featureStates.find(item=>item.feature===feature);}
 export function ownsFeature(feature:string):boolean {const state=effectiveFeature(feature);return Boolean(service && state?.available && state.component.startsWith('com.faceclaw.t3/'));}
 function clearPending():void {for(const item of pending.values()){clearTimeout(item.timer);item.reject(new Error('HOST_CONNECTION_LOST'));}pending.clear();}
@@ -81,7 +83,7 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
  }
  for(const listener of events)listener(type,data);
 }
-export function publishExtensions(descriptors:unknown[]):void {service?.publishExtensions(new org.json.JSONArray(JSON.stringify(descriptors)));}
+export function publishExtensions(descriptors:unknown[]):void {service?.publishCompatibleExtensions(new org.json.JSONArray(JSON.stringify(descriptors)));}
 export function sendHostAction(feature:string,action:string,data:Record<string,unknown>={}):boolean {
  const state=effectiveFeature(feature);if(!service||!state||!ownsFeature(feature))return false;
  return Boolean(service.invokeExtensionAction(feature,state.generation,action,new org.json.JSONObject(JSON.stringify({...data,callId:typeof data.callId==='string'?data.callId:`t3-${Date.now()}-${++sequence}`}))));

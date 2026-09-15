@@ -179,7 +179,7 @@ export function initializeAppRuntime():void{
  });
  onHostState(()=>{if(hostVisible)getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
  onHostEvent((type,data)=>{
-  if(type==='extension-event' && data.feature==='assistant' && data.type==='event' && data.data?.event==='invoke') { getApp(); openT3Assistant(); }
+  if(type==='invocation-event' || (type==='extension-event' && data.feature==='assistant' && data.type==='event' && data.data?.event==='invoke')) { getApp(); openT3Assistant(); }
   if(type==='connected')rejectedSceneSurfaces.clear();
   if(type==='scene-result'&&data.accepted===false){
    const feature=String(data.surfaceId??'window').replace(/^extension:/,'');rejectedSceneSurfaces.add(feature);

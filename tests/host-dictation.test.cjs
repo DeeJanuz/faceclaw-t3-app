@@ -17,7 +17,7 @@ function setup(available = true) {
   }).outputText;
   vm.runInNewContext(source, { module, exports: module.exports, require(name) {
     assert.equal(name, '../extensions/host');
-    return { nativeService: () => service, onHostEvent: listener => { event = listener; }, setOwnCaptureId: id => ids.push(id) };
+    return { sdkControls: () => ({supports: () => false}), nativeService: () => service, onHostEvent: listener => { event = listener; }, setOwnCaptureId: id => ids.push(id) };
   } });
   return { bridge: module.exports.voiceControlBridge, requests, finishes, cancels, ids, event: (...args) => event(...args) };
 }

@@ -42,7 +42,7 @@ export function paintT3Dashboard(width: number, height: number, selected: string
     ? `${weather.current.temperatureF === null ? '--' : Math.round(weather.current.temperatureF)}°F · ${weather.current.description}`
     : weather.phase === 'permission-required' ? 'Weather needs location' : weather.phase === 'error' ? 'Weather unavailable' : 'Loading weather…';
   image.drawText(font, x + 22, y + 228, truncateText(font, condition, 222), CARD_TEXT_BRIGHTNESS);
-  image.drawText(font, x + 22, y + 255, truncateText(font, weather.locationName || 'Set up in Weather', 222), 140);
+  image.drawText(font, x + 22, y + 255, truncateText(font, weather.locationName || (weather.phase === 'permission-required' ? 'Allow location in Faceclaw' : 'Local weather'), 222), 140);
   for (const rect of dashboardTargets(width, height)) {
     const focused = selected === rect.id;
     image.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, focused ? 245 : 95, 6, focused ? 3 : 2);

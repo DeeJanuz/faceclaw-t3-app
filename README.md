@@ -26,6 +26,8 @@ The debug APK is for isolated testing. Use your own stable signing identity for 
 
 **T3 gestures** makes double tap go back through menus and screens; at the dashboard it turns the display off, and another double tap wakes it. Tap then hold opens the app switcher, and one hold opens App actions. **App actions menus** separately controls the menu presentation, including access to System actions. These settings need the customization bundle enabled and their respective host grants. The preview and sample-data controls are at the bottom of T3 settings.
 
+Dashboard weather refreshes automatically while T3 is visible on the glasses, using Faceclaw's location permission. The host fetches weather on first display and every 30 minutes, with a one-minute retry delay after failures. Opening the host Weather app is not required. Hidden dashboards do not start new weather requests; they refresh when visible again if the cached result is due. This requires a host build with dashboard weather refresh support.
+
 The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. `../faceclaw-t3-bridge/scripts/faceclaw-dev-server.mjs` provides the existing isolated integration fixture.
 
 Frame conversion uses one bulk JavaScript-to-Android buffer transfer for both the preview and host surfaces. The [emulator pixel benchmark](tests/android/README.md) checks pixel fidelity and buffer bounds and compares transfer time with the former per-pixel path.

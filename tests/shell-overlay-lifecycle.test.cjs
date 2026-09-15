@@ -28,3 +28,21 @@ test('disconnect drops preview state but active capture remains a real overlay u
  assert.equal(h.shell.hasOverlay(),true);
  h.event('disconnected',{});assert.equal(h.shell.hasOverlay(),false);
 });
+test('a stale host close cannot clear a newer replacement preview',()=>{
+ const h=setup();h.event('extension-surface',{feature:'ui.notifications',type:'open'});
+ h.shell.showNotificationPreview('old','','',async()=>true,()=>true,false,'host-old');
+ h.shell.showNotificationPreview('new','','',async()=>true,()=>true,false,'host-new');
+ h.event('extension-surface',{feature:'ui.notifications',type:'close',presentationId:'host-old'});
+ assert.equal(h.shell.getNotificationPreviewId(),'new');
+ h.event('extension-surface',{feature:'ui.notifications',type:'close',presentationId:'host-new'});
+ assert.equal(h.shell.getNotificationPreviewId(),null);
+});
+test('a returned host lease binds to a local T3 completion preview',()=>{
+ const h=setup();h.event('extension-surface',{feature:'ui.notifications',type:'open'});
+ h.shell.showNotificationPreview('completion','','',async()=>true,()=>true);
+ h.shell.bindNotificationPreviewHostPresentation('host-lease');
+ h.event('extension-surface',{feature:'ui.notifications',type:'close',presentationId:'wrong'});
+ assert.equal(h.shell.getNotificationPreviewId(),'completion');
+ h.event('extension-surface',{feature:'ui.notifications',type:'close',presentationId:'host-lease'});
+ assert.equal(h.shell.getNotificationPreviewId(),null);
+});

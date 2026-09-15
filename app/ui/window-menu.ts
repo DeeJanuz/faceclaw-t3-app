@@ -29,6 +29,10 @@ export function appActionItems(items: MenuItem[], displayOff: () => void, system
 export class WindowMenuLayer extends MenuLayer {
   constructor(title: string | null, items: MenuItem[]) {
     super(title, items, WINDOW_MENU_LAYOUT);
+    // The shared policy may put Display off first. Opening a menu must not
+    // leave power as the armed default when a release or synthesized click
+    // follows the hold; users can still scroll back to select it deliberately.
+    const safeIndex = items.findIndex(item => item.label !== 'Display off' && item.disabled !== true);
+    if (safeIndex >= 0) this.selectItem(safeIndex);
   }
 }
-

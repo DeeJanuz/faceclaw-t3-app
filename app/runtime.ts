@@ -30,7 +30,7 @@ let lastFrame:GrayImage|null=null;
 const frames=new Set<(frame:GrayImage)=>void>();
 type RuntimeSurface={width:number;height:number;visible:boolean;generation:number;stack?:LayerStack};
 const surfaces=new Map<string,RuntimeSurface>();
-let preview:any=null;let previewLayer:TimedNotificationLayer|null=null;let notificationMode:'preview'|'reader'|'inbox'|undefined;
+let preview:any=null;let previewLayer:TimedNotificationLayer|null=null;let notificationHostPresentationId:string|undefined;let notificationMode:'preview'|'reader'|'inbox'|undefined;
 let lastProtected:boolean|undefined,previewTimer:ReturnType<typeof setTimeout>|null=null,previewPending:GrayImage|null=null,lastPreviewAt=0;
 const rejectedSceneSurfaces=new Set<string>();
 const renderTraceIds=new Map<string,string>();
@@ -139,12 +139,43 @@ export function initializeAppRuntime():void{
    current.stack.push(layer);layer.startCapture();current.requestRender();
   }
   if(type==='preview'||type==='preview-update'){
-   preview=data;notificationMode='preview';
+   // Keep the opaque presentation identity through async open/dismiss work.
+   // Host replacement can close an old surface after the newer preview exists.
+   preview=data;notificationHostPresentationId=typeof data.hostPresentationId==='string'?data.hostPresentationId:undefined;notificationMode='preview';
    if(previewLayer)previewLayer.update(data.title,data.text,type==='preview');
-   else previewLayer=new TimedNotificationLayer(data.title,data.text,()=>{const selected=preview;if(!selected)return;const origin=previewLayer?.currentRect();if(origin)setT3NotificationOrigin(origin);settle(selected.open(selected.woke).then((opened:boolean)=>{if(opened){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode='reader';renderSurface('ui.notifications');}}));},()=>{const selected=preview;if(selected)settle(Promise.resolve(selected.dismiss()).then((dismissed:boolean)=>{if(dismissed)shell.closeNotificationPreview(selected.id);}));},()=>{const selected=preview;if(selected){shell.closeNotificationPreview(selected.id);sendHostAction('ui.notifications','close-surface');}},()=>renderSurface('ui.notifications'),!data.woke);
+   else previewLayer=new TimedNotificationLayer(data.title,data.text,()=>{
+    const selected=preview, presentationId=selected?.presentationId;
+    if(!selected)return;
+    const origin=previewLayer?.currentRect();if(origin)setT3NotificationOrigin(origin);
+    settle(selected.open(selected.woke).then((opened:boolean)=>{
+     if(preview?.presentationId!==presentationId)return;
+     if(opened){
+      // Opening changes the same surface into the reader. Only remove the
+      // timed card; the host surface remains available for the reader frame.
+      shell.closeNotificationPreview(selected.id,false,presentationId,false);
+      notificationMode='reader';renderSurface('ui.notifications');
+     }
+    }));
+   },()=>{
+    const selected=preview, presentationId=selected?.presentationId;
+    if(!selected)return Promise.resolve(false);
+    return Promise.resolve(selected.dismiss()).then((dismissed:boolean)=>{
+     if(preview?.presentationId!==presentationId)return false;
+     if(dismissed)shell.closeNotificationPreview(selected.id,true,presentationId);
+     return dismissed;
+    },()=>false);
+   },()=>{
+    const selected=preview, presentationId=selected?.presentationId;
+    if(selected&&preview?.presentationId===presentationId)shell.closeNotificationPreview(selected.id,true,presentationId);
+   },()=>renderSurface('ui.notifications'),!data.woke);
    renderSurface('ui.notifications');
   }
-  if(type==='preview-close'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;renderSurface('ui.notifications');}
+  if(type==='preview-close'){
+   if(preview && data?.presentationId && data.presentationId!==preview.presentationId && data.presentationId!==preview.hostPresentationId)return;
+   if(data?.hostPresentationId)notificationHostPresentationId=data.hostPresentationId;
+   else notificationHostPresentationId=undefined;
+   preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;renderSurface('ui.notifications');
+  }
  });
  onHostState(()=>{if(hostVisible)getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);});
  onHostEvent((type,data)=>{
@@ -161,7 +192,7 @@ export function initializeAppRuntime():void{
   }
   if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
   if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;updateT3HostVisible(hostVisible);if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
-  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;if(type==='destroyed'){lastFrame=null;previewPending=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
+  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
   if(type==='render'){
    setPresentationTime(data.targetPresentationTimeMs);
    const feature=typeof data.surfaceId==='string'&&data.surfaceId.startsWith('extension:')?data.surfaceId.slice(10):'';
@@ -174,7 +205,10 @@ export function initializeAppRuntime():void{
   if(type==='app-menu')settle(deliverInput('long-press'));
   if(type==='extension-surface'){
    const feature=data.feature;
-   if(data.type==='close'){surfaces.delete(feature);if(feature==='ui.notifications'){notificationSurface=false;notificationMode=undefined;preview=null;previewLayer?.onRemoved();previewLayer=null;getApp().resize(width,height);setAppViewport(width,height);}return;}
+   if(data.type==='close'){
+    if(feature==='ui.notifications'&&data.presentationId&&notificationHostPresentationId&&data.presentationId!==notificationHostPresentationId)return;
+    surfaces.delete(feature);if(feature==='ui.notifications'){notificationSurface=false;notificationHostPresentationId=undefined;notificationMode=undefined;preview=null;previewLayer?.onRemoved();previewLayer=null;getApp().resize(width,height);setAppViewport(width,height);}return;
+   }
    if(data.type==='open'||data.type==='resize'){
     const surface={width:data.width,height:data.height,generation:data.generation,visible:true,stack:undefined as LayerStack|undefined};
     if(feature==='ui.launcher'){
@@ -194,13 +228,19 @@ export function initializeAppRuntime():void{
     if(feature==='ui.notifications'){if(preview&&previewLayer){previewLayer.handleInput(input);}else settle(deliverInput(input));}
     else{const surface=surfaces.get(feature);if(surface?.stack){if(input.type==='pointer-click'&&Number.isInteger(input.x)&&Number.isInteger(input.y)&&input.x>=0&&input.y>=0&&input.x<surface.width&&input.y<surface.height)settle(surface.stack.hitTest(input.x,input.y).then(()=>renderSurface(feature)));else settle(surface.stack.handleInput(input).then(()=>renderSurface(feature)));}}
    }
-   if(content.event==='notification-arrived'){if(notificationMode!=='reader'&&notificationMode!=='inbox'){setNotificationWakeOrigin(Boolean(content.wokeScreen));handlePhoneNotification(content.key??content.id);}renderSurface('ui.notifications');}
+   if(content.event==='notification-arrived'){if(notificationMode!=='reader'&&notificationMode!=='inbox'){setNotificationWakeOrigin(Boolean(content.wokeScreen));handlePhoneNotification(content.key??content.id,typeof content.presentationId==='string'?content.presentationId:undefined);if(typeof content.presentationId==='string'){notificationHostPresentationId=content.presentationId;shell.bindNotificationPreviewHostPresentation(content.presentationId);}}renderSurface('ui.notifications');}
    if(content.event==='notification-open'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode='reader';notificationSurface=true;const n=hostState.notifications.find(n=>n.key===content.key);openT3Notification(n?`phone:${n.key}:${n.postTime}`:undefined,content.previousWindowId??hostState.focusedWindowId,Boolean(content.returnToSleep));renderSurface('ui.notifications');}
    if(feature==='ui.app-menu' && content.event==='menu'){
     const surface=surfaces.get(feature);
     if(surface&&Array.isArray(content.items)){
      const actions={...noopLayerActions,requestRender:()=>renderSurface(feature)};
-     surface.stack=new LayerStack(new MenuLayer(content.title??'App actions',content.items.filter((item:any)=>typeof item.token==='string'&&typeof item.label==='string').map((item:any)=>({label:item.label,disabled:item.enabled===false,onSelect:()=>requestHostAction(feature,'menu-select',{token:item.token}).catch(()=>{})}))),actions,{width:surface.width,height:surface.height});renderSurface(feature);
+     const items=content.items.filter((item:any)=>typeof item.token==='string'&&typeof item.label==='string').map((item:any)=>({label:item.label,disabled:item.enabled===false,onSelect:()=>requestHostAction(feature,'menu-select',{token:item.token}).catch(()=>{})}));
+     const menu=new MenuLayer(content.title??'App actions',items);
+     // Keep a leading Display off row visible for explicit selection while
+     // avoiding an accidental power action from the hold's release/click.
+     const safeIndex=items.findIndex((item:any)=>item.label!=='Display off'&&item.disabled!==true);
+     if(safeIndex>=0)menu.selectItem(safeIndex);
+     surface.stack=new LayerStack(menu,actions,{width:surface.width,height:surface.height});renderSurface(feature);
     }
    }
    if(content.event==='notification-inbox'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode='inbox';notificationSurface=true;openT3Inbox();renderSurface('ui.notifications');}

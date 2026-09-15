@@ -16,6 +16,7 @@ let initialized = false;
 let openingNotification = false;
 // Private APK content must never enter workspace snapshots or assistant tools.
 const externalArrivals = new Map<string, T3Alert>();
+const trackedT3Alerts = new Set<string>();
 function pairingIdentity(): string {
   const config = getT3Config();
   return JSON.stringify([config.bridgeUrl, config.pairingFingerprint]);
@@ -140,10 +141,16 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
   initializeT3PhoneNotifications();
   const refreshNotificationPreferences = () => {
     const allowed = state.demo ? [] : visibleT3Alerts();
+    if (!ownsFeature('ui.notifications')) {
+      // The grant is the authority for both preview presentation and the
+      // optional phone copy. Retire tracked copies when it is revoked.
+      for (const id of trackedT3Alerts) dismissT3Notification(id);
+      trackedT3Alerts.clear();
+    }
     for (const [group, alert] of externalArrivals) {
       if (getT3Config().notificationOverride !== true || !allowed.some(current => current.id === alert.id || current.groupId === group) || !hasExternalNotification(alert.threadId)) {
         shell.closeNotificationPreview(alert.id);
-        if (!hasExternalNotification(alert.threadId)) externalArrivals.delete(group);
+        externalArrivals.delete(group);
       }
     }
     if (state.demo) return;
@@ -163,7 +170,6 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
   onT3NotificationAppsChanged(preferencesChanged);
   onAndroidNotificationsChanged(refreshNotificationPreferences);
   // Glasses preview cleanup is independent of optional phone posting.
-  const trackedT3Alerts = new Set<string>();
   state.onChange(() => {
     if (state.demo) return;
     const active = new Set(state.alerts.map(alert => alert.id));
@@ -171,7 +177,7 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
       if (!active.has(id)) { dismissT3Notification(id); trackedT3Alerts.delete(id); shell.closeNotificationPreview(id); }
     }
   });
-  const presentArrival = (alert: T3Alert) => {
+  const presentArrival = (alert: T3Alert, hostPresentationId?: string) => {
     if (alert.kind === 'phone' && !findT3Alert(alert.id)) return;
     // Keep inbox/history bookkeeping. A matching current reader supplies the
     // update directly, waking in place if asleep, without a duplicate alert.
@@ -182,9 +188,12 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
       trackedT3Alerts.add(alert.id);
     }
     shell.showNotificationPreview(alert.id, alert.title, alert.previewBody || alert.body,
-      wokeDisplay => openT3Alert(alert, wokeDisplay), () => dismissT3Alert(alert), isT3FlowProtected());
+      wokeDisplay => openT3Alert(alert, wokeDisplay), () => dismissT3Alert(alert), isT3FlowProtected(), hostPresentationId || (alert.kind === 't3' ? alert.id : undefined));
   };
-  state.onArrival(presentArrival);
+  // T3-owned completions get their host lease from the returned Android
+  // publication event. The local alert id is not that lease and must never be
+  // echoed as a close token.
+  state.onArrival(alert => presentArrival(alert));
   presentExternalArrival = presentArrival;
   onT3NotificationRemoved(id => { if (!state.demo) { state.removeAlert(id); shell.closeNotificationPreview(id); } });
   onAndroidNotificationRemoved(key => {
@@ -206,8 +215,8 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
   });
 }
 
-let presentExternalArrival: (alert: T3Alert) => void = () => {};
-export function handlePhoneNotification(key: string): void {
+let presentExternalArrival: (alert: T3Alert, hostPresentationId?: string) => void = () => {};
+export function handlePhoneNotification(key: string, hostPresentationId?: string): void {
   const external = key.startsWith("apk:");
   if (external && (state.demo || getT3Config().notificationOverride !== true)) return;
   const notification = readActiveNotifications(50, external).find(n => n.key === key);
@@ -225,11 +234,11 @@ export function handlePhoneNotification(key: string): void {
   if (external) {
     externalArrivals.set(group, alert);
     while (externalArrivals.size > 128) { const oldest = externalArrivals.keys().next().value!; shell.closeNotificationPreview(externalArrivals.get(oldest)!.id); externalArrivals.delete(oldest); }
-    if (changed) presentExternalArrival(alert);
+    if (changed) presentExternalArrival(alert, hostPresentationId);
     state.changed();
   } else state.addAlert(alert, changed);
   if (!changed && previous) shell.updateNotificationPreview(previous.id, alert.id, alert.title, alert.previewBody || alert.body,
-    wokeDisplay => openT3Alert(alert, wokeDisplay), () => dismissT3Alert(alert));
+    wokeDisplay => openT3Alert(alert, wokeDisplay), () => dismissT3Alert(alert), hostPresentationId);
 }
 
 export async function openT3Alert(alert: T3Alert, returnToSleep = false): Promise<boolean> {

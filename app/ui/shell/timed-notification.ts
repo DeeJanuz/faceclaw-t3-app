@@ -16,12 +16,13 @@ export class TimedNotificationLayer implements Layer {
   private lastFrame: MotionFrame | null = null;
   private viewport = '';
   private removed = false;
-  private closeAction: (() => void) | null = null;
+  private closeAction: (() => void | boolean | Promise<boolean>) | null = null;
+  private settling = false;
   constructor(private title: string, private text: string, private open: () => void,
-    private dismiss: () => void, private expire: () => void, private repaint: () => void, private readonly showBackdrop = true) {
+    private dismiss: () => void | boolean | Promise<boolean>, private expire: () => void, private repaint: () => void, private readonly showBackdrop = true) {
     this.timer = setInterval(() => {
       if (this.removed) return;
-      if (!this.closeAction && Date.now() >= this.deadline - DURATION_MS) this.beginClose(this.expire);
+      if (!this.closeAction && !this.settling && Date.now() >= this.deadline - DURATION_MS) this.beginClose(this.expire);
       this.repaint();
       // Also expire previews that were never painted or lost their render target.
       if ((Date.now() >= this.deadline && !this.motion) || Date.now() >= this.deadline + DURATION_MS) this.finishClose();
@@ -34,12 +35,12 @@ export class TimedNotificationLayer implements Layer {
       this.deadline = Date.now() + 5000;
       if (this.closeAction && this.lastFrame) {
         const box = appViewportRect('medium'), target = notificationCardRect(box); target.y = box.y + 12;
-        this.motion?.retarget(target, false); this.closeAction = null;
+        this.motion?.retarget(target, false); this.closeAction = null; this.settling = false;
       }
     }
   }
-  private beginClose(action: () => void): void {
-    if (this.closeAction || this.removed) return;
+  private beginClose(action: () => void | boolean | Promise<boolean>): void {
+    if (this.closeAction || this.settling || this.removed) return;
     this.closeAction = action;
     if (this.lastFrame && this.motion) {
       const target = { ...this.lastFrame.rect, y: -this.lastFrame.rect.height };
@@ -48,10 +49,27 @@ export class TimedNotificationLayer implements Layer {
     if (!this.motion) { this.finishClose(); return; }
     this.repaint();
   }
+  private reopen(): void {
+    if (this.removed) return;
+    const box = appViewportRect('medium'), target = notificationCardRect(box); target.y = box.y + 12;
+    this.deadline = Date.now() + 5000;
+    this.motion?.retarget(target, false);
+    this.closeAction = null; this.settling = false;
+    this.repaint();
+  }
   private finishClose(): void {
+    if (this.settling || this.removed) return;
     const action = this.closeAction; this.closeAction = null;
-    if (!action || this.removed) return;
-    this.onRemoved(); action();
+    if (!action) return;
+    let result: void | boolean | Promise<boolean>;
+    try { result = action(); } catch { result = false; }
+    if (result && typeof (result as Promise<boolean>).then === 'function') {
+      this.settling = true;
+      Promise.resolve(result).then(ok => ok === false ? this.reopen() : this.onRemoved(), () => this.reopen());
+      return;
+    }
+    if (result === false) { this.reopen(); return; }
+    this.onRemoved();
   }
   paint(ctx: LayerContext, below: PaintBelow): GrayImage {
     const size = ctx.stack.getBaseSize();
@@ -86,6 +104,6 @@ export class TimedNotificationLayer implements Layer {
   }
   onRemoved(): void {
     if (this.timer !== null) clearInterval(this.timer);
-    this.timer = null; this.removed = true; this.motion?.cancel(); this.motion = null; this.lastFrame = null; this.closeAction = null;
+    this.timer = null; this.removed = true; this.settling = false; this.motion?.cancel(); this.motion = null; this.lastFrame = null; this.closeAction = null;
   }
 }

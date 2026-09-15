@@ -986,6 +986,20 @@ test('arrival animation gates body, reverses dismissal without a jump and cancel
  now=10000;tick();assert.equal(dismissed,1);assert.equal(expired,0);
 });
 
+test('failed async preview dismissal restores a usable card', async () => {
+ let now=0, dismissed=0, resolveDismiss;
+ const {TimedNotificationLayer}=load('app/ui/shell/timed-notification.ts',{
+  '../../graphics/image':{},'../../graphics/ui-fonts':{getDefaultSmallFont:()=>({})},'./geometry':{appViewportRect:()=>({x:0,y:0,width:576,height:452})},
+  './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard(){}},'../presentation-clock':{presentationNow:()=>now},
+ },{Date:{now:()=>now},setInterval:()=>1,clearInterval(){}});
+ const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>{dismissed++;return new Promise(resolve=>{resolveDismiss=resolve;});},()=>{},()=>{});
+ const ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
+ layer.paint(ctx,()=>({})); now=324; layer.paint(ctx,()=>({})); layer.handleInput({type:'swipe-down'}); layer.paint(ctx,()=>({})); now=684; layer.paint(ctx,()=>({}));
+ assert.equal(dismissed,1); resolveDismiss(false); await new Promise(resolve=>setImmediate(resolve));
+ layer.handleInput({type:'swipe-down'}); layer.paint(ctx,()=>({})); now=1044; layer.paint(ctx,()=>({}));
+ assert.equal(dismissed,2); resolveDismiss(true); await new Promise(resolve=>setImmediate(resolve));
+});
+
 test('expanded notification starts at the preview rectangle and defers its body', () => {
  const clock={now:1000},h=setup(clock,true),ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
  h.state.alerts=[{id:'one',kind:'phone',title:'Sender',body:'Synthetic message body'}];

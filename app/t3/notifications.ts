@@ -1,4 +1,4 @@
-import {nativeService} from '../extensions/host';
+import {nativeService,onHostEvent} from '../extensions/host';
 import { Application, Utils } from '@nativescript/core';
 import { readT3PhoneNotificationsEnabled, onT3PhoneNotificationsChanged } from './notification-preferences';
 declare const com: any;
@@ -21,6 +21,14 @@ export function initializeT3PhoneNotifications(): void {
     java().dismissAll(context());
   };
   onT3PhoneNotificationsChanged(sync);
+  // A disconnected/revoked transport must not retain callbacks for the old
+  // phone publication set. The Android notification itself can remain until
+  // the OS removes it; a later connection starts from a fresh bounded set.
+  onHostEvent((type) => {
+    if (type !== 'disconnected' && type !== 'destroyed') return;
+    postedIds.clear(); suppressedIds.clear();
+    for (const observer of observers) observer.clear();
+  });
   sync();
 }
 
@@ -30,13 +38,17 @@ export function postT3Notification(notification: T3PhoneNotification): boolean {
   if (!java().post(context(), notification.id, notification.threadId, notification.title, notification.text)) return false;
   suppressedIds.delete(notification.id);
   postedIds.add(notification.id);
+  while (postedIds.size > 128) postedIds.delete(postedIds.values().next().value!);
   for (const observer of observers) observer.add(notification.id);
   return true;
 }
-export function dismissT3Notification(id: string): void { nativeService()?.removeNotification(id); java().dismiss(context(), id); }
+export function dismissT3Notification(id: string): void {
+  try { nativeService()?.removeNotification(id); } catch { /* Transport may be gone during revocation. */ }
+  try { java().dismiss(context(), id); } catch { /* Android cleanup is best effort. */ }
+}
 function readNativeIds(): string[] {
   const ids = JSON.parse(String(java().activeIds(context())));
-  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : [];
+  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string').slice(0, 128) : [];
 }
 export function readT3NotificationIds(): string[] {
   return readNativeIds().filter(id => !suppressedIds.has(id));
@@ -52,6 +64,7 @@ export function onT3NotificationRemoved(listener: (id: string) => void): () => v
     const current = new Set([...nativeIds].filter(id => !suppressedIds.has(id)));
     for (const id of known) if (!current.has(id)) { postedIds.delete(id); listener(id); }
     known.clear(); for (const id of current) known.add(id);
+    while (known.size > 128) known.delete(known.values().next().value!);
   }, 1000);
   return () => { clearInterval(timer); observers.delete(known); };
 }

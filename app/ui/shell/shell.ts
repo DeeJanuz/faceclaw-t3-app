@@ -2,7 +2,8 @@ import {openNotification} from '../../native/notification-icons';
 /** Retained T3 UI's host facade. Every privileged operation crosses SDK IPC. */
 import { hostState,nativeService,onHostEvent,requestHostAction,sendHostAction,ownsFeature } from '../../extensions/host';
 import { t3Workspace } from '../../apps/t3/runtime';
-let visible=true,notificationSurface=false,preview:any=null;let nextWakeOrigin:boolean|undefined;
+type NotificationPreview = { id:string; title:string; text:string; open:(woke:boolean)=>Promise<boolean>; dismiss:()=>Promise<boolean>|boolean; woke:boolean; started:number; presentationId:string; hostPresentationId?:string };
+let visible=true,notificationSurface=false,preview:NotificationPreview|null=null;let previewSequence=0;let nextWakeOrigin:boolean|undefined;
 export function setNotificationWakeOrigin(woke:boolean):void{nextWakeOrigin=woke;}let capture:{id:string;done:(text:string)=>void;cancel:()=>void;current:()=>boolean}|null=null;
 export const localShellEvents=new Set<(type:string,data:any)=>void>();
 function local(type:string,data:any={}){for(const listener of localShellEvents)listener(type,data);}
@@ -14,7 +15,14 @@ function action(name:string,data:Record<string,unknown>={}):boolean{
 }
 onHostEvent((type,data)=>{
  if(type==='visibility')visible=Boolean(data.visible&&data.screenOn!==false);
- if(type==='extension-surface'&&data.feature==='ui.notifications'){if(data.type==='open')notificationSurface=true;if(data.type==='close'){notificationSurface=false;clearPreview();}}
+ if(type==='extension-surface'&&data.feature==='ui.notifications'){
+  if(data.type==='open')notificationSurface=true;
+  if(data.type==='close'){
+   // N1 may attach the host presentation identity. An old close must not
+   // erase a replacement that was admitted while the old surface unwound.
+   if(!data.presentationId || !preview || data.presentationId===preview.presentationId || data.presentationId===preview.hostPresentationId){notificationSurface=false;clearPreview();}
+  }
+ }
  if(type==='disconnected'||type==='destroyed'){notificationSurface=false;clearPreview();}
  if(type==='disconnected'||type==='destroyed'){const previous=capture;capture=null;previous?.cancel();}
  if(type==='dictation-result' && capture && data.requestId===capture.id){const pending=capture;capture=null;if(data.confirmed===true&&typeof data.text==='string'&&pending.current())pending.done(data.text);else pending.cancel();}
@@ -35,12 +43,23 @@ export const shell={
   if(t3Workspace.demo){capture=null;done('Please summarize the latest project changes.');return;}
   local('capture',{origin:_rect,onDraft:(text:string)=>{const pending=capture;capture=null;if(pending?.current())pending.done(text);},onCancelled:()=>{const pending=capture;capture=null;pending?.cancel();}});
  },
- showNotificationPreview(id:string,title:string,text:string,open:(woke:boolean)=>Promise<boolean>,dismiss:()=>Promise<boolean>|boolean,protectedFlow=false){
+ showNotificationPreview(id:string,title:string,text:string,open:(woke:boolean)=>Promise<boolean>,dismiss:()=>Promise<boolean>|boolean,protectedFlow=false,hostPresentationId?:string){
   if(protectedFlow)return;
-  preview={id,title,text,open,dismiss,woke:preview?.woke??nextWakeOrigin??!hostState.screenOn,started:Date.now()};nextWakeOrigin=undefined;local('preview',preview);
+  const presentationId=`t3-preview-${Date.now()}-${++previewSequence}`;
+  preview={id,title,text,open,dismiss,woke:preview?.woke??nextWakeOrigin??!hostState.screenOn,started:Date.now(),presentationId,hostPresentationId};nextWakeOrigin=undefined;local('preview',preview);
  },
- updateNotificationPreview(oldId:string,id:string,title:string,text:string,open:any,dismiss:any){if(preview?.id===oldId){Object.assign(preview,{id,title,text,open,dismiss});local('preview-update',preview);}},
- closeNotificationPreview(id:string,_restore=true){if(preview?.id===id){const closed=preview;preview=null;local('preview-close',closed);}},
+ bindNotificationPreviewHostPresentation(hostPresentationId:string){
+  if(preview && typeof hostPresentationId==='string' && hostPresentationId.length>0){preview.hostPresentationId=hostPresentationId;local('preview-update',preview);}
+ },
+ updateNotificationPreview(oldId:string,id:string,title:string,text:string,open:any,dismiss:any,hostPresentationId?:string){if(preview?.id===oldId){Object.assign(preview,{id,title,text,open,dismiss,...(hostPresentationId?{hostPresentationId}:{})});local('preview-update',preview);}},
+ closeNotificationPreview(id:string,_restore=true,presentationId?:string,releaseHostSurface=true){
+  if(preview?.id===id && (!presentationId || preview.presentationId===presentationId || preview.hostPresentationId===presentationId)){
+   const closed=preview;preview=null;local('preview-close',closed);
+   // Closing a successful T3-owned dismissal/expiry must release the matching
+   // host surface. N1 treats this as idempotent and binds it to its identity.
+   if(releaseHostSurface)sendHostAction('ui.notifications','close-surface',closed.hostPresentationId?{presentationId:closed.hostPresentationId}:{});
+  }
+ },
  openNotificationModal(key:string,returnToSleep=false){void openNotification(key);},
 };
 function clearPreview():void{if(!preview)return;const closed=preview;preview=null;local('preview-close',closed);}

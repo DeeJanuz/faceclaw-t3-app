@@ -57,7 +57,9 @@
         <Label col="0" text="Use T3 for Faceclaw notifications" verticalAlignment="center" textWrap="true" />
         <Switch col="1" checked="{{ notificationOverride }}" checkedChange="{{ toggleNotifications }}" />
       </GridLayout>
-      <Label text="Open notifications in T3's inbox and reader. New notifications keep the five-second dropdown. Android notification access and app notification settings still apply. Waking the display returns to your last app." textWrap="true" />
+      <Label text="Open notifications in T3's inbox and reader. New notifications show a temporary preview; tap it to expand the reader. Android notification access and app notification settings still apply. Waking the display returns to your last app." textWrap="true" />
+      <Button text="{{ notificationPreviewLabel }}" tap="{{ chooseNotificationPreviewSeconds }}" visibility="{{ notificationOverride ? 'visible' : 'collapsed' }}" />
+      <Label text="Faceclaw hosts that support preview timing use the selected duration. Older hosts use five seconds until they are updated." textWrap="true" visibility="{{ notificationOverride ? 'visible' : 'collapsed' }}" />
       <Button text="Choose notification apps" tap="{{ chooseNotificationApps }}" visibility="{{ notificationOverride ? 'visible' : 'collapsed' }}" />
       <GridLayout columns="*,auto" class="m-t-12">
         <Label col="0" text="Show T3 alerts on this phone" verticalAlignment="center" textWrap="true" />

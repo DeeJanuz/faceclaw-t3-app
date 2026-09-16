@@ -9,7 +9,13 @@ test('phone assistant picker lists both computers, persists the owner, and scope
  '../extensions/settings':{customizationGroups:[],customizationsEnabled:()=>true},
  '../extensions/host':{onHostEvent:()=>()=>{},effectiveFeature:()=>null,ownsFeature:()=>false},
  '../t3/config':{getT3Config:()=>config,saveT3Config:update=>{config={...config,...update}}},
- '../t3/pairing':{},'../t3/notification-preferences':{readT3PhoneNotificationsEnabled:()=>false},
+ '../t3/pairing':{},'../t3/notification-preferences':{
+  readT3PhoneNotificationsEnabled:()=>false,
+  readT3NotificationPreviewSeconds:()=>5,
+  onT3NotificationPreviewSecondsChanged:()=>()=>{},
+  saveT3NotificationPreviewSeconds:()=>{},
+  T3_NOTIFICATION_PREVIEW_SECONDS:[3,5,7,10],
+ },
  '../g2/android-permissions':{},'../native/foreground-service':{},'../g2/dashboard-controller':{},
  '../apps/t3/runtime':{t3Workspace:{projects,environments:[{environmentId:'local',isPrimary:true}]}},
  '../t3/client':{t3Client:{state:()=>({status:'connected'}),onStateChange:()=>()=>{},connect:async()=>{},rpc:async(method,params)=>{

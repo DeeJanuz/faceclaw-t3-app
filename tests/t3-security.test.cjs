@@ -136,6 +136,33 @@ test('federated creation filters models and rejects a response from the wrong en
   assert.equal(f.workspace.selectedThreadId, 'thread');
   assert.equal(f.workspace.canRetryLastSend, false);
 });
+test('reviewed replies stay on the selected remote environment and reject a swapped thread response', async () => {
+  const calls = [];
+  const api = { rpc: async (method, params = {}) => {
+    calls.push({ method, params });
+    if (method === 'turn.reply') return { threadId: 'same', environmentId: 'remote', sequence: 2 };
+    if (method === 'transcript.get') return { session: { id: 'same', environmentId: 'remote', status: 'ready' }, turns: [], pendingPlanInput: null };
+    if (method === 'sessions.list') return { unsettled: [{ id: 'same', environmentId: 'remote', status: 'ready' }], settled: [] };
+    if (method === 'projects.list' || method === 'models.list') return method === 'projects.list' ? { projects: [] } : { models: [] };
+    throw new Error(`Unexpected ${method}`);
+  } };
+  const workspace = new T3Workspace(api);
+  workspace.selectedThreadId = 'same'; workspace.selectedEnvironmentId = 'remote';
+  workspace.transcript = { session: { id: 'same', environmentId: 'remote', status: 'ready' }, turns: [], liveActivity: null };
+  const destination = { threadId: 'same', environmentId: 'remote', pairing: 'paired' };
+  assert.equal(await workspace.send('remote reply', undefined, { reviewedDestination: destination }), true);
+  assert.equal(JSON.stringify(calls.find(c => c.method === 'turn.reply').params), JSON.stringify({ environmentId: 'remote', threadId: 'same', text: 'remote reply' }));
+
+  workspace.selectedThreadId = 'same'; workspace.selectedEnvironmentId = 'remote';
+  workspace.transcript = { session: { id: 'same', environmentId: 'remote', status: 'ready' }, turns: [], liveActivity: null };
+  api.rpc = async (method, params = {}) => {
+    calls.push({ method, params });
+    if (method === 'turn.reply') return { threadId: 'other', environmentId: 'remote', sequence: 3 };
+    throw new Error(`Unexpected ${method}`);
+  };
+  assert.equal(await workspace.send('swapped reply', undefined, { reviewedDestination: destination }), false);
+  assert.equal(workspace.canRetryLastSend, false);
+});
 test('host switching with a reused transport cannot queue an old unsubscribe onto the new host', async () => {
   const calls = [], api = { rpc: async (...args) => { calls.push(args); return {}; } };
   const workspace = new T3Workspace(api);
@@ -194,6 +221,38 @@ test('running and starting sessions steer even without liveActivity decoration',
     assert.deepEqual(methods, ['turn.steer']);
     assert.equal(workspace.canRetryLastSend, true);
   }
+});
+test('reviewed dictated replies use one live bridge operation across the running-to-idle race', async () => {
+  const methods = [];
+  const workspace = new T3Workspace({ rpc: async method => { methods.push(method); return { threadId: 'thread', sequence: 1 }; } });
+  workspace.selectedThreadId = 'thread';
+  workspace.transcript = { session: { id: 'thread', status: 'running' }, liveActivity: null };
+  const destination = { threadId: 'thread', pairing: 'paired' };
+  assert.equal(await workspace.send('finished turn reply', undefined, { reviewedDestination: destination }), true);
+  workspace.transcript = { session: { id: 'thread', status: 'ready' }, liveActivity: null };
+  assert.equal(await workspace.send('new idle reply', undefined, { reviewedDestination: destination }), true);
+  assert.deepEqual(methods.filter(method => method === 'turn.reply'), ['turn.reply', 'turn.reply']);
+});
+test('reviewed dictated replies reject a changed environment before dispatch', async () => {
+  const methods = [];
+  const workspace = new T3Workspace({ rpc: async method => { methods.push(method); return { threadId: 'thread', sequence: 1 }; } });
+  workspace.selectedThreadId = 'thread'; workspace.selectedEnvironmentId = 'computer-a';
+  assert.equal(await workspace.send('must stay on A', undefined, { reviewedDestination: { threadId: 'thread', environmentId: 'computer-b', pairing: 'paired' } }), false);
+  assert.deepEqual(methods, []);
+  assert.equal(workspace.canRetryLastSend, true);
+});
+test('reviewed dictated replies never retry after an ambiguous dispatch', async () => {
+  let calls = 0;
+  const workspace = new T3Workspace({ rpc: async method => {
+    calls++;
+    assert.equal(method, 'turn.reply');
+    throw Object.assign(new Error('transport dropped'), { code: 'T3_CONNECTION_DROPPED', dispatched: true });
+  } });
+  workspace.selectedThreadId = 'thread';
+  const destination = { threadId: 'thread', pairing: 'paired' };
+  assert.equal(await workspace.send('send once', undefined, { reviewedDestination: destination }), false);
+  assert.equal(calls, 1);
+  assert.equal(workspace.canRetryLastSend, false);
 });
 test('uncertain send errors keep drafts locked, definite pre-dispatch failure permits retry', async () => {
   for (const [error, retry] of [
@@ -257,23 +316,23 @@ test('re-pairing the same endpoint clears selected thread, plans, and alerts bef
   assert.equal(api.t3Workspace.alerts.length, 0);
   pending[1].resolve(); await second;
 });
-function notificationHarness(sources = [], requestReply = () => Promise.resolve({status: 'sent'})) {
+function notificationHarness(sources = [], requestReply = () => Promise.resolve({status: 'sent'}), options = {}) {
   const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'pair-one' };
   const state = { alerts: [], demo: false, onArrival() {}, onChange() {}, removeAlert() {}, fail() {} };
-  const opened = []; const dismissed = []; let nativeClick;
+  const opened = []; const dismissed = []; const focused = []; let nativeClick;
   const api = load('app/apps/t3/notifications-ui.ts', {
     '../../extensions/host': { ownsFeature: () => true },
     '../../native/external-notifications': { invokeExternalNotification: () => false },
     '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
     '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {} } }),
     '../../ui/notification-routing': { setNotificationOpenRoute() {} },
-    '../../ui/shell/shell': { shell: { foregroundWindow: () => undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => false, focusWindow() {}, wake() {}, openNotificationModal() {} } },
+    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: async () => true, wake() {}, openNotificationModal() {} } },
     '../../native/notification-icons': { requestNotificationReply: requestReply, readActiveNotifications: () => sources, dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
     '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification() {}, dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
     './runtime': { t3Workspace: state, connectT3: async () => { state.demo = false; } },
     './t3-app': { isT3FlowProtected: () => false, openT3Thread: (id) => opened.push(id) },
   });
-  return { api, config, state, opened, dismissed, nativeClick: () => nativeClick };
+  return { api, config, state, opened, dismissed, focused, nativeClick: () => nativeClick };
 }
 test('stale notification overlay cannot open or dismiss after mode switch', async () => {
   const h = notificationHarness(); let resolve;
@@ -284,6 +343,15 @@ test('stale notification overlay cannot open or dismiss after mode switch', asyn
   resolve(); await opening;
   h.api.dismissT3Alert(alert);
   assert.deepEqual(h.opened, []); assert.deepEqual(h.dismissed, []);
+});
+test('a T3 notification reuses its already-focused app window', async () => {
+  const h = notificationHarness([], undefined, { focused: true, foregroundWindowId: 'apk:com.faceclaw.t3/com.faceclaw.t3.T3AppService' });
+  h.api.initializeT3Notifications(async () => {});
+  const alert = { id: 'current-alert', kind: 't3', threadId: 'remote-thread', environmentId: 'remote-environment' };
+  h.state.alerts = [alert];
+  assert.equal(await h.api.openT3Alert(alert, false, 'preview-id'), true);
+  assert.deepEqual(h.focused, []);
+  assert.deepEqual(h.opened, ['["remote-environment","remote-thread"]']);
 });
 test('native notification awaiting window cannot cross a new pairing', async () => {
   const h = notificationHarness(); let resolve;
@@ -456,6 +524,33 @@ test('transcript load sanitizes optional controls and rejects a mismatched threa
   assert.equal(f.workspace.transcript.session.interactionMode, undefined); assert.equal(f.workspace.transcript.pendingProposedPlan, null);
   f.api.rpc = async () => ({ session: { id: 'other' } });
   await f.workspace.refreshTranscript(); assert.match(f.workspace.error, /T3_INVALID_RESPONSE/);
+});
+
+test('token contexts follow Astra to Luna to Astra while the session total stays cumulative', async () => {
+  const usage = (contextTokens, contextWindowTokens, totalTokens, updatedAt) => ({ contextTokens, contextWindowTokens, totalTokens, updatedAt });
+  const transcript = (model, tokenUsage) => ({ snapshotId: String(tokenUsage.totalTokens),
+    session: { id: 'thread', projectId: 'project', status: 'ready', modelSelection: { instanceId: 'codex', model } },
+    tokenUsage, turns: [], liveActivity: null, liveActivities: [] });
+  let response = transcript('gpt-6-astra', usage(48000, 272000, 312000, '2026-09-15T12:00:00.000Z'));
+  const workspace = new T3Workspace({ rpc: async () => JSON.parse(JSON.stringify(response)) });
+  await workspace.openThread('thread');
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(48000, 272000, 312000, '2026-09-15T12:00:00.000Z'));
+
+  response = transcript('gpt-5.6-luna', usage(48000, 272000, 312000, '2026-09-15T12:00:00.000Z'));
+  await workspace.refreshTranscript();
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(null, null, 312000, null), 'unchanged Astra event is not relabeled as Luna');
+
+  response = transcript('gpt-5.6-luna', usage(22000, 128000, 330000, '2026-09-15T12:01:00.000Z'));
+  await workspace.refreshTranscript();
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(22000, 128000, 330000, '2026-09-15T12:01:00.000Z'));
+
+  response = transcript('gpt-6-astra', usage(22000, 128000, 330000, '2026-09-15T12:01:00.000Z'));
+  await workspace.refreshTranscript();
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(48000, 272000, 330000, '2026-09-15T12:00:00.000Z'), 'switching back restores Astra context with the latest session total');
+
+  response = transcript('gpt-6-astra', { ...usage(50000, 272000, 340000, '2026-09-15T12:02:00.000Z'), secret: 'removed' });
+  await workspace.refreshTranscript();
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(50000, 272000, 340000, '2026-09-15T12:02:00.000Z'));
 });
 test('draft mode applies only to idle sends and never silently changes an active steer', async () => {
   const f = controlWorkspace();

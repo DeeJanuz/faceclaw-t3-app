@@ -159,3 +159,24 @@ test('Inter migration preserves a smaller Roboto size deliberately reselected af
   const h = fontSettings({ 'display.uiFont2': JSON.stringify(chosen), 'display.uiFont.regular16Default1': '1' });
   assert.deepEqual(JSON.parse(JSON.stringify(h.selection.getUiFontSelection())), chosen);
 });
+
+test('session tracker shows active model, context occupancy, context limit, and cumulative total', () => {
+  const page = { turnNumber: 4, turnCount: 12, speakerLabel: 'ASSISTANT', durationLabel: 'WORKED 12s' };
+  const usage = { contextTokens: 48000, contextWindowTokens: 272000, totalTokens: 312000, updatedAt: '2026-09-09T12:00:00Z' };
+  const title = hub.transcriptPageHeader(page, 1, 8, usage, { model: 'openai/gpt-6-astra' });
+  assert.match(title, /^TURN 4\/12 \| ASTRA · CTX 48k\/272k \| TOTAL 312k/);
+  assert.match(hub.transcriptPageHeader(page, 1, 8, { ...usage, contextTokens: 12000 }, { model: 'gpt-5.6-luna' }), /LUNA · CTX 12k\/272k \| TOTAL 312k/);
+  assert.match(hub.transcriptPageHeader(page, 1, 8, undefined, { model: 'gpt-6-astra' }), /ASTRA · CTX — \| TOTAL —/);
+});
+
+test('session tracker keeps model and token counters before optional reader metadata', () => {
+  const page = { turnNumber: 4, turnCount: 12, speakerLabel: 'ASSISTANT', durationLabel: 'WORKED 12s' };
+  const usage = { contextTokens: 48000, contextWindowTokens: 272000, totalTokens: 312000, updatedAt: null };
+  const tracked = 'ASTRA · CTX 48k/272k | TOTAL 312k';
+  const title = hub.transcriptPageHeader(page, 1, 8, usage, { working: true, unread: 2, model: 'Astra' });
+  assert.match(title, /ASTRA · CTX 48k\/272k \| TOTAL 312k.*LIVE \+2 NEW/);
+  assert.equal(hub.transcriptPageHeader(page, 1, 8, usage, { font, width: font.measureText(tracked), model: 'Astra' }), tracked);
+  for (const [value, expected] of [[0, '0'], [999, '999'], [1200, '1.2k'], [48000, '48k'], [1200000, '1.2m'], [undefined, '—'], [-1, '—'], [0.5, '—'], [Infinity, '—'], [Number.MAX_SAFE_INTEGER + 1, '—']]) {
+    assert.equal(hub.formatSessionTokens(value), expected);
+  }
+});

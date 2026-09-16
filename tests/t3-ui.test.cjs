@@ -11,6 +11,16 @@ function load(path, imports = {}, globals = {}) {
 }
 const face = load('app/ui/card-presentation.ts');
 const notificationCard = load('app/ui/shell/notification-card.ts', { '../card-presentation': face, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] } });
+const previewContext = { stack: { getBaseSize: () => ({ width: 576, height: 288 }) } };
+const previewImage = () => ({ bakeDeferredDrawsInPlace() {}, fillRoundedRect() {}, drawRoundedRect() {}, drawText() {}, fillRect() {} });
+const previewImports = {
+  '../../graphics/image': {},
+  '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({ lineHeight: 16, measureText: () => 10 }) },
+  '../../graphics/textwrap': {},
+  './geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 576, height: 288 }) },
+  './notification-card': notificationCard,
+  '../card-presentation': face,
+};
 let hub;
 test('session menu preserves duplicate IDs across computers and shows unavailable peers', () => {
   const sessions = ['a', 'b'].map(environmentId => ({ id: 'same', projectId: 'project', projectTitle: 'Project',
@@ -36,7 +46,7 @@ function setup(animationClock, raster = false) {
   const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0 }; let permitDismiss = true;
   const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
   const alerts = () => visible || state.alerts;
-  class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(width * height); } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} dimmed() { return this; } }
+  class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(width * height); } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} bitBlt() {} dimmed() { return this; } }
   const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
   const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
   const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
@@ -97,13 +107,53 @@ test('notification back leaves a retained T3 reader for the dashboard', async ()
 test('preview timeout leaves inbox untouched; swipe uses dismissal callback once', () => {
   let now = 0, tick, cleared = 0, expired = 0, opened = 0, dismissed = 0;
   const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
-    '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face, '../presentation-clock': { presentationNow: () => now },
+    ...previewImports, '../presentation-clock': { presentationNow: () => now },
   }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => cleared++ });
   const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => { expired++; layer.onRemoved(); }, () => {});
+  layer.paint(previewContext, previewImage);
   now = 4500; tick(); assert.equal(expired, 0);
-  now = 5000; tick(); assert.equal(expired, 1); assert.equal(dismissed, 0); assert.equal(opened, 0); assert.equal(cleared, 1);
+  now = 6000; tick(); assert.equal(expired, 1); assert.equal(dismissed, 0); assert.equal(opened, 0); assert.equal(cleared, 1);
   const next = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => {}, () => {});
   next.handleInput({ type: 'swipe-down' }); assert.equal(dismissed, 1); next.onRemoved();
+});
+test('preview tap stops the local timeout and opens only once', () => {
+  let now = 0, tick, opened = 0, expired = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face, '../presentation-clock': { presentationNow: () => now },
+  }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
+  const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => {}, () => { expired++; }, () => {});
+  layer.handleInput({ type: 'click' }); layer.handleInput({ type: 'click' });
+  now = 10_000; tick();
+  assert.equal(opened, 1); assert.equal(expired, 0);
+});
+test('failed preview open restarts a fresh local timeout', () => {
+  let now = 0, tick, expired = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face, '../presentation-clock': { presentationNow: () => now },
+  }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
+  const layer = new TimedNotificationLayer('Title', 'Text', () => {}, () => {}, () => { expired++; layer.onRemoved(); }, () => {});
+  layer.handleInput({ type: 'click' }); now = 10_000; tick(); assert.equal(expired, 0);
+  layer.reopenAfterOpenFailure(); now = 14_500; tick(); assert.equal(expired, 0);
+  now = 14_676; tick(); assert.equal(expired, 1);
+});
+test('notification preview duration accepts only the four supported windows', () => {
+  for (const duration of [3000, 5000, 7000, 10000]) {
+    let now = 0, tick, expired = 0;
+    const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+      ...previewImports, '../presentation-clock': { presentationNow: () => now },
+    }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
+    const layer = new TimedNotificationLayer('Title', 'Text', () => {}, () => {}, () => { expired++; layer.onRemoved(); }, () => {}, true, duration);
+    layer.paint(previewContext, previewImage);
+    now = duration - 500; tick(); assert.equal(expired, 0);
+    now = duration + 1000; tick(); assert.equal(expired, 1);
+  }
+  let now = 0, tick, expired = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    ...previewImports, '../presentation-clock': { presentationNow: () => now },
+  }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
+  const fallback = new TimedNotificationLayer('Title', 'Text', () => {}, () => {}, () => { expired++; fallback.onRemoved(); }, () => {}, true, 6000);
+  fallback.paint(previewContext, previewImage);
+  now = 6000; tick(); assert.equal(expired, 1);
 });
 test('completion baseline and reconnect stay quiet; new completions notify once', async () => {
   const api = new T3DemoApi(); const state = new T3Workspace(api); let arrivals = 0;
@@ -249,6 +299,20 @@ test('opaque cards cover deferred backdrop text and icons while retaining conten
   assert.equal(painted.pixels[22 * 80 + 22], 1);
   assert.equal(painted.pixels[60 * 80 + 60], 180);
   assert.equal(painted.pixels[25 * 80 + 25], 230);
+});
+
+test('opaque clipped blits copy scanlines and preserve translated deferred glyphs', () => {
+  const { GrayImage } = load('app/graphics/image.ts', { './textwrap': {} });
+  const source = new GrayImage(4, 2, 0);
+  source.pixels.set([1, 2, 3, 4, 5, 6, 7, 8]);
+  const glyph = { bbxWidth: 1, bbxHeight: 1, bbxX: 0, bbxY: 0, bitmapRows: [128] };
+  source.drawGlyph({ ascent: 1 }, glyph, 2, 1, 200);
+  const target = new GrayImage(5, 2, 9);
+  target.bitBlt(source, -1, 0);
+  assert.deepEqual(Array.from(target.pixels), [2, 3, 4, 9, 9, 6, 7, 8, 9, 9]);
+  assert.equal(target.draws.length, 1);
+  assert.equal(target.draws[0].x, 1);
+  assert.equal(target.draws[0].y, 1);
 });
 
 
@@ -405,7 +469,7 @@ test('T3 readers fill the configured viewport and repaginate unchanged transcrip
   h.placements.length = 0; h.cards.length = 0;
   h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } });
   assert.ok(h.layer.pageCount < smallPages);
-  assert.equal(h.cards[0].width, 635); assert.equal(h.cards[0].height, 447);
+  assert.equal(h.cards.length, 0, 'the transcript floats without an outer card');
   // The retained final page may be short; inspect a full page for vertical capacity.
   h.layer.scroll = 0; h.placements.length = 0;
   h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } });
@@ -413,10 +477,11 @@ test('T3 readers fill the configured viewport and repaginate unchanged transcrip
   assert.ok(h.placements.every(p => p.x >= 0 && p.y + 17 <= 452));
 });
 
-test('selection and question/review cards share the full content viewport while inbox stays compact', async () => {
+test('session selection floats while question/review cards fill the viewport and inbox stays compact', async () => {
   const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
   const paint = () => { h.cards.length = 0; h.layer.motion = null; h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } }); };
-  for (const screen of ['sessions', 'new-project', 'new-model', 'new-reasoning', 'question-text', 'choices', 'plan-review', 'draft']) {
+  h.layer.screen = 'sessions'; paint(); assert.equal(h.cards.length, 0, 'the session selector has no outer card');
+  for (const screen of ['new-project', 'new-model', 'new-reasoning', 'question-text', 'choices', 'plan-review', 'draft']) {
     h.layer.screen = screen; paint(); assert.equal(h.cards[0].width, 635, screen); assert.equal(h.cards[0].height, 447, screen);
   }
   h.layer.screen = 'inbox'; paint(); assert.equal(h.cards[0].width, 544); assert.equal(h.cards[0].height, 104);
@@ -448,14 +513,14 @@ test('capture cancellation with no prior navigation publishes one static dashboa
   assert.deepEqual(renders, [{ screen: 'dashboard', motion: null }]);
 });
 
-test('capture cancellation retains its reader position while ordinary navigation keeps card motion', () => {
+test('capture cancellation retains its reader position while ordinary session navigation keeps slide motion', () => {
   const { layer } = setup(); layer.screen = 'reader'; layer.scroll = 7;
   layer.go('compose'); const renders = [];
   layer.repaint = () => renders.push({ screen: layer.screen, scroll: layer.scroll, motion: layer.motion });
   layer.cancelCompose();
   assert.deepEqual(renders, [{ screen: 'reader', scroll: 7, motion: null }]);
   layer.screen = 'dashboard'; layer.go('sessions'); layer.back();
-  assert.equal(layer.screen, 'dashboard'); assert.ok(layer.motion, 'ordinary dashboard return still animates');
+  assert.equal(layer.screen, 'dashboard'); assert.ok(layer.slide, 'ordinary dashboard return still animates');
 });
 
 test('phone taps use the same full-size menu geometry as rendered rows', async () => {
@@ -711,6 +776,12 @@ test('notification entry replaces a retained reader return page with the dashboa
   assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.navigation.yielded, 0);
 });
 
+test('notification entry from T3 does not treat its own APK window as an interrupted app', async () => {
+  const h = setup(); await h.state.refresh();
+  h.layer.openThread('voice', 'apk:com.faceclaw.t3/com.faceclaw.t3.T3AppService', true);
+  assert.equal(h.layer.returnWindowId, null);
+});
+
 test('notification thread returns to the interrupted external app after replying', async () => {
   const h = setup(); await h.state.refresh(); h.layer.openThread('voice', 'notes', true);
   await h.state.openThread('voice');
@@ -765,21 +836,57 @@ test('dashboard inbox stays top aligned in both viewport heights', () => {
     assert.equal(layer.dropdownRect().height, 104);
   }
 });
-test('Sessions retains its content over the dashboard throughout collapse', async () => {
-  const clock = { now: 1000 };
-  const { layer, counts } = setup(clock);
+test('dashboard and sessions use a forward horizontal shuffle and reverse on Back', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  layer.selected = 'sessions';
-  layer.go('sessions');
-  clock.now = 1360;
-  await layer.handleInput({ type: 'double-click' });
-  for (const target of [1360, 1425, 1510, 1635]) { clock.now = target; layer.paint(ctx); }
-  clock.now = 1720;
-  assert.equal(counts.length, 1, 'dashboard is visible during collapse and reused between frames');
-  layer.paint(ctx);
-  assert.equal(layer.motion, null);
-  assert.equal(counts.length, 2);
-  assert.equal(layer.selected, 'sessions');
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions');
+  let frame = h.layer.paint(ctx);
+  assert.equal(h.layer.motion, null); assert.equal(h.layer.slide.fromScreen, 'dashboard');
+  assert.equal(h.layer.slide.toScreen, 'sessions'); assert.equal(h.layer.slide.direction, 1);
+  assert.ok(h.layer.slide.from.hasDeferredDraws(), 'source snapshot retains cached glyph identity');
+  assert.ok(h.layer.slide.to.hasDeferredDraws(), 'destination snapshot retains cached glyph identity');
+  assert.ok(frame.hasDeferredDraws(), 'moving frame exposes deferred draws to the SDK');
+  frame.bakeDeferredDrawsInPlace();
+  clock.now = 1180; const halfway = h.layer.paint(ctx);
+  assert.ok(halfway.hasDeferredDraws(), 'mid-shuffle text stays eligible for cached glyph draws');
+  halfway.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.slide.progress, 0.5);
+  const forwardDistance = 1 - (1 - h.layer.slide.progress) ** 3;
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.layer.slide.direction, -1);
+  frame = h.layer.paint(ctx); frame.bakeDeferredDrawsInPlace();
+  const reverseDistance = 1 - (1 - h.layer.slide.progress) ** 3;
+  assert.ok(Math.abs(reverseDistance - (1 - forwardDistance)) < 0.000001,
+    'reversing preserves geometry while swapping loading and unloading labels');
+  assert.notEqual(Buffer.compare(Buffer.from(frame.pixels), Buffer.from(halfway.pixels)), 0,
+    'the new outgoing page receives its unloading label immediately');
+  clock.now = 1540; h.layer.paint(ctx);
+  assert.equal(h.layer.slide, null); assert.equal(h.layer.selected, 'sessions');
+});
+
+test('session slide destinations render loading headings before laying out their content', async () => {
+  const clock = { now: 1000 }, h = setup(clock);
+  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  assert.ok(h.drawn.includes('UNLOADING DATA...'));
+  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
+  assert.equal(h.drawn.includes('START NEW SESSION'), false);
+  clock.now = 1360; h.layer.paint(ctx);
+  assert.ok(h.drawn.includes('START NEW SESSION'));
+
+  h.drawn.length = 0;
+  h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
+  assert.ok(h.drawn.includes('UNLOADING SESSIONS...'));
+  assert.ok(h.drawn.includes('LOADING SESSION...'));
+  assert.equal(h.drawn.some(text => text.includes('VOICE SESSION')), false);
+  clock.now = 1720; h.layer.paint(ctx);
+  assert.equal(h.layer.slide, null);
+  assert.ok(h.drawn.some(text => text !== 'LOADING SESSION...'));
+
+  h.drawn.length = 0;
+  h.layer.back(); h.layer.paint(ctx);
+  assert.ok(h.drawn.includes('UNLOADING SESSION...'));
+  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
 });
 
 test('APK reader reports handoff then bounded app result without claiming early delivery', async () => {
@@ -810,100 +917,46 @@ function saveMotionFrame(name, image) {
   fs.mkdirSync(process.env.T3_TRANSITION_ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(`${process.env.T3_TRANSITION_ARTIFACT_DIR}/${name}.pgm`, Buffer.concat([Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.pixels)]));
 }
-test('actual raster keeps headings crisp in first/middle/final expand and collapse frames', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions');
-  const movement = load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face });
-  for (const [name, time] of [['first', 1000], ['middle', 1180], ['final', 1360]]) {
-    clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
-    const rect = name === 'final' ? h.layer.fullRect() : movement.cardRect(h.layer.motion.from, h.layer.motion.to, (time - 1000) / 360);
-    assert.ok(contentPixels(image, rect) > 20, `expansion ${name} must include real text pixels`);
-    saveMotionFrame(`expand-${name}`, image);
-  }
-  await h.layer.handleInput({ type: 'double-click' });
-  for (const [name, time] of [['first', 1360], ['middle', 1540], ['final', 1720]]) {
-    clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
-    if (name !== 'final') {
-      const rect = movement.cardRect(h.layer.motion.from, h.layer.motion.to, (time - 1360) / 360);
-      assert.ok(contentPixels(image, rect) > 20, `collapse ${name} must retain its heading`);
-    }
-    if (name === 'middle') assert.ok(contentPixels(image, { x: 0, y: 0, width: 230, height: 100 }) > 20, 'dashboard content appears behind the shrinking card');
-    saveMotionFrame(`collapse-${name}`, image);
-  }
-  assert.equal(h.layer.motion, null);
+test('sessions and transcript use the same forward shuffle', async () => {
+  const clock = { now: 1000 }, h = setup(clock, true);
+  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  clock.now = 1360; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
+  h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.layer.screen, 'reader'); assert.ok(h.layer.slide);
+  assert.equal(h.layer.slide.fromScreen, 'sessions'); assert.equal(h.layer.slide.toScreen, 'reader');
+  assert.equal(h.layer.slide.direction, 1);
+  h.layer.paint(ctx);
+  clock.now = 1540; const middle = h.layer.paint(ctx); middle.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.slide.progress, 0.5);
+  assert.ok(contentPixels(middle, { x: 0, y: 0, width: 576, height: 452 }) > 20);
+  clock.now = 1720; const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.slide, null); assert.equal(h.layer.screen, 'reader');
+  assert.ok(contentPixels(final, h.layer.fullRect()) > 20);
 });
 
-test('transition cache lays out a large session list once, rebuilds on new state, and never keeps invalidated outgoing pixels', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh();
-  const original = h.state.sessions[0]; h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Synthetic session ${i}` }));
-  const rows = h.layer.rows.bind(h.layer); let layouts = 0; h.layer.rows = () => { layouts++; return rows(); };
-  h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  assert.equal(layouts, 0, 'opening heading does not load the list');
-  clock.now = 1324; h.layer.paint(ctx);
-  const oldContent = h.layer.motion.content, afterPrepare = layouts;
-  clock.now = 1330; h.layer.paint(ctx); clock.now = 1340; h.layer.paint(ctx);
-  assert.equal(layouts, afterPrepare, 'no session sorting/layout between cached frames');
-  h.state.sessions = []; h.state.changed(); assert.equal(h.layer.motion.content, undefined);
-  h.layer.paint(ctx); assert.notEqual(h.layer.motion.content, oldContent); assert.equal(layouts, afterPrepare + 1);
-  clock.now = 1345; await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx);
-  assert.equal(h.layer.motion.content, undefined, 'closing releases the outgoing body');
-  assert.ok(h.layer.motion.heading);
-  h.state.changed(); assert.ok(h.layer.motion, 'safe outline keeps its trajectory after source invalidation');
-  assert.equal(h.layer.motion.content,undefined);
-  assert.ok(h.layer.motion.heading.pixels.every(value=>value===0),'outgoing heading is erased immediately');
-  clock.now=1800;
-  const fresh = h.layer.paint(ctx); fresh.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.screen, 'dashboard'); assert.ok(contentPixels(fresh, { x: 0, y: 0, width: 230, height: 100 }) > 20);
-});
-
-test('resize, real input, overlays and removal end motion, while synthetic releases keep it running', async () => {
+test('shuffle snapshots are reused, refresh their destination, and cancel on geometry changes', async () => {
   const clock = { now: 1000 }, h = setup(clock, true); let width = 576, height = 452;
   const ctx = { stack: { getBaseSize: () => ({ width, height }) } };
   await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  const motion = h.layer.motion;
-  await h.layer.handleInput({ type: 'long-press-release' }); await h.layer.handleInput({ type: 'system-menu-opened' });
-  assert.equal(h.layer.motion, motion);
-  await h.layer.handleInput({ type: 'scroll-down' }); assert.equal(h.layer.motion, null);
-  assert.notEqual(h.layer.selected, '');
-  await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx); assert.ok(h.layer.motion);
-  await h.layer.handleInput({ type: 'click' }); assert.equal(h.layer.screen, 'sessions');
-  h.layer.paint(ctx); assert.ok(h.layer.motion, 'reverse navigation starts a populated expansion immediately');
+  const source = h.layer.slide.from, destination = h.layer.slide.to;
+  clock.now = 1100; h.layer.paint(ctx);
+  assert.equal(h.layer.slide.from, source); assert.equal(h.layer.slide.to, destination);
+  h.state.changed(); assert.equal(h.layer.slide.from, source); assert.equal(h.layer.slide.to, undefined);
+  h.layer.paint(ctx); assert.notEqual(h.layer.slide.to, destination);
   width = 640; height = 288; const resized = h.layer.paint(ctx); resized.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.motion, null); assert.equal(resized.width, 640); assert.equal(resized.height, 288); assert.ok(contentPixels(resized, h.layer.fullRect()) > 20);
-  await h.layer.handleInput({ type: 'double-click' }); h.layer.paint(ctx); h.visibility.overlay = true; h.layer.paint(ctx);
-  assert.equal(h.layer.motion, null);
-  h.visibility.overlay = false; h.layer.go('sessions'); h.layer.paint(ctx); h.layer.onRemoved(); assert.equal(h.layer.motion, null);
+  assert.equal(h.layer.slide, null); assert.equal(resized.width, 640); assert.equal(resized.height, 288);
 });
 
-test('Sessions defers list layout and body pixels until 90% of expansion', async () => {
+test('real input and overlays cancel a session shuffle while synthetic releases preserve it', async () => {
   const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  const movement = load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face });
-  await h.state.refresh();
-  const original = h.state.sessions[0];
-  h.state.sessions = Array.from({ length: 228 }, (_, i) => ({ ...original, id: `synthetic-${i}`, title: `Project ${i}: synthetic session` }));
-  const rows = h.layer.rows.bind(h.layer); let layouts = 0;
-  h.layer.rows = () => { layouts++; return rows(); };
-  h.layer.selected = 'sessions'; h.layer.go('sessions');
-  for (const elapsed of [0, 40, 180, 320, 323]) {
-    clock.now = 1000 + elapsed;
-    const image = h.layer.paint(ctx), motion = h.layer.motion;
-    const rect = movement.cardRect(motion.from, motion.to, elapsed / 360);
-    assert.ok(contentPixels(image, rect) > 20, 'heading stays visible');
-    assert.equal(layouts, 0, 'no sorting or list layout before 90%');
-    assert.equal(motion.content, undefined, 'no cached list raster before 90%');
-    for (let y = rect.y + 42; y < rect.y + rect.height - 8; y++)
-      for (let x = rect.x + 8; x < rect.x + rect.width - 8; x++)
-        assert.equal(image.pixels[y * 576 + x], 1, 'card body stays empty');
-    saveMotionFrame(`deferred-${elapsed}`, image);
-  }
-  clock.now = 1324; const revealed = h.layer.paint(ctx);
-  assert.equal(layouts, 1); assert.ok(h.layer.motion.content);
-  assert.ok(contentPixels(revealed, { x: 0, y: 42, width: 571, height: 400 }) > 20, 'list appears at 90%');
-  saveMotionFrame('deferred-324', revealed);
-  clock.now = 1340; h.layer.paint(ctx); assert.equal(layouts, 1, 'last animation frames reuse the list');
-  clock.now = 1360; const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.motion, null); assert.ok(contentPixels(final, h.layer.fullRect()) > 20);
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
+  const slide = h.layer.slide;
+  await h.layer.handleInput({ type: 'long-press-release' }); await h.layer.handleInput({ type: 'system-menu-opened' });
+  assert.equal(h.layer.slide, slide);
+  await h.layer.handleInput({ type: 'scroll-down' }); assert.equal(h.layer.slide, null);
+  h.layer.back(); h.layer.paint(ctx); assert.ok(h.layer.slide);
+  h.visibility.overlay = true; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
 });
 
 test('arrival dropdown rests at the top in both band and full-height viewports', () => {
@@ -914,7 +967,9 @@ test('arrival dropdown rests at the top in both band and full-height viewports',
    './notification-card':{notificationCardRect:notificationCard.notificationCardRect,paintNotificationCard:(_image,rect)=>painted=rect},'../card-presentation':face,'../presentation-clock':{presentationNow:()=>now},
   },{Date:{now:()=>now},setInterval:()=>1,clearInterval(){}});
   const layer=new TimedNotificationLayer('Title','Text',()=>{},()=>{},()=>{},()=>{});
-  const ctx={stack:{getBaseSize:()=>({width:576,height})}};layer.paint(ctx,()=>({}));now=360;layer.paint(ctx,()=>({}));assert.equal(painted.y,12);
+  const ctx={stack:{getBaseSize:()=>({width:576,height})}};layer.paint(ctx,()=>({}));
+  assert.equal(painted.y,0,'the first admitted frame is visible even if the next animation credit stalls');
+  now=360;layer.paint(ctx,()=>({}));assert.equal(painted.y,12);
   layer.onRemoved();
  }
 });
@@ -931,42 +986,21 @@ test('a confirmed reply closes even if Android already removed its notification'
 });
 
 
-test('ambient host refresh preserves closing progress while content invalidation still cancels', async () => {
-  const clock={now:1000},h=setup(clock,true),ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
-  await h.state.refresh();h.layer.selected='sessions';h.layer.go('sessions');h.layer.paint(ctx);
-  clock.now=1400;h.layer.paint(ctx);h.layer.back();h.layer.paint(ctx);
-  const motion=h.layer.motion,started=motion.model.started;
-  clock.now=1500;h.layer.hostStateChanged('ambient');h.layer.paint(ctx);
-  assert.equal(h.layer.motion,motion);assert.equal(motion.model.started,started);
-  assert.equal(motion.content,undefined,'refresh must not revive outgoing body pixels');
-  clock.now=1600;h.layer.hostStateChanged('ambient');h.layer.paint(ctx);
-  assert.equal(h.layer.motion,motion);
-  h.layer.hostStateChanged('content');assert.equal(h.layer.motion,motion);
-  assert.equal(motion.content,undefined);assert.ok(motion.heading.pixels.every(value=>value===0),'privacy-sensitive pixels are erased immediately');
-  clock.now=1800;h.layer.paint(ctx);assert.equal(h.layer.motion,null);
-});
-
-test('Sessions clears all body pixels before collapse and Back reverses from the last drawn rectangle', async () => {
+test('leaving a transcript clears its outgoing shuffle snapshot when private content changes', async () => {
   const clock = { now: 1000 }, h = setup(clock, true);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  clock.now = 1324; h.layer.paint(ctx); assert.ok(h.layer.motion.content);
-  const lastRect = { ...h.layer.motion.model.lastRect };
-  const rows = h.layer.rows.bind(h.layer); let layouts = 0;
-  h.layer.rows = () => { layouts++; return rows(); };
-  clock.now = 1330; await h.layer.handleInput({ type: 'double-click' });
-  assert.deepEqual(JSON.parse(JSON.stringify(h.layer.motion.from)), lastRect);
-  for (const time of [1330, 1370, 1510, 1650]) {
-    clock.now = time; const image = h.layer.paint(ctx); image.bakeDeferredDrawsInPlace();
-    const rect = h.layer.motion.model.lastRect;
-    assert.equal(h.layer.motion.content, undefined);
-    assert.equal(layouts, 0, 'collapse does not lay out outgoing rows');
-    for (let y = rect.y + 42; y < rect.y + rect.height - 8; y++)
-      for (let x = rect.x + 8; x < rect.x + rect.width - 8; x++)
-        assert.equal(image.pixels[y * image.width + x], 1, 'outgoing body is blank');
-    saveMotionFrame(`empty-collapse-${time}`, image);
-  }
-  clock.now = 1690; h.layer.paint(ctx); assert.equal(h.layer.motion, null);
+  await h.state.refresh(); h.layer.screen = 'sessions'; h.layer.openThread('voice');
+  await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
+  clock.now = 1360; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
+  h.layer.back(); assert.equal(h.layer.screen, 'sessions'); assert.equal(h.layer.slide.fromScreen, 'reader');
+  const outgoing = Buffer.from(h.layer.slide.from.pixels);
+  assert.equal(!outgoing.equals(Buffer.alloc(outgoing.length)) || h.layer.slide.from.hasDeferredDraws(), true);
+  h.layer.paint(ctx);
+  h.layer.hostStateChanged('content');
+  const cleared = Buffer.from(h.layer.slide.from.pixels);
+  assert.equal(cleared.equals(Buffer.alloc(cleared.length)), true);
+  assert.equal(h.layer.slide.from.hasDeferredDraws(), false);
+  clock.now = 1720; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
 });
 
 test('arrival animation gates body, reverses dismissal without a jump and cancels on removal', () => {
@@ -1026,4 +1060,20 @@ test('assistant invocation and dashboard button start the same fresh T3 compose 
   assert.equal(h.layer.draft, '');
   assert.equal(JSON.stringify(h.layer.creation), expected);
   assert.equal(captures, 2);
+});
+
+test('reader token tracker follows model changes without moving the selected transcript page', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('voice');
+  h.state.transcript.turns = Array.from({ length: 3 }, (_, i) => ({ id: `turn-${i}`, startedAt: '', endedAt: '', durationSeconds: 1, separatorLabel: '', messages: [
+    { id: `message-${i}`, role: 'assistant', text: `Turn ${i} content`, streaming: false, createdAt: '', updatedAt: '' },
+  ] }));
+  h.state.transcript.session.modelSelection = { instanceId: 'demo', model: 'preview-astra' };
+  h.state.transcript.tokenUsage = { contextTokens: 48000, contextWindowTokens: 272000, totalTokens: 312000, updatedAt: null };
+  h.layer.screen = 'reader'; h.layer.readerPage(); h.layer.scroll = 0;
+  assert.match(h.layer.readerPage().title, /ASTRA · CTX 48k\/272k \| TOTAL 312k/);
+  h.state.transcript = { ...h.state.transcript,
+    session: { ...h.state.transcript.session, modelSelection: { instanceId: 'demo', model: 'preview-luna' } },
+    tokenUsage: { contextTokens: 22000, contextWindowTokens: 128000, totalTokens: 330000, updatedAt: null } };
+  assert.match(h.layer.readerPage().title, /LUNA · CTX 22k\/128k \| TOTAL 330k/);
+  assert.equal(h.layer.scroll, 0);
 });

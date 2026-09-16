@@ -4,7 +4,7 @@ import { Observable, Frame, Application, Utils, type EventData, type Page, actio
 import { getT3Config, saveT3Config, type T3Config } from '../t3/config';
 import { pairT3 } from '../t3/pairing';
 import { t3Client } from '../t3/client';
-import { readT3PhoneNotificationsEnabled, saveT3PhoneNotificationsEnabled } from '../t3/notification-preferences';
+import { readT3NotificationPreviewSeconds, saveT3NotificationPreviewSeconds, onT3NotificationPreviewSecondsChanged, T3_NOTIFICATION_PREVIEW_SECONDS, type T3NotificationPreviewSeconds, readT3PhoneNotificationsEnabled, saveT3PhoneNotificationsEnabled } from '../t3/notification-preferences';
 import { requestPostNotificationsPermission } from '../g2/android-permissions';
 import { openConnectionNotificationSettings } from '../native/foreground-service';
 import { dashboardController } from '../g2/dashboard-controller';
@@ -15,8 +15,10 @@ class T3SettingsModel extends Observable {
   private config: T3Config;
   private models: ModelSummary[] = [];
   private offState: () => void;
+  private offNotificationPreviewSeconds: () => void;
   private ready = false;
   private notificationRequest = 0;
+  private notificationPreviewRequest = 0;
   private offExtensions:()=>void=()=>{};
   constructor() {
     super(); this.config = getT3Config();
@@ -25,18 +27,27 @@ class T3SettingsModel extends Observable {
     this.set('status', t3Client.state().status);
     this.offExtensions=onHostEvent(type=>{if(type==='extensions'||type==='disconnected')this.syncCustomizations();});
     this.offState = t3Client.onStateChange(state => this.set('status', state.status));
+    this.offNotificationPreviewSeconds = onT3NotificationPreviewSecondsChanged(() => {
+      if (this.ready) this.syncNotificationPreviewSeconds();
+    });
     this.ready = true;
   }
-  dispose(): void { this.ready = false; this.notificationRequest++; this.offState(); this.offExtensions(); this.set('passphrase', ''); }
+  dispose(): void { this.ready = false; this.notificationRequest++; this.notificationPreviewRequest++; this.offState(); this.offExtensions(); this.offNotificationPreviewSeconds(); this.set('passphrase', ''); }
   private sync(): void {
     this.syncCustomizations();
     this.set('phoneNotifications', readT3PhoneNotificationsEnabled());
+    this.syncNotificationPreviewSeconds();
     for (const key of ['enabled', 'preferAssistant', 'bridgeDictation', 'allowTools', 'notificationOverride'] as const) this.set(key, this.config[key]);
     const project = t3Workspace.projects.find(p => p.id === this.config.assistantProjectId && (this.config.assistantEnvironmentId ? p.environmentId === this.config.assistantEnvironmentId : t3Workspace.environments?.find(e => e.isPrimary)?.environmentId === p.environmentId));
     this.set('projectLabel', project ? `Project: ${project.title}${project.environmentLabel ? " · " + project.environmentLabel : ""}` : this.config.assistantProjectId ? 'Change assistant project' : 'Choose assistant project');
     this.set('modelLabel', this.config.assistantModel ? `Model: ${this.config.assistantModel}` : 'Choose assistant model');
     this.set('reasoningLabel', `Reasoning: ${this.config.assistantReasoning || 'Default'}`);
     this.set('refinementLabel', this.config.refinementProvider === 't3' ? 'Luna · low · T3 bridge' : 'Anthropic · Faceclaw configuration');
+  }
+  private syncNotificationPreviewSeconds(): void {
+    const seconds = readT3NotificationPreviewSeconds();
+    this.set('notificationPreviewSeconds', seconds);
+    this.set('notificationPreviewLabel', `Notification preview: ${seconds} seconds`);
   }
   private syncCustomizations():void {
     this.set('customizationsEnabled',customizationsEnabled());
@@ -103,6 +114,17 @@ class T3SettingsModel extends Observable {
     catch { this.set('status', 'Open Android Settings > Apps > Faceclaw T3 > Notifications > Faceclaw dashboard.'); }
   };
   chooseNotificationApps = () => { if (getT3Config().notificationOverride === true) Frame.topmost()?.navigate('phone-ui/t3-notification-apps-page'); };
+  chooseNotificationPreviewSeconds = async () => {
+    if (!this.ready) return;
+    const generation = ++this.notificationPreviewRequest;
+    const labels = T3_NOTIFICATION_PREVIEW_SECONDS.map(seconds => `${seconds} seconds`);
+    const selected = await action({ title: 'Notification preview duration', cancelButtonText: 'Cancel', actions: labels });
+    if (!this.ready || generation !== this.notificationPreviewRequest) return;
+    const index = labels.indexOf(selected);
+    if (index < 0) return;
+    const seconds = T3_NOTIFICATION_PREVIEW_SECONDS[index] as T3NotificationPreviewSeconds;
+    if (seconds !== readT3NotificationPreviewSeconds()) saveT3NotificationPreviewSeconds(seconds);
+  };
 
   pair = async () => {
     this.set('canPair', false); this.set('status', 'Pairing…');

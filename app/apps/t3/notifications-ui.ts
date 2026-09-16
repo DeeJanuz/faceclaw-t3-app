@@ -2,7 +2,7 @@ import { resourceKey } from './resource';
 import {ownsFeature} from '../../extensions/host';
 import { invokeExternalNotification, hasExternalNotification, invalidateExternalNotificationReplies, type NotificationReplyStatus } from "../../native/external-notifications";
 import { getT3Config, onT3ConfigChanged } from "../../t3/config";
-import { allowsT3PhoneNotification, onT3NotificationAppsChanged } from '../../t3/notification-preferences';
+import { allowsT3PhoneNotification, onT3NotificationAppsChanged, readT3NotificationPreviewSeconds } from '../../t3/notification-preferences';
 import { shell } from '../../ui/shell/shell';
 import { readActiveNotifications, dismissNotification,dismissNotifications, requestNotificationReply, onAndroidNotificationRemoved, onAndroidNotificationsChanged, type AndroidNotification } from '../../native/notification-icons';
 import { setNotificationOpenRoute } from '../../ui/notification-routing';
@@ -14,6 +14,9 @@ import type { T3Alert } from './workspace';
 let openWindow: () => Promise<void> = async () => {};
 let initialized = false;
 let openingNotification = false;
+function isOwnT3Window(windowId?: string): boolean {
+  return windowId === 't3' || Boolean(windowId?.startsWith('apk:com.faceclaw.t3/'));
+}
 // Private APK content must never enter workspace snapshots or assistant tools.
 const externalArrivals = new Map<string, T3Alert>();
 const trackedT3Alerts = new Set<string>();
@@ -101,7 +104,7 @@ export function getT3NotificationReply(id: string): { isCurrent: () => boolean; 
  return {isCurrent,async review(current=()=>true){if(requested||!isCurrent()||!current())return 'rejected';requested=true;try{const result=await requestNotificationReply(notification.key,notification.postTime,action.index,()=>current()&&pairingIdentity()===pairing&&getT3Config().notificationOverride===true);return ['sent','draft-saved','unknown','rejected'].includes(result.status)?result.status:'unknown';}catch(error){return ['NOTIFICATION_REVIEW_STALE','HOST_CAPABILITY_UNAVAILABLE','HOST_ACTION_UNAVAILABLE','HOST_ACTION_DUPLICATE'].includes(error instanceof Error?error.message:'')?'rejected':'unknown';}}};
 }
 
-async function openNotificationUi(notificationKey?: string, returnToSleep = false): Promise<boolean> {
+async function openNotificationUi(notificationKey?: string, returnToSleep = false, presentationId?: string): Promise<boolean> {
   if (openingNotification) return false;
   openingNotification = true;
   const pairing = pairingIdentity();
@@ -114,11 +117,12 @@ async function openNotificationUi(notificationKey?: string, returnToSleep = fals
     const alert = source ? visibleT3Alerts().find(item => item.kind === 'phone' && item.groupId === phoneConversationId(source)) : undefined;
     if (notificationKey && !alert) return false;
     const foreground = shell.foregroundWindow()?.windowId;
-    const previous = foreground === 'notifications' ? undefined : foreground;
+    const previous = foreground === 'notifications' || isOwnT3Window(foreground) ? undefined : foreground;
     await openWindow();
     if (state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity() || (alert && !findT3Alert(alert.id)) ||
         (source && !allowedPhoneNotifications().some(item => item.key === source.key && item.postTime === source.postTime))) return false;
-    shell.focusWindow('t3');
+    if (presentationId && alert && !await shell.handoffNotificationPreview(alert.id, presentationId)) return false;
+    if (!shell.isWindowFocused('t3')) shell.focusWindow('t3');
     openT3Notification(alert?.id, previous, returnToSleep);
     return true;
   } catch {
@@ -188,7 +192,7 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
       trackedT3Alerts.add(alert.id);
     }
     shell.showNotificationPreview(alert.id, alert.title, alert.previewBody || alert.body,
-      wokeDisplay => openT3Alert(alert, wokeDisplay), () => dismissT3Alert(alert), isT3FlowProtected(), hostPresentationId || (alert.kind === 't3' ? alert.id : undefined));
+      (wokeDisplay, presentationId) => openT3Alert(alert, wokeDisplay, presentationId), () => dismissT3Alert(alert), isT3FlowProtected(), hostPresentationId, readT3NotificationPreviewSeconds() * 1000);
   };
   // T3-owned completions get their host lease from the returned Android
   // publication event. The local alert id is not that lease and must never be
@@ -238,25 +242,28 @@ export function handlePhoneNotification(key: string, hostPresentationId?: string
     state.changed();
   } else state.addAlert(alert, changed);
   if (!changed && previous) shell.updateNotificationPreview(previous.id, alert.id, alert.title, alert.previewBody || alert.body,
-    wokeDisplay => openT3Alert(alert, wokeDisplay), () => dismissT3Alert(alert), hostPresentationId);
+    (wokeDisplay, presentationId) => openT3Alert(alert, wokeDisplay, presentationId), () => dismissT3Alert(alert), hostPresentationId);
 }
 
-export async function openT3Alert(alert: T3Alert, returnToSleep = false): Promise<boolean> {
+export async function openT3Alert(alert: T3Alert, returnToSleep = false, presentationId?: string): Promise<boolean> {
   if (alert.kind === 'phone' ? !findT3Alert(alert.id) : !state.alerts.includes(alert)) return false;
   if (alert.kind === "phone" && alert.threadId.startsWith("apk:") && getT3Config().notificationOverride !== true) return invokeExternalNotification(alert.threadId, 0);
   const pairing = pairingIdentity();
   const demo = state.demo;
   if (alert.kind === 'phone') {
-    if (getT3Config().notificationOverride === true && !state.demo) return openNotificationUi(alert.threadId, returnToSleep);
+    if (getT3Config().notificationOverride === true && !state.demo) return openNotificationUi(alert.threadId, returnToSleep, presentationId);
     else if (state.demo) openT3Notification(alert.id, undefined, returnToSleep);
     else shell.openNotificationModal(alert.threadId, returnToSleep);
     return true;
   }
-  const previous = shell.foregroundWindow()?.windowId;
+  const foreground = shell.foregroundWindow()?.windowId;
+  const previous = isOwnT3Window(foreground) ? undefined : foreground;
   await openWindow();
   if (!state.alerts.includes(alert) || state.demo !== demo || pairing !== pairingIdentity()) return false;
-  shell.focusWindow('t3'); openT3Thread(resourceKey(alert.threadId, alert.environmentId), previous);
-  shell.closeNotificationPreview(alert.id, false);
+  if (presentationId && !await shell.handoffNotificationPreview(alert.id, presentationId)) return false;
+  if (!shell.isWindowFocused('t3')) shell.focusWindow('t3');
+  openT3Thread(resourceKey(alert.threadId, alert.environmentId), previous);
+  if (!presentationId) shell.closeNotificationPreview(alert.id, false);
   dismissT3Alert(alert);
   return true;
 }

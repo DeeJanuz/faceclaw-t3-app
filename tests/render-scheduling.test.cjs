@@ -27,8 +27,9 @@ function harness(canPaint) {
     '../native/frame-timings': { spanCurrent: (_name, body) => body() },
     './gestures': load('app/ui/gestures.ts', {}),
   });
-  const timers = new Map(); let next = 0, painted = 0, closed = 0, value = 0;
+  const timers = new Map(); let next = 0, painted = 0, closed = 0, value = 0, paintPermissionRequests = 0;
   const frames = [];
+  let onSubmit = () => {};
   const { createInProcessWindow } = load('app/ui/shell/in-process-window.ts', {
     '../../graphics/image': images, '../layers': layers,
     '../../graphics/plane': { flattenPlanesWithDraws: (planes, size) => {
@@ -43,8 +44,9 @@ function harness(canPaint) {
     paint(ctx) { painted++; const size = ctx.stack.getBaseSize(); const frame = new Image(size.width, size.height); frame.value = value; return frame; },
     async handleInput() { value++; app.requestRender(); },
   };
-  const app = createInProcessWindow({ baseLayer: base, canPaint, submitFrame: frame => frames.push(frame), onClosed: () => closed++ });
+  const app = createInProcessWindow({ baseLayer: base, canPaint, requestPaintPermission: () => paintPermissionRequests++, submitFrame: frame => { frames.push(frame); onSubmit(); }, onClosed: () => closed++ });
   return { app, base, frames, timers, setValue: n => { value = n; }, paints: () => painted, closes: () => closed,
+    setOnSubmit: callback => { onSubmit = callback; }, paintPermissionRequests: () => paintPermissionRequests,
     delays: () => [...timers.values()].map(item => item.delay),
     flush() { const entry = timers.entries().next().value; assert.ok(entry, 'a frame should be scheduled'); timers.delete(entry[0]); entry[1].fn(); },
   };
@@ -104,6 +106,21 @@ test('a state update during painting schedules the next frame without recursive 
   h.app.requestRender(); h.flush();
   assert.equal(h.frames.length, 1); assert.equal(h.timers.size, 1);
   h.flush(); assert.equal(h.frames.length, 2); assert.equal(h.frames[1].value, 2);
+});
+
+test('a cleanup request during submission waits for the consumed render credit', () => {
+  let visible = true;
+  const h = harness(() => visible);
+  h.app.stack.push({
+    paint: ctx => h.base.paint(ctx),
+    needsAnimation: () => { h.app.stack.pop(); h.app.requestRender(); return false; },
+    handleInput() {},
+  });
+  h.setOnSubmit(() => { h.app.needsAnimation(); visible = false; });
+  h.app.requestRender(); h.flush();
+  assert.equal(h.frames.length, 1);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.paintPermissionRequests(), 1);
 });
 
 test('a sparse animation deadline schedules one useful repaint instead of continuous frames', () => {

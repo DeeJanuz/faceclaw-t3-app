@@ -21,6 +21,7 @@ import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow }
 import { getT3Config } from '../../t3/config';
 import { onHostEvent, onHostState } from '../../extensions/host';
 import { t3Workspace as state, initializeT3, connectT3, setT3ReaderVisible } from './runtime';
+import type { ReviewedReplyDestination } from './workspace';
 import type { ModelSummary, NewSessionModelSelection, PlanQuestion, ProposedPlan } from './protocol';
 import type { T3Alert } from './workspace';
 
@@ -35,6 +36,9 @@ export const T3_SURFACE_ID = 'window:t3';
 type Screen = 'dashboard' | 'phone-settings' | 'projects' | 'sessions' | 'reader' | 'actions' | 'new-project' | 'new-model' | 'new-reasoning' | 'new-summary' | 'compose' | 'draft' | 'inbox' | 'notification' | 'questions' | 'question-text' | 'choices' | 'plan-review' | 'session-reasoning' | 'session-model' | 'proposed-plan' | 'plan-approve';
 type Navigation = { screen: Screen; selected: string; scroll: number; projectId: string; threadId: string };
 type Row = { id: string; title: string; detail?: string; disabled?: boolean; section?: boolean; action: () => void | Promise<void> };
+type SlideMotion = { fromScreen: Screen; toScreen: Screen; from: GrayImage; to?: GrayImage; direction: 1 | -1; started: number | null; progress: number };
+const slideEase = (progress: number): number => 1 - (1 - Math.max(0, Math.min(1, progress))) ** 3;
+const inverseSlideEase = (value: number): number => 1 - Math.cbrt(1 - Math.max(0, Math.min(1, value)));
 let activeLayer: T3Layer | null = null;
 
 export function openT3Assistant(): void { if (!isT3FlowProtected()) activeLayer?.askAssistant(); }
@@ -54,6 +58,7 @@ export class T3Layer implements Layer {
   private history: Navigation[] = [];
   private draft = '';
   private draftIsDictated = false;
+  private reviewedReplyDestination: ReviewedReplyDestination | null = null;
   private draftLocked = false;
   private draftMode: 'default' | 'plan' | undefined;
   private reasoningModel: NewSessionModelSelection | null = null;
@@ -82,15 +87,16 @@ export class T3Layer implements Layer {
   private readerThread = '';
   private notificationOrigin: CardRect | undefined;
   private motion: { model: WindowMotion; source: CardRect; from: CardRect; to: CardRect; started: number | null; closing: boolean; content?: GrayImage; heading?: GrayImage; backdrop?: GrayImage } | null = null;
+  private slide: SlideMotion | null = null;
   private returnFocus = 'assistant';
   private pageCount = 1;
   private planIdentity = '';
   private optionPage = 0;
   private visibleActivity = false;
 
-  needsAnimation(): boolean { return Boolean(this.motion); }
+  needsAnimation(): boolean { return Boolean(this.motion || this.slide); }
   nextAnimationDelayMs(): number | null {
-    if (this.motion || !this.visibleActivity) return null;
+    if (this.motion || this.slide || !this.visibleActivity) return null;
     const phaseMs = 140;
     return phaseMs - (presentationNow() % phaseMs);
   }
@@ -104,13 +110,41 @@ export class T3Layer implements Layer {
     // Closing never lays out or snapshots the outgoing body.
     const heading = closing ? this.paintStatic(false, true) : undefined;
     heading?.bakeDeferredDrawsInPlace();
+    this.slide = null;
     this.motion?.model.cancel();
     this.motion = { model: new WindowMotion(from, to, closing), source, from, to, started: null, closing, heading };
     console.info(`[T3Motion] started direction=${closing?'close':'open'}`);
 
   }
+  private slideDirection(from: Screen, to: Screen): 1 | -1 | 0 {
+    if ((from === 'dashboard' && to === 'sessions') || (from === 'sessions' && to === 'reader')) return 1;
+    if ((from === 'sessions' && to === 'dashboard') || (from === 'reader' && to === 'sessions')) return -1;
+    return 0;
+  }
+  private startSlide(fromScreen: Screen, toScreen: Screen, direction: 1 | -1): void {
+    if (!this.isBaseVisible() || shell.hasOverlay() || this.viewWidth <= 0 || this.viewHeight <= 0) return;
+    const now = presentationNow();
+    const prior = this.slide;
+    if (prior && prior.fromScreen === toScreen && prior.toScreen === fromScreen) {
+      const reversedProgress = inverseSlideEase(1 - slideEase(prior.progress));
+      this.slide = { fromScreen, toScreen, from: this.paintSlideSource(fromScreen), direction,
+        started: now - reversedProgress * CARD_MOTION_MS, progress: reversedProgress };
+    } else {
+      const from = this.paintSlideSource(fromScreen);
+      this.slide = { fromScreen, toScreen, from, direction, started: null, progress: 0 };
+    }
+    this.motion?.model.cancel();
+    this.motion = null;
+    console.info(`[T3Slide] started from=${fromScreen} to=${toScreen}`);
+  }
   /** Data invalidation never keeps pixels from a notification or prior conversation alive. */
   contentChanged(): void {
+    if (this.slide) {
+      this.slide.to = undefined;
+      if (this.slide.fromScreen === 'reader' && this.screen !== 'reader') {
+        this.slide.from = new GrayImage(this.viewWidth, this.viewHeight, 0);
+      }
+    }
     if (!this.motion) return;
     if (this.motion.closing) {
       // Drop private outgoing pixels without abandoning the geometric return.
@@ -121,12 +155,19 @@ export class T3Layer implements Layer {
     }
     else { this.motion.content = undefined; this.motion.heading = undefined; this.motion.backdrop = undefined; }
   }
-  backdropChanged(): void { if (this.motion) this.motion.backdrop = undefined; }
+  backdropChanged(): void {
+    if (this.motion) this.motion.backdrop = undefined;
+    if (this.slide?.toScreen === 'dashboard' && this.screen === 'dashboard') this.slide.to = undefined;
+  }
   hostStateChanged(change?: 'ambient' | 'content'): void {
     if (change === 'ambient') this.backdropChanged();
     else this.contentChanged();
   }
-  onRemoved(): void { if(this.motion)console.info('[T3Motion] cancelled reason=input-or-lifecycle');this.motion?.model.cancel(); this.motion = null; }
+  onRemoved(): void {
+    if(this.motion)console.info('[T3Motion] cancelled reason=input-or-lifecycle');
+    if(this.slide)console.info('[T3Slide] cancelled reason=input-or-lifecycle');
+    this.motion?.model.cancel(); this.motion = null; this.slide = null;
+  }
   setNotificationOrigin(rect: CardRect): void { this.notificationOrigin = { ...rect }; }
   private paintMotionBackdrop(image: GrayImage, selected: string, dim: boolean): void {
     const motion = this.motion!;
@@ -182,10 +223,13 @@ export class T3Layer implements Layer {
 
   go(screen: Screen, remember = true, animateTransition = true): void {
     if (screen !== 'notification') this.notificationReturnToSleep = false;
-    const transition = animateTransition && (this.screen === 'dashboard' || screen === 'dashboard' || (this.screen === 'inbox' && screen === 'notification') || (this.screen === 'notification' && screen === 'inbox'));
+    const fromScreen = this.screen;
+    const slideDirection = animateTransition ? this.slideDirection(fromScreen, screen) : 0;
+    const transition = animateTransition && (slideDirection !== 0 || this.screen === 'dashboard' || screen === 'dashboard' || (this.screen === 'inbox' && screen === 'notification') || (this.screen === 'notification' && screen === 'inbox'));
     if (!transition) this.onRemoved();
-    if (animateTransition && this.screen === 'dashboard' && screen !== 'dashboard') { this.returnFocus = this.selected; if (screen !== 'compose') this.animate(this.homeRect(), screen === 'inbox' ? this.dropdownRect() : this.fullRect()); }
-    if (animateTransition && screen === 'dashboard' && this.screen !== 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
+    if (slideDirection) this.startSlide(fromScreen, screen, slideDirection);
+    else if (animateTransition && this.screen === 'dashboard' && screen !== 'dashboard') { this.returnFocus = this.selected; if (screen !== 'compose') this.animate(this.homeRect(), screen === 'inbox' ? this.dropdownRect() : this.fullRect()); }
+    if (!slideDirection && animateTransition && screen === 'dashboard' && this.screen !== 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
     if (animateTransition && this.screen === 'inbox' && screen === 'notification') this.animate(this.dropdownRect(), this.fullRect());
     if (animateTransition && this.screen === 'notification' && screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
     if (remember) this.history.push({ screen: this.screen, selected: this.selected, scroll: this.scroll, projectId: this.projectId, threadId: state.selectedThreadKey });
@@ -193,7 +237,7 @@ export class T3Layer implements Layer {
   }
 
   openThread(threadId: string, returnWindowId?: string, fromNotification = false): void {
-    if (returnWindowId && returnWindowId !== T3_WINDOW_ID) this.returnWindowId = returnWindowId;
+    if (returnWindowId && returnWindowId !== T3_WINDOW_ID && !returnWindowId.startsWith('apk:com.faceclaw.t3/')) this.returnWindowId = returnWindowId;
     else this.returnWindowId = null;
     if (fromNotification) {
       // A notification opens a visit, not another page in the previous thread.
@@ -252,7 +296,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'dashboard') { this.history = []; this.returnWindowId = null; shell.respondToBack(true); return; }
     shell.respondToBack(false);
     const draftCreation = this.creation;
-    if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftLocked = false; this.dictatingAnswer = false; this.creation = null; }
+    if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftIsDictated = false; this.draftLocked = false; this.dictatingAnswer = false; this.reviewedReplyDestination = null; this.creation = null; }
     if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) { const id = this.returnWindowId; this.returnWindowId = null; shell.focusWindow(id); return; }
     if (this.screen === 'reader') {
       // Replies, steering and plan edits are internal to this thread visit.
@@ -263,8 +307,10 @@ export class T3Layer implements Layer {
     }
     const previous = this.history.pop();
     if (previous) {
+      const slideDirection = animateTransition ? this.slideDirection(this.screen, previous.screen) : 0;
+      if (slideDirection) this.startSlide(this.screen, previous.screen, slideDirection);
       if (animateTransition && this.screen === 'notification' && previous.screen === 'inbox') this.animate(this.fullRect(), this.dropdownRect(), true);
-      if (animateTransition && previous.screen === 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
+      if (!slideDirection && animateTransition && previous.screen === 'dashboard') this.animate(this.screen === 'inbox' ? this.dropdownRect() : this.fullRect(), this.homeRect(), true);
       if (previous.screen === 'new-summary') this.creation = draftCreation;
       this.screen = previous.screen; this.selected = previous.selected; this.scroll = previous.scroll; this.projectId = previous.projectId; updateReaderVisibility(this.screen === 'reader');
       if (previous.threadId && previous.threadId !== state.selectedThreadKey) void state.openThread(previous.threadId);
@@ -277,13 +323,15 @@ export class T3Layer implements Layer {
     if (!['compose', 'draft', 'reader', 'actions'].includes(this.screen)) { this.creation = null; this.dictatingAnswer = false; this.go('new-project'); return; }
     this.draft = text.trim();
     this.draftIsDictated = dictated;
+    this.reviewedReplyDestination = null;
     this.go('draft', false);
   }
 
-  private async submitDictatedText(text: string): Promise<void> {
+  private async submitDictatedText(text: string, destination: ReviewedReplyDestination): Promise<void> {
     if (!text.trim() || state.busy || this.draftLocked) return;
     this.draft = text.trim();
     this.draftIsDictated = true;
+    this.reviewedReplyDestination = destination;
     await this.submitDraft();
   }
 
@@ -300,10 +348,25 @@ export class T3Layer implements Layer {
     this.followResponse = new Set(state.transcript?.turns.flatMap(turn => turn.messages.map(message => message.id)) || []);
     this.draftLocked = true;
     const options = this.creation?.modelSelection ? { projectId: this.creation.projectId, environmentId: this.creation.environmentId, modelSelection: this.creation.modelSelection, assistant: this.creation.assistant } : undefined;
-    const sent = await state.send(this.draft, options, !options && this.draftMode ? { interactionMode: this.draftMode } : undefined);
+    const reviewedDestination = !options && this.draftIsDictated ? this.reviewedReplyDestination : null;
+    if (reviewedDestination) {
+      const current = getT3Config();
+      const pairing = JSON.stringify([current.bridgeUrl, current.pairingFingerprint]);
+      if (pairing !== reviewedDestination.pairing || state.selectedThreadId !== reviewedDestination.threadId || state.selectedEnvironmentId !== reviewedDestination.environmentId) {
+        // Dictation was captured for a different bridge identity or thread.
+        // Keep the draft visible, but never replay it into the new destination.
+        state.canRetryLastSend = false;
+        state.fail(Object.assign(new Error('The dictation destination changed. Capture it again.'), { code: 'destination_changed' }));
+        this.repaint();
+        return;
+      }
+    }
+    const sent = await state.send(this.draft, options, reviewedDestination
+      ? { reviewedDestination }
+      : !options && this.draftMode ? { interactionMode: this.draftMode } : undefined);
     if (!sent && state.canRetryLastSend) this.draftLocked = false;
     if (sent) {
-      this.draft = ''; this.draftMode = undefined; this.creation = null; this.draftLocked = false;
+      this.draft = ''; this.draftMode = undefined; this.creation = null; this.draftLocked = false; this.reviewedReplyDestination = null;
       this.history = this.history.filter(item => !['compose', 'draft', 'new-project', 'new-model', 'new-reasoning', 'new-summary'].includes(item.screen));
       this.readerThread = ''; this.go('reader', false);
     } else if (this.screen !== 'draft') {
@@ -324,6 +387,7 @@ export class T3Layer implements Layer {
     const config = getT3Config();
     const identity = JSON.stringify([config.bridgeUrl, config.pairingFingerprint]);
     const targetThread = state.selectedThreadId;
+    const targetEnvironment = state.selectedEnvironmentId;
     const targetCreation = this.creation;
     const targetHistory = this.history[this.history.length - 1];
     const targetQuestion = this.questionIndex;
@@ -331,13 +395,13 @@ export class T3Layer implements Layer {
     const canStart = () => {
       const current = getT3Config();
       return activeLayer === this && !state.demo && current.enabled && !state.busy && !this.draftLocked &&
-        this.screen === targetScreen && state.selectedThreadId === targetThread && this.creation === targetCreation &&
+        this.screen === targetScreen && state.selectedThreadId === targetThread && state.selectedEnvironmentId === targetEnvironment && this.creation === targetCreation &&
         this.history[this.history.length - 1] === targetHistory && this.questionIndex === targetQuestion &&
         this.dictatingAnswer === targetAnswer && JSON.stringify([current.bridgeUrl, current.pairingFingerprint]) === identity;
     };
     shell.startT3Dictation(text => {
       if (!canStart()) return;
-      void this.submitDictatedText(text);
+      void this.submitDictatedText(text, { threadId: targetThread, ...(targetEnvironment ? { environmentId: targetEnvironment } : {}), pairing: identity });
     }, () => { if (canStart()) this.cancelCompose(); }, canStart, targetHistory?.screen === 'dashboard' ? this.homeRect() : this.fullRect());
   }
 
@@ -349,7 +413,7 @@ export class T3Layer implements Layer {
   }
 
   private startCompose(creation: T3Layer['creation'] = null): void {
-    this.creation = creation; this.dictatingAnswer = false; this.draft = ''; this.draftMode = undefined; this.draftLocked = false;
+    this.creation = creation; this.dictatingAnswer = false; this.draft = ''; this.draftIsDictated = false; this.reviewedReplyDestination = null; this.draftMode = undefined; this.draftLocked = false;
     this.go('compose'); this.record();
   }
 
@@ -570,7 +634,12 @@ export class T3Layer implements Layer {
     if (!page) return { title: 'T3 | NO TURNS | 1/1', text: '(empty)' };
     const working = ['running', 'starting'].includes(transcript.session.status);
     const unread = this.pageCount - this.scroll - 1;
-    const title = working ? unread ? `LIVE | +${unread} NEW | ${this.scroll + 1}/${this.pageCount}` : `LIVE | TURN ${page.turnNumber}/${page.turnCount} | ${this.scroll + 1}/${this.pageCount}` : transcriptPageHeader(page, this.scroll + 1, this.pageCount);
+    const selection = transcript.session.modelSelection;
+    const selectedModel = selection ? state.modelsFor(transcript.session.environmentId)
+      .find(model => model.instanceId === selection.instanceId && model.model === selection.model) : undefined;
+    const title = transcriptPageHeader(page, this.scroll + 1, this.pageCount, transcript.tokenUsage, {
+      working, unread, font: box.font, width: box.width, model: selectedModel?.name || selection?.model,
+    });
     const extracted = page.activeActivity ? extractActiveActivityLine(page.text, page.activeActivity, box.width, page.activeActivityLabel) : null;
     return { title, text: extracted?.body ?? page.text,
       activity: extracted && page.activeActivity ? { line: extracted.lineIndex,
@@ -581,13 +650,37 @@ export class T3Layer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     if (width !== this.viewWidth || height !== this.viewHeight || !this.isBaseVisible() || shell.hasOverlay()) {
       if(this.motion)console.info(`[T3Motion] cancelled reason=visibility-or-geometry overlay=${shell.hasOverlay()}`);
+      if(this.slide)console.info(`[T3Slide] cancelled reason=visibility-or-geometry overlay=${shell.hasOverlay()}`);
       this.motion = null;
+      this.slide = null;
     }
     this.viewWidth = width; this.viewHeight = height;
     const pending = state.getPlan(state.selectedThreadId);
     const identity = pending ? `${state.selectedThreadId}:${pending.request.requestId}:${pending.request.revision}` : '';
     if (this.screen === 'reader' && identity && identity !== this.planIdentity) { this.planIdentity = identity; this.nextPlanQuestion(); }
     if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; updateReaderVisibility(true); }
+    const slide = this.slide;
+    if (slide) {
+      // Move only a lightweight destination while navigating. The full
+      // session list/transcript is laid out once, after motion completes.
+      if (!slide.to) slide.to = this.paintSlideTarget(slide.toScreen);
+      const now = presentationNow();
+      if (slide.started === null) slide.started = now;
+      const linear = Math.max(0, Math.min(1, (now - slide.started) / CARD_MOTION_MS));
+      slide.progress = linear;
+      if (linear >= 1) {
+        console.info('[T3Slide] completed'); this.slide = null;
+        return this.paintStatic();
+      }
+      const eased = slideEase(linear);
+      const distance = Math.round(width * eased);
+      const image = new GrayImage(width, height, 0);
+      const outgoingX = slide.direction === 1 ? -distance : distance;
+      const incomingX = slide.direction === 1 ? width - distance : -width + distance;
+      image.bitBlt(slide.from, outgoingX, 0);
+      image.bitBlt(slide.to, incomingX, 0);
+      return image;
+    }
     const motion = this.motion;
     if (motion) {
       if (!motion.heading) { motion.heading = this.paintStatic(false, true); motion.heading.bakeDeferredDrawsInPlace(); }
@@ -609,6 +702,24 @@ export class T3Layer implements Layer {
       }
     }
     return this.paintStatic();
+  }
+
+  private paintSlideTarget(screen: Screen): GrayImage {
+    if (screen !== 'sessions' && screen !== 'reader') return this.paintStatic();
+    return this.paintSlideLabel(screen === 'sessions' ? 'LOADING SESSIONS...' : 'LOADING SESSION...');
+  }
+
+  private paintSlideSource(screen: Screen): GrayImage {
+    const label = screen === 'sessions' ? 'UNLOADING SESSIONS...'
+      : screen === 'reader' ? 'UNLOADING SESSION...'
+      : 'UNLOADING DATA...';
+    return this.paintSlideLabel(label);
+  }
+
+  private paintSlideLabel(label: string): GrayImage {
+    const image = new GrayImage(this.viewWidth, this.viewHeight, 0);
+    image.drawText(getDefaultSmallFont(), 16, 10, label, CARD_TEXT_BRIGHTNESS);
+    return image;
   }
 
   private paintStatic(includeBackdrop = true, headingOnly = false): GrayImage {
@@ -661,7 +772,10 @@ export class T3Layer implements Layer {
       card.text.split('\n').forEach((line, index) => image.drawText(font, 16, 42 + index * (cardLineStep(font)), line, CARD_TEXT_BRIGHTNESS));
       return image;
     }
-    paintCardFace(image, this.fullRect());
+    // Sessions and the transcript use the lens itself as their canvas. Their
+    // headings, selection state, and content remain, without a full-screen
+    // card edge around them.
+    if (this.screen !== 'sessions' && this.screen !== 'reader') paintCardFace(image, this.fullRect());
     const top = y + 42;
     const reader = ['reader', 'draft', 'new-summary', 'plan-review', 'question-text', 'phone-settings', 'notification', 'proposed-plan', 'plan-approve'].includes(this.screen);
     let title = this.title().toUpperCase();
@@ -758,7 +872,7 @@ export class T3Layer implements Layer {
   }
 
   async hitTest(x: number, y: number): Promise<boolean> {
-    this.motion = null;
+    this.motion = null; this.slide = null;
     const rows = this.rows();
     if (this.screen === 'dashboard') {
       const target = dashboardTargets(this.viewWidth, this.viewHeight).find(target => x >= target.x && x < target.x + target.width && y >= target.y && y < target.y + target.height);

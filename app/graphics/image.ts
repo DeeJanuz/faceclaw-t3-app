@@ -271,17 +271,28 @@ export class GrayImage {
     const destX = dx | 0;
     const destY = dy | 0;
 
-    for (let row = 0; row < copyHeight; row++) {
-      const sy = srcY + row;
-      const ty = destY + row;
-      if (sy < 0 || sy >= source.height || ty < 0 || ty >= this.height) continue;
-      for (let col = 0; col < copyWidth; col++) {
-        const sx = srcX + col;
-        const tx = destX + col;
-        if (sx < 0 || sx >= source.width || tx < 0 || tx >= this.width) continue;
-        const value = source.pixels[sy * source.width + sx] ?? 0;
-        if (opts.transparentZero && value === 0) continue;
-        this.pixels[ty * this.width + tx] = value;
+    const firstRow = Math.max(0, -destY);
+    const lastRow = Math.min(copyHeight, source.height - srcY, this.height - destY);
+    const firstCol = Math.max(0, -destX);
+    const lastCol = Math.min(copyWidth, source.width - srcX, this.width - destX);
+    if (lastCol > firstCol && lastRow > firstRow) {
+      if (!opts.transparentZero) {
+        // Whole-screen transitions are opaque. Copy each visible scanline in
+        // native typed-array code instead of walking every pixel in JS.
+        for (let row = firstRow; row < lastRow; row++) {
+          const sourceStart = (srcY + row) * source.width + srcX + firstCol;
+          const targetStart = (destY + row) * this.width + destX + firstCol;
+          this.pixels.set(source.pixels.subarray(sourceStart, sourceStart + lastCol - firstCol), targetStart);
+        }
+      } else {
+        for (let row = firstRow; row < lastRow; row++) {
+          const sourceStart = (srcY + row) * source.width + srcX;
+          const targetStart = (destY + row) * this.width + destX;
+          for (let col = firstCol; col < lastCol; col++) {
+            const value = source.pixels[sourceStart + col] ?? 0;
+            if (value !== 0) this.pixels[targetStart + col] = value;
+          }
+        }
       }
     }
 

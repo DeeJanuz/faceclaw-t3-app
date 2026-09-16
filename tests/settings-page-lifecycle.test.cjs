@@ -10,7 +10,13 @@ test('settings reconnects its model after Activity stop/start without navigation
   '../extensions/host': { onHostEvent: listener => { hostListeners.add(listener); return () => hostListeners.delete(listener); }, effectiveFeature: () => undefined, ownsFeature: () => active },
   '../t3/config': { getT3Config: () => ({ bridgeUrl: '' }) },
   '../t3/client': { t3Client: { state: () => ({ status: 'Connected' }), onStateChange: listener => { stateListeners.add(listener); return () => stateListeners.delete(listener); } } },
-  '../t3/notification-preferences': { readT3PhoneNotificationsEnabled: () => false },
+  '../t3/notification-preferences': {
+   readT3PhoneNotificationsEnabled: () => false,
+   readT3NotificationPreviewSeconds: () => 5,
+   onT3NotificationPreviewSecondsChanged: () => () => {},
+   saveT3NotificationPreviewSeconds: () => {},
+   T3_NOTIFICATION_PREVIEW_SECONDS: [3, 5, 7, 10],
+  },
   '../apps/t3/runtime': { t3Workspace: { projects: [] } },
  };
  vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/phone-ui/t3-settings-page.ts', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText,

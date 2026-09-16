@@ -142,19 +142,19 @@ export function initializeAppRuntime():void{
    // Keep the opaque presentation identity through async open/dismiss work.
    // Host replacement can close an old surface after the newer preview exists.
    preview=data;notificationHostPresentationId=typeof data.hostPresentationId==='string'?data.hostPresentationId:undefined;notificationMode='preview';
-   if(previewLayer)previewLayer.update(data.title,data.text,type==='preview');
+   if(previewLayer)previewLayer.update(data.title,data.text,type==='preview',Number(data.durationMs));
    else previewLayer=new TimedNotificationLayer(data.title,data.text,()=>{
     const selected=preview, presentationId=selected?.presentationId;
     if(!selected)return;
     const origin=previewLayer?.currentRect();if(origin)setT3NotificationOrigin(origin);
-    settle(selected.open(selected.woke).then((opened:boolean)=>{
+     settle(selected.open(selected.woke,presentationId).then((opened:boolean)=>{
      if(preview?.presentationId!==presentationId)return;
      if(opened){
-      // Opening changes the same surface into the reader. Only remove the
-      // timed card; the host surface remains available for the reader frame.
+      // A successful open has already handed the host surface back to the
+      // regular T3 window. Keep this identity guard for stale completions.
       shell.closeNotificationPreview(selected.id,false,presentationId,false);
       notificationMode='reader';renderSurface('ui.notifications');
-     }
+     } else previewLayer?.reopenAfterOpenFailure();
     }));
    },()=>{
     const selected=preview, presentationId=selected?.presentationId;
@@ -167,8 +167,13 @@ export function initializeAppRuntime():void{
    },()=>{
     const selected=preview, presentationId=selected?.presentationId;
     if(selected&&preview?.presentationId===presentationId)shell.closeNotificationPreview(selected.id,true,presentationId);
-   },()=>renderSurface('ui.notifications'),!data.woke);
+    },()=>renderSurface('ui.notifications'),!data.woke,Number(data.durationMs));
    renderSurface('ui.notifications');
+  }
+  if(type==='preview-handoff'){
+   if(preview&&data?.presentationId&&data.presentationId!==preview.presentationId&&data.presentationId!==preview.hostPresentationId)return;
+   preview=null;previewLayer?.onRemoved();previewLayer=null;notificationHostPresentationId=undefined;notificationMode=undefined;notificationSurface=false;
+   getApp().resize(width,height);setAppViewport(width,height);getApp().requestRender();
   }
   if(type==='preview-close'){
    if(preview && data?.presentationId && data.presentationId!==preview.presentationId && data.presentationId!==preview.hostPresentationId)return;
@@ -207,6 +212,11 @@ export function initializeAppRuntime():void{
    const feature=data.feature;
    if(data.type==='close'){
     if(feature==='ui.notifications'&&data.presentationId&&notificationHostPresentationId&&data.presentationId!==notificationHostPresentationId)return;
+    // The host emits its close before the async handoff action is acknowledged.
+    // Keep the local card alive until that result decides whether to settle or
+    // reopen it after an unknown/rejected action.
+    if(feature==='ui.notifications'&&previewLayer?.isOpening()&&
+       (!data.presentationId||data.presentationId===notificationHostPresentationId))return;
     surfaces.delete(feature);if(feature==='ui.notifications'){notificationSurface=false;notificationHostPresentationId=undefined;notificationMode=undefined;preview=null;previewLayer?.onRemoved();previewLayer=null;getApp().resize(width,height);setAppViewport(width,height);}return;
    }
    if(data.type==='open'||data.type==='resize'){
@@ -228,7 +238,7 @@ export function initializeAppRuntime():void{
     if(feature==='ui.notifications'){if(preview&&previewLayer){previewLayer.handleInput(input);}else settle(deliverInput(input));}
     else{const surface=surfaces.get(feature);if(surface?.stack){if(input.type==='pointer-click'&&Number.isInteger(input.x)&&Number.isInteger(input.y)&&input.x>=0&&input.y>=0&&input.x<surface.width&&input.y<surface.height)settle(surface.stack.hitTest(input.x,input.y).then(()=>renderSurface(feature)));else settle(surface.stack.handleInput(input).then(()=>renderSurface(feature)));}}
    }
-   if(content.event==='notification-arrived'){if(notificationMode!=='reader'&&notificationMode!=='inbox'){setNotificationWakeOrigin(Boolean(content.wokeScreen));handlePhoneNotification(content.key??content.id,typeof content.presentationId==='string'?content.presentationId:undefined);if(typeof content.presentationId==='string'){notificationHostPresentationId=content.presentationId;shell.bindNotificationPreviewHostPresentation(content.presentationId);}}renderSurface('ui.notifications');}
+   if(content.event==='notification-arrived'){if(notificationMode!=='reader'&&notificationMode!=='inbox'){setNotificationWakeOrigin(Boolean(content.wokeScreen));shell.setNotificationPreviewDuration(Number(content.durationMs));handlePhoneNotification(content.key??content.id,typeof content.presentationId==='string'?content.presentationId:undefined);if(typeof content.presentationId==='string'){notificationHostPresentationId=content.presentationId;shell.bindNotificationPreviewHostPresentation(content.presentationId);}}renderSurface('ui.notifications');}
    if(content.event==='notification-open'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode='reader';notificationSurface=true;const n=hostState.notifications.find(n=>n.key===content.key);openT3Notification(n?`phone:${n.key}:${n.postTime}`:undefined,content.previousWindowId??hostState.focusedWindowId,Boolean(content.returnToSleep));renderSurface('ui.notifications');}
    if(feature==='ui.app-menu' && content.event==='menu'){
     const surface=surfaces.get(feature);

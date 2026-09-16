@@ -73,6 +73,10 @@ export class T3DemoApi implements T3Api {
       const session = this.sessions.find(s => s.id === params.threadId);
       if (session?.modelSelection) session.modelSelection.reasoningId = String(params.reasoningId);
       result = { threadId: params.threadId, reasoningId: params.reasoningId, sequence: ++this.sequence };
+    } else if (method === 'thread.model.set') {
+      const session = this.sessions.find(s => s.id === params.threadId);
+      if (session && params.selection && typeof params.selection === 'object') session.modelSelection = { ...(params.selection as NewSessionModelSelection) };
+      result = { threadId: params.threadId, modelSelection: session?.modelSelection, sequence: ++this.sequence };
     } else if (method === 'plan.approve') {
       if (params.threadId !== 'completed-plan' || !this.proposed || params.planId !== this.proposed.planId || params.revision !== this.proposed.revision) {
         throw Object.assign(new Error('This sample plan changed.'), { code: 'plan_unavailable', dispatched: false });
@@ -81,7 +85,7 @@ export class T3DemoApi implements T3Api {
       session.interactionMode = 'default'; this.proposed = null;
       this.extraMessages.set(session.id, ['Implement the approved sample plan.']);
       result = { threadId: session.id, planId: params.planId, sequence: ++this.sequence };
-    } else if (method === 'turn.send' || method === 'turn.steer') {
+    } else if (method === 'turn.send' || method === 'turn.steer' || method === 'turn.reply') {
       const id = String(params.threadId);
       const session = this.sessions.find(s => s.id === id);
       if (session && method === 'turn.send' && (params.interactionMode === 'default' || params.interactionMode === 'plan')) session.interactionMode = params.interactionMode;
@@ -119,7 +123,12 @@ export class T3DemoApi implements T3Api {
         { id: `${id}-reply-${index}`, role: 'assistant' as const, text: 'Sample reply received. No live request was sent.', streaming: false, createdAt: ago(0), updatedAt: ago(0) },
       ]),
     ];
-    return { snapshotId: 'demo', session, turns: [{ id: `${id}-turn`, startedAt: ago(4), endedAt: session.status === 'running' ? null : ago(0), durationSeconds: 12, separatorLabel: 'Latest turn', messages }],
+    const luna = session.modelSelection?.model === 'preview-luna';
+    const added = (this.extraMessages.get(id)?.length || 0) * 1800;
+    return { snapshotId: 'demo', session,
+      tokenUsage: { contextTokens: (luna ? 22_000 : 48_000) + added, contextWindowTokens: luna ? 128_000 : 272_000,
+        totalTokens: 312_000 + added, updatedAt: ago(0) },
+      turns: [{ id: `${id}-turn`, startedAt: ago(4), endedAt: session.status === 'running' ? null : ago(0), durationSeconds: 12, separatorLabel: 'Latest turn', messages }],
       liveActivity: session.status === 'running' ? { phase: 'tool', label: 'Checking the conversation layout', updatedAt: ago(0) } : null,
       liveActivities: [], pendingPlanInput: id === 'plan' && !this.answered ? plan : null,
       pendingProposedPlan: id === 'completed-plan' && session.interactionMode === 'plan' ? this.proposed : null };

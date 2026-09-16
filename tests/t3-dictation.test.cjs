@@ -220,7 +220,7 @@ function draftDestination() {
   const declaration = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'T3Layer');
   const methods = ['record', 'submitDictatedText', 'submitDraft'].map(name => declaration.members.find(node => node.name?.getText(source) === name).getText(source)).join('\n');
   const module = { exports: {} }; const calls = []; const drafts = []; const sent = []; let cancelled = 0;
-  const state = { busy: false, demo: false, selectedThreadId: 'thread-one', transcript: undefined, canRetryLastSend: false, send: async text => { sent.push(text); return true; } };
+  const state = { busy: false, demo: false, selectedThreadId: 'thread-one', selectedEnvironmentId: undefined, transcript: undefined, canRetryLastSend: false, sendResult: true, fail: error => { state.error = String(error?.code || error); }, send: async text => { sent.push(text); return state.sendResult; } };
   const config = { enabled: true, bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'original' };
   const globals = { module, exports: module.exports, state, getT3Config: () => config,
     shell: { startT3Dictation: (...args) => calls.push(args) }, activeLayer: null };
@@ -239,6 +239,7 @@ test('T3 capture destination rejects changed pairing, session, mode, owner, or c
     x => { x.config.pairingFingerprint = 'new'; },
     x => { x.config.bridgeUrl = 'wss://other.example'; },
     x => { x.state.selectedThreadId = 'thread-two'; },
+    x => { x.state.selectedEnvironmentId = 'other-computer'; },
     x => { x.state.demo = true; },
     x => { x.config.enabled = false; },
     x => { x.globals.activeLayer = null; },
@@ -265,6 +266,21 @@ test('unchanged T3 destination submits a dictated draft from the capture review 
   assert.deepEqual(destination.sent, ['Review this']);
   assert.equal(destination.layer.screen, 'reader');
   assert.equal(destination.layer.draft, '');
+});
+
+test('a definite reviewed-send rejection remains retryable, but pairing changes block the retry', async () => {
+  const destination = draftDestination(); const [onDraft, , canStart] = destination.calls[0];
+  assert.equal(canStart(), true);
+  destination.state.sendResult = false; destination.state.canRetryLastSend = true;
+  onDraft('Retain this draft');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(destination.sent, ['Retain this draft']);
+  assert.equal(destination.layer.draftLocked, false);
+  destination.config.pairingFingerprint = 'changed-after-capture';
+  await destination.layer.submitDraft();
+  assert.deepEqual(destination.sent, ['Retain this draft']);
+  assert.equal(destination.layer.draftLocked, true);
+  assert.match(destination.state.error, /destination_changed/);
 });
 
 test('dictation expands to the configured full viewport and renders the measured page without a second wrap', () => {

@@ -114,7 +114,15 @@ export interface LiveToolActivity {
   completedAt: string | null
 }
 
+export interface SessionTokenUsage {
+  contextTokens: number | null
+  contextWindowTokens: number | null
+  totalTokens: number | null
+  updatedAt: string | null
+}
+
 export interface TranscriptResult {
+  tokenUsage?: SessionTokenUsage
   snapshotId: string
   session: SessionSummary
   turns: TranscriptTurn[]
@@ -226,6 +234,7 @@ export type BridgeMethod =
   | 'thread.settle'
   | 'turn.send'
   | 'turn.steer'
+  | 'turn.reply'
   | 'voice.start'
   | 'voice.finish'
   | 'voice.cancel'
@@ -253,6 +262,7 @@ export type BridgeMethodResult = {
   'thread.settle': { threadId: string; settled: true; sequence: number }
   'turn.send': SentTurnResult
   'turn.steer': SentTurnResult
+  'turn.reply': SentTurnResult
   'voice.start': VoiceStartResult
   'voice.finish': VoiceDraftResult
   'voice.cancel': { cancelled: boolean }

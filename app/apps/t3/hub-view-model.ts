@@ -10,6 +10,7 @@ import type {
   ProjectSummary,
   ReasoningChoice,
   SessionSummary,
+  SessionTokenUsage,
   SessionsListResult,
   TranscriptTurn,
 } from './protocol'
@@ -536,16 +537,47 @@ export function paginateTranscriptWithLiveTurn(
   return [...settledPages, ...userPages, ...livePages]
 }
 
+/** Rounded compact counts are display-only; the protocol keeps exact integers. */
+export function formatSessionTokens(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return '—'
+  if (value < 1000) return String(value)
+  const [scale, suffix] = value < 999_500 ? [1000, 'k'] : value < 999_500_000 ? [1_000_000, 'm'] : [1_000_000_000, 'b']
+  return `${(value / Number(scale)).toFixed(value < Number(scale) * 10 ? 1 : 0).replace(/\.0$/, '')}${suffix}`
+}
+
+export function formatSessionModel(value: string | null | undefined): string {
+  if (typeof value !== 'string') return ''
+  const source = value.trim().split('/').pop()?.trim() || ''
+  const family = source.match(/(?:^|[^a-z])(astra|luna|terra|sol)(?:[^a-z]|$)/i)?.[1]
+  return (family || source).toUpperCase().slice(0, 20)
+}
+
 export function transcriptPageHeader(
   page: TranscriptPage,
   pageNumber: number,
   pageCount: number,
+  usage?: SessionTokenUsage,
+  options: { working?: boolean; unread?: number; font?: WrapFont; width?: number; model?: string } = {},
 ): string {
   const turn = page.turnCount > 0 ? `TURN ${page.turnNumber}/${page.turnCount}` : 'NO TURNS'
-  const duration = page.durationLabel.replace(/^WORKED\s+/, '')
-  return [page.speakerLabel, turn, duration, `${pageNumber}/${pageCount}`]
-    .filter(Boolean)
-    .join(' | ')
+  const model = formatSessionModel(options.model)
+  const context = usage?.contextWindowTokens
+    ? `${formatSessionTokens(usage.contextTokens)}/${formatSessionTokens(usage.contextWindowTokens)}`
+    : formatSessionTokens(usage?.contextTokens)
+  const usageLabel = `CTX ${context} | TOTAL ${formatSessionTokens(usage?.totalTokens)}`
+  const status = options.working ? `LIVE${options.unread ? ` +${options.unread} NEW` : ''}` : page.speakerLabel
+  const duration = options.working ? '' : page.durationLabel.replace(/^WORKED\s+/, '')
+  const pageLabel = `${pageNumber}/${pageCount}`
+  const tracked = [model, usageLabel].filter(Boolean).join(' · ')
+  const candidates = [
+    [turn, tracked, status, duration, pageLabel],
+    [turn, tracked, status, pageLabel],
+    [turn, tracked, pageLabel],
+    [tracked, pageLabel],
+    [tracked],
+    [usageLabel],
+  ].map(parts => parts.filter(Boolean).join(' | '))
+  return candidates.find(value => !options.font || options.width === undefined || options.font.measureText(value) <= options.width) ?? usageLabel
 }
 
 /** Speech providers may insert single line breaks in otherwise continuous prose.

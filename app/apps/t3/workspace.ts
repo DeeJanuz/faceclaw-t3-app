@@ -2,7 +2,7 @@ import { resourceKey, resourceRef } from './resource';
 import { isDefiniteBridgeRejection, parseProposedPlan, sanitizeSessionControls } from "../../t3/security";
 import type {
   ModelSummary, NewSessionModelSelection, PendingPlanInput, PlanAnswer,
-  ProjectSummary, SessionSummary, SessionsListResult, TranscriptResult, ProposedPlan,
+  ProjectSummary, SessionSummary, SessionTokenUsage, SessionsListResult, TranscriptResult, ProposedPlan,
 } from './protocol';
 
 export interface T3Api {
@@ -37,6 +37,29 @@ export interface PlanDraftStorage {
   loadApproval?(key: string): unknown;
   saveApproval?(key: string): void;
   removeApproval?(key: string): void;
+}
+
+export interface ReviewedReplyDestination {
+  threadId: string;
+  environmentId?: string;
+  pairing: string;
+}
+
+function safeTokenCount(value: unknown, positive = false): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= (positive ? 1 : 0) ? value : null;
+}
+
+function sanitizeTokenUsage(value: unknown): SessionTokenUsage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const usage = value as Record<string, unknown>;
+  const updatedAt = typeof usage.updatedAt === 'string' && usage.updatedAt.length <= 40 && Number.isFinite(Date.parse(usage.updatedAt))
+    ? usage.updatedAt : null;
+  return {
+    contextTokens: safeTokenCount(usage.contextTokens),
+    contextWindowTokens: safeTokenCount(usage.contextWindowTokens, true),
+    totalTokens: safeTokenCount(usage.totalTokens),
+    updatedAt,
+  };
 }
 
 /** Shared across window lifetimes: closed windows still receive agent alerts. */
@@ -75,6 +98,9 @@ export class T3Workspace {
   private refreshPending: Promise<void> | null = null;
   private sessionsRefreshPending: Promise<void> | null = null;
   private draftStorage: PlanDraftStorage | null = null;
+  private tokenContexts = new Map<string, SessionTokenUsage>();
+  private tokenSnapshots = new Map<string, { fingerprint: string; model: string }>();
+  private sessionTokenTotals = new Map<string, number>();
 
   constructor(private api: T3Api) {}
   setDraftStorage(storage: PlanDraftStorage): void { this.draftStorage = storage; }
@@ -105,6 +131,7 @@ export class T3Workspace {
     this.projects = []; this.sessions = []; this.models = [];
     this.transcript = null; this.selectedThreadId = ''; this.selectedEnvironmentId = undefined; this.environments = []; this.alerts = [];
     this.completions.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
+    this.tokenContexts.clear(); this.tokenSnapshots.clear(); this.sessionTokenTotals.clear();
     this.refreshPending = null; this.busy = false; this.error = ''; this.canRetryLastSend = true;
     this.sessionsRefreshPending = null;
     this.transcriptRefreshPending = null; this.transcriptRefreshPendingThread = ''; this.transcriptRefreshQueued = false;
@@ -231,6 +258,47 @@ export class T3Workspace {
     if (generation === this.generation) await this.refreshTranscript();
   }
 
+  /**
+   * T3 usage events do not carry model identity. Associate each new snapshot
+   * with the active model, and keep its last context reading when models are
+   * switched. Session totals remain monotonic across every model.
+   */
+  private reconcileTokenUsage(transcript: TranscriptResult): void {
+    const usage = sanitizeTokenUsage(transcript.tokenUsage);
+    if (!usage) { delete transcript.tokenUsage; return; }
+    const sessionKey = resourceKey(transcript.session.id, transcript.session.environmentId);
+    const previousTotal = this.sessionTokenTotals.get(sessionKey);
+    if (usage.totalTokens !== null && (previousTotal === undefined || usage.totalTokens > previousTotal)) {
+      this.sessionTokenTotals.set(sessionKey, usage.totalTokens);
+    }
+    const totalTokens = this.sessionTokenTotals.get(sessionKey) ?? usage.totalTokens;
+    const selection = transcript.session.modelSelection;
+    if (!selection) { transcript.tokenUsage = { ...usage, totalTokens }; return; }
+    const model = JSON.stringify([selection.instanceId, selection.model]);
+    const fingerprint = JSON.stringify([usage.contextTokens, usage.contextWindowTokens, usage.totalTokens, usage.updatedAt]);
+    const owner = this.tokenSnapshots.get(sessionKey);
+    const contextKey = JSON.stringify([sessionKey, selection.instanceId, selection.model]);
+    if (!owner || owner.fingerprint !== fingerprint) {
+      this.tokenSnapshots.set(sessionKey, { fingerprint, model });
+      const current = { ...usage, totalTokens };
+      this.tokenContexts.set(contextKey, current);
+      transcript.tokenUsage = current;
+    } else if (owner.model === model) {
+      const current = { ...usage, totalTokens };
+      this.tokenContexts.set(contextKey, current);
+      transcript.tokenUsage = current;
+    } else {
+      const cached = this.tokenContexts.get(contextKey);
+      transcript.tokenUsage = {
+        contextTokens: cached?.contextTokens ?? null,
+        contextWindowTokens: cached?.contextWindowTokens ?? null,
+        totalTokens,
+        updatedAt: cached?.updatedAt ?? null,
+      };
+    }
+    if (this.tokenContexts.size > 512) this.tokenContexts.delete(this.tokenContexts.keys().next().value as string);
+  }
+
   async refreshTranscript(): Promise<void> {
     const threadId = this.selectedThreadId;
     const environmentId = this.selectedEnvironmentId;
@@ -251,6 +319,7 @@ export class T3Workspace {
       if (request !== this.transcriptRequest || generation !== this.generation || threadKey !== this.selectedThreadKey) return;
       if (!transcript?.session || transcript.session.id !== threadId || (environmentId && transcript.session.environmentId !== environmentId)) throw new Error('T3_INVALID_RESPONSE');
       sanitizeSessionControls(transcript.session);
+      this.reconcileTokenUsage(transcript);
       transcript.pendingProposedPlan = parseProposedPlan(transcript.pendingProposedPlan);
       this.transcript = transcript;
       const pending = transcript.pendingPlanInput;
@@ -283,7 +352,7 @@ export class T3Workspace {
     return pending;
   }
 
-  async send(text: string, options?: { projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection; assistant?: boolean }, controls?: { interactionMode?: 'default' | 'plan' }): Promise<boolean> {
+  async send(text: string, options?: { projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection; assistant?: boolean }, controls?: { interactionMode?: 'default' | 'plan'; reviewedDestination?: ReviewedReplyDestination }): Promise<boolean> {
     if (this.busy) return false;
     if (!text.trim() || (!options && !this.selectedThreadId)) { this.canRetryLastSend = true; return false; }
     const generation = this.generation;
@@ -299,13 +368,20 @@ export class T3Workspace {
             (running && controls.interactionMode !== selected.interactionMode))) {
         throw Object.assign(new Error('Wait for the current turn before changing mode.'), { code: 'session_busy', dispatched: false });
       }
-      const method = options ? (options.assistant ? 'assistant.start' : 'thread.start') : running ? 'turn.steer' : 'turn.send';
+      const reviewed = controls?.reviewedDestination;
+      if (reviewed && (options || this.selectedThreadId !== reviewed.threadId || this.selectedEnvironmentId !== reviewed.environmentId)) {
+        this.canRetryLastSend = true;
+        return false;
+      }
+      const method = options ? (options.assistant ? 'assistant.start' : 'thread.start') : reviewed ? 'turn.reply' : running ? 'turn.steer' : 'turn.send';
       const params = options
         ? { ...(options.environmentId ? { environmentId: options.environmentId } : {}), projectId: options.projectId, modelSelection: options.modelSelection, text: text.trim() }
         : { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId: this.selectedThreadId, text: text.trim(), ...(!running && controls?.interactionMode ? { interactionMode: controls.interactionMode } : {}) };
       const result = await api.rpc<{ threadId: string; environmentId?: string }>(method, params);
       if (generation !== this.generation) return false;
-      if (typeof result?.threadId !== 'string' || !result.threadId || (targetEnvironmentId && result.environmentId !== targetEnvironmentId)) throw new Error('T3_INVALID_RESPONSE');
+      if (typeof result?.threadId !== 'string' || !result.threadId ||
+          (!options && result.threadId !== this.selectedThreadId) ||
+          (targetEnvironmentId && result.environmentId !== targetEnvironmentId)) throw new Error('T3_INVALID_RESPONSE');
       await this.openThread(result.threadId, result.environmentId ?? targetEnvironmentId);
       if (generation !== this.generation) return false;
       await this.refresh();

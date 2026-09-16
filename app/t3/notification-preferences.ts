@@ -3,6 +3,31 @@ import { getStringSetting, setStringSetting, onSettingsStoreChanged } from '../n
 
 const APPS_KEY = 't3.notification-apps';
 const PHONE_NOTIFICATIONS_KEY = 't3.phone-notifications';
+const NOTIFICATION_PREVIEW_SECONDS_KEY = 't3.notification-preview-seconds';
+
+export type T3NotificationPreviewSeconds = 3 | 5 | 7 | 10;
+export const T3_NOTIFICATION_PREVIEW_SECONDS: readonly T3NotificationPreviewSeconds[] = [3, 5, 7, 10];
+const DEFAULT_NOTIFICATION_PREVIEW_SECONDS: T3NotificationPreviewSeconds = 5;
+
+function isNotificationPreviewSeconds(value: unknown): value is T3NotificationPreviewSeconds {
+  return typeof value === 'number' && T3_NOTIFICATION_PREVIEW_SECONDS.includes(value as T3NotificationPreviewSeconds);
+}
+
+/** Duration of the T3-owned glasses arrival preview. Missing or corrupt data uses five seconds. */
+export function readT3NotificationPreviewSeconds(): T3NotificationPreviewSeconds {
+  const stored = getStringSetting(NOTIFICATION_PREVIEW_SECONDS_KEY, '');
+  if (stored !== '3' && stored !== '5' && stored !== '7' && stored !== '10') return DEFAULT_NOTIFICATION_PREVIEW_SECONDS;
+  return Number(stored) as T3NotificationPreviewSeconds;
+}
+
+export function saveT3NotificationPreviewSeconds(seconds: T3NotificationPreviewSeconds): void {
+  if (!isNotificationPreviewSeconds(seconds)) throw new Error('T3_NOTIFICATION_PREVIEW_SECONDS_INVALID');
+  setStringSetting(NOTIFICATION_PREVIEW_SECONDS_KEY, String(seconds));
+}
+
+export function onT3NotificationPreviewSecondsChanged(listener: () => void): () => void {
+  return onSettingsStoreChanged(key => { if (key === NOTIFICATION_PREVIEW_SECONDS_KEY) listener(); });
+}
 
 /** Phone posting is independent of glasses forwarding and defaults to off. */
 export function readT3PhoneNotificationsEnabled(): boolean {

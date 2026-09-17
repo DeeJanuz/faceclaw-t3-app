@@ -86,7 +86,8 @@ function registerDraw(service: any, draw: DeferredDraw): { id: number; x: number
   const cached = resourceIds.get(key);
   if (cached) return { id: cached, x: draw.x + glyph.bbxX, y: draw.y + draw.font.ascent - (glyph.bbxHeight + glyph.bbxY) };
   const pixels = glyphPixels(draw);
-  const id = register(service, key, pixels, glyph.bbxWidth, glyph.bbxHeight, true);
+  const firmwareFontKey = (fontKey.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 64) || "t3-font");
+  const id = register(service, key, pixels, glyph.bbxWidth, glyph.bbxHeight, true, firmwareFontKey, glyph.encoding);
   return id ? {
     id,
     x: draw.x + glyph.bbxX,
@@ -102,11 +103,13 @@ function objectId(value: object): number {
   return id;
 }
 
-function register(service: any, key: string, pixels: Uint8Array, width: number, height: number, glyph: boolean): number {
+function register(service: any, key: string, pixels: Uint8Array, width: number, height: number, glyph: boolean, fontKey?: string, encoding?: number): number {
   const cached = resourceIds.get(key);
   if (cached) return cached;
   if (resourceIds.size >= MAX_RESOURCE_ALIASES) return 0;
-  const id = Number(service.registerGrayResource(key, pixels.buffer, pixels.byteOffset, pixels.byteLength, width, height, glyph));
+  const id = Number(glyph && fontKey && Number.isInteger(encoding) && encoding! >= 32 && encoding! <= 127 && typeof service.registerGrayGlyphResource === "function"
+    ? service.registerGrayGlyphResource(key, fontKey, encoding, pixels.buffer, pixels.byteOffset, pixels.byteLength, width, height)
+    : service.registerGrayResource(key, pixels.buffer, pixels.byteOffset, pixels.byteLength, width, height, glyph));
   if (id > 0) resourceIds.set(key, id);
   return id;
 }

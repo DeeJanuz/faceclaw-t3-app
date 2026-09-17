@@ -11,3 +11,16 @@ test('display submission is Gray8 while the optional phone preview has the only 
  assert.deepEqual(calls[0], [backing.buffer, 2, 4, 2, 2]);
  assert.equal(new Uint8Array(calls[0][0])[3], 126);
 });
+
+test('retained translation copies only overlap from the last accepted geometry', () => {
+ const source=fs.readFileSync('app/runtime.ts','utf8'),module={exports:{}};
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText,
+  {module,exports:module.exports,require:()=>({}),com:{}});
+ const prior={key:7,offsetX:-64,width:576,height:452};
+ assert.deepEqual({...module.exports.retainedCopyForTranslation(prior,{key:7,offsetX:-128},576,452)},
+  {sourceX:64,sourceY:0,width:512,height:452,destinationX:0,destinationY:0});
+ assert.deepEqual({...module.exports.retainedCopyForTranslation(prior,{key:7,offsetX:0},576,452)},
+  {sourceX:0,sourceY:0,width:512,height:452,destinationX:64,destinationY:0});
+ assert.equal(module.exports.retainedCopyForTranslation(prior,{key:8,offsetX:-128},576,452),null);
+ assert.equal(module.exports.retainedCopyForTranslation(prior,{key:7,offsetX:-128},640,452),null);
+});

@@ -20,7 +20,7 @@ export function createInProcessWindow(options:InProcessAppOptions):InProcessWind
   try {
    const planes=stack.paint();const frame=flattenPlanesWithDraws(planes,{width,height});
    const retainedSource=options.retainedSceneEligible?.()===true&&planes.length===1&&planes[0]!.x===0&&planes[0]!.y===0?planes[0]!.image:undefined;
-   options.submitFrame?.(frame.image,frame.draws,retainedSource);
+   options.submitFrame?.(frame.image,frame.draws,retainedSource,options.frameTransportHint?.());
    const delay=stack.nextAnimationDelayMs();
    if(delay!==null&&animationTimer===null){
     animationTimer=setTimeout(()=>{animationTimer=null;app.requestRender();},Math.max(1,Math.ceil(delay)));

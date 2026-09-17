@@ -1,12 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const vm = require('node:vm');
 const ts = require('typescript');
+const transpiled = new Map();
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} };
-  const code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports, require: name => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; }, ...globals });
+  let code = transpiled.get(path);
+  if (!code) {
+    code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
+    transpiled.set(path, code);
+  }
+  const localRequire = name => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; };
+  const names = Object.keys(globals);
+  Function('module', 'exports', 'require', ...names, code)(module, module.exports, localRequire, ...names.map(name => globals[name]));
   return module.exports;
 }
 const face = load('app/ui/card-presentation.ts');
@@ -46,7 +52,9 @@ function setup(animationClock, raster = false) {
   const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0 }; let permitDismiss = true;
   const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
   const alerts = () => visible || state.alerts;
-  class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(width * height); } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} bitBlt() {} dimmed() { return this; } }
+  // Layout-only tests do not inspect raster bytes. Avoid retaining hundreds of
+  // full viewport buffers now that a slide deliberately caches both pages.
+  class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(0); } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} bitBlt() {} dimmed() { return this; } }
   const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
   const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
   const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
@@ -801,7 +809,7 @@ test('cancelling a reply still returns to its current reader before exiting the 
 
  test('inbox expansion and collapse reuse their backdrop and refresh at the shared endpoint', async () => {
   const clock = { now: 1000 };
-  const { layer, counts } = setup(clock);
+  const { layer, counts } = setup(clock, true);
   let height = 452;
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height }) } };
   layer.selected = 'inbox';
@@ -836,6 +844,11 @@ test('dashboard inbox stays top aligned in both viewport heights', () => {
     assert.equal(layer.dropdownRect().height, 104);
   }
 });
+function finishSlide(layer, ctx, clock) {
+  clock.now += 1000;
+  for (let frame = 0; frame < 16 && layer.slide; frame++) layer.paint(ctx);
+  assert.equal(layer.slide, null, 'paced slide reaches its final offset');
+}
 test('dashboard and sessions use a forward horizontal shuffle and reverse on Back', async () => {
   const clock = { now: 1000 }, h = setup(clock, true);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
@@ -850,43 +863,38 @@ test('dashboard and sessions use a forward horizontal shuffle and reverse on Bac
   clock.now = 1180; const halfway = h.layer.paint(ctx);
   assert.ok(halfway.hasDeferredDraws(), 'mid-shuffle text stays eligible for cached glyph draws');
   halfway.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide.progress, 0.5);
-  const forwardDistance = 1 - (1 - h.layer.slide.progress) ** 3;
+  assert.equal(h.layer.slide.distance, 64, 'a late credit exposes at most one bounded strip');
+  const forwardDistance = h.layer.slide.distance / 576;
   await h.layer.handleInput({ type: 'double-click' });
   assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.layer.slide.direction, -1);
   frame = h.layer.paint(ctx); frame.bakeDeferredDrawsInPlace();
-  const reverseDistance = 1 - (1 - h.layer.slide.progress) ** 3;
+  const reverseDistance = h.layer.slide.distance / 576;
   assert.ok(Math.abs(reverseDistance - (1 - forwardDistance)) < 0.000001,
-    'reversing preserves geometry while swapping loading and unloading labels');
-  assert.notEqual(Buffer.compare(Buffer.from(frame.pixels), Buffer.from(halfway.pixels)), 0,
-    'the new outgoing page receives its unloading label immediately');
-  clock.now = 1540; h.layer.paint(ctx);
+    'reversing preserves geometry while swapping the complete pages');
+  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
+  finishSlide(h.layer, ctx, clock);
   assert.equal(h.layer.slide, null); assert.equal(h.layer.selected, 'sessions');
 });
 
-test('session slide destinations render loading headings before laying out their content', async () => {
+test('session slides keep complete source and destination content loaded', async () => {
   const clock = { now: 1000 }, h = setup(clock);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
   await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('UNLOADING DATA...'));
-  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
-  assert.equal(h.drawn.includes('START NEW SESSION'), false);
-  clock.now = 1360; h.layer.paint(ctx);
   assert.ok(h.drawn.includes('START NEW SESSION'));
+  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
+  finishSlide(h.layer, ctx, clock);
 
   h.drawn.length = 0;
   h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('UNLOADING SESSIONS...'));
-  assert.ok(h.drawn.includes('LOADING SESSION...'));
-  assert.equal(h.drawn.some(text => text.includes('VOICE SESSION')), false);
-  clock.now = 1720; h.layer.paint(ctx);
-  assert.equal(h.layer.slide, null);
-  assert.ok(h.drawn.some(text => text !== 'LOADING SESSION...'));
+  assert.ok(h.drawn.includes('START NEW SESSION'), 'the outgoing list remains populated');
+  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
+  assert.ok(h.drawn.some(text => text && text !== 'START NEW SESSION'), 'the complete reader is laid out before motion');
+  finishSlide(h.layer, ctx, clock);
 
   h.drawn.length = 0;
   h.layer.back(); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('UNLOADING SESSION...'));
-  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
+  assert.ok(h.drawn.includes('START NEW SESSION'), 'the destination list is already populated');
+  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
 });
 
 test('APK reader reports handoff then bounded app result without claiming early delivery', async () => {
@@ -921,16 +929,16 @@ test('sessions and transcript use the same forward shuffle', async () => {
   const clock = { now: 1000 }, h = setup(clock, true);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
   await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  clock.now = 1360; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
+  finishSlide(h.layer, ctx, clock);
   h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.layer.screen, 'reader'); assert.ok(h.layer.slide);
   assert.equal(h.layer.slide.fromScreen, 'sessions'); assert.equal(h.layer.slide.toScreen, 'reader');
   assert.equal(h.layer.slide.direction, 1);
   h.layer.paint(ctx);
-  clock.now = 1540; const middle = h.layer.paint(ctx); middle.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide.progress, 0.5);
+  clock.now += 180; const middle = h.layer.paint(ctx); middle.bakeDeferredDrawsInPlace();
+  assert.equal(h.layer.slide.distance, 64);
   assert.ok(contentPixels(middle, { x: 0, y: 0, width: 576, height: 452 }) > 20);
-  clock.now = 1720; const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
+  finishSlide(h.layer, ctx, clock); const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
   assert.equal(h.layer.slide, null); assert.equal(h.layer.screen, 'reader');
   assert.ok(contentPixels(final, h.layer.fullRect()) > 20);
 });
@@ -991,7 +999,7 @@ test('leaving a transcript clears its outgoing shuffle snapshot when private con
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
   await h.state.refresh(); h.layer.screen = 'sessions'; h.layer.openThread('voice');
   await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
-  clock.now = 1360; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
+  finishSlide(h.layer, ctx, clock);
   h.layer.back(); assert.equal(h.layer.screen, 'sessions'); assert.equal(h.layer.slide.fromScreen, 'reader');
   const outgoing = Buffer.from(h.layer.slide.from.pixels);
   assert.equal(!outgoing.equals(Buffer.alloc(outgoing.length)) || h.layer.slide.from.hasDeferredDraws(), true);
@@ -1000,7 +1008,7 @@ test('leaving a transcript clears its outgoing shuffle snapshot when private con
   const cleared = Buffer.from(h.layer.slide.from.pixels);
   assert.equal(cleared.equals(Buffer.alloc(cleared.length)), true);
   assert.equal(h.layer.slide.from.hasDeferredDraws(), false);
-  clock.now = 1720; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
+  finishSlide(h.layer, ctx, clock);
 });
 
 test('arrival animation gates body, reverses dismissal without a jump and cancels on removal', () => {

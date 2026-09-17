@@ -22,6 +22,7 @@ import {getDefaultSmallFont} from './graphics/ui-fonts';
 import {type InputEvent} from './ui/gestures';
 import {setPresentationTime} from './ui/presentation-clock';
 import {encodeSdkDrawBatch,encodeSdkRetainedScene} from './graphics/sdk-draw-batch';
+import type {SlideTransportHint} from './apps/t3/t3-app';
 declare const com:any;
 let app:ReturnType<typeof createT3AppWindow>|null=null;
 let runtimeInitialized=false;
@@ -64,11 +65,31 @@ function publishPreview(image:GrayImage):void{
  if(!phoneVisible)return;previewPending=image;const wait=Math.max(0,33-(Date.now()-lastPreviewAt));if(previewTimer!==null)return;
  previewTimer=setTimeout(()=>{previewTimer=null;const next=previewPending;previewPending=null;if(!next||!phoneVisible)return;lastPreviewAt=Date.now();lastFrame=next;for(const listener of frames)listener(next);},wait);
 }
-function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=false,retainedDraws:readonly DeferredDraw[]=image.draws):boolean{
+type AcceptedTranslation={key:number;offsetX:number;width:number;height:number};
+export function retainedCopyForTranslation(prior:AcceptedTranslation|undefined,current:SlideTransportHint|undefined,width:number,height:number):{sourceX:number;sourceY:number;width:number;height:number;destinationX:number;destinationY:number}|null{
+ if(!prior||!current||current.key!==prior.key||prior.width!==width||prior.height!==height)return null;
+ const delta=current.offsetX-prior.offsetX;if(delta===0||Math.abs(delta)>=width)return null;
+ return {sourceX:delta<0?-delta:0,sourceY:0,width:width-Math.abs(delta),height,destinationX:delta<0?0:delta,destinationY:0};
+}
+const acceptedTranslations=new Map<string,AcceptedTranslation>();
+const prefetchedTranslations=new Map<string,number>();
+function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=false,retainedDraws:readonly DeferredDraw[]=image.draws,translation?:SlideTransportHint):boolean{
  const draws=encodeSdkDrawBatch(service,image,retainedDraws);image.bakeDeferredDrawsInPlace();const pixels=image.pixels;
  const traceId=takeRenderTrace(feature);
- if(draws)return Boolean(service.submitGrayBufferWithDraws(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId,draws.buffer,draws.byteOffset,draws.byteLength));
- return Boolean(service.submitGrayBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId));
+ const key=feature||'window',prior=acceptedTranslations.get(key);
+ if(translation&&draws&&prefetchedTranslations.get(key)!==translation.key){
+  service.prefetchGrayResources?.(draws.buffer,draws.byteOffset,draws.byteLength);
+  prefetchedTranslations.set(key,translation.key);
+ }
+ const copy=retainedCopyForTranslation(prior,translation,image.width,image.height);
+ let accepted:boolean;
+ if(copy&&typeof service.submitGrayBufferWithDrawsAndCopy==='function'){
+  accepted=Boolean(service.submitGrayBufferWithDrawsAndCopy(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId,draws?.buffer??null,draws?.byteOffset??0,draws?.byteLength??0,copy.sourceX,copy.sourceY,copy.width,copy.height,copy.destinationX,copy.destinationY));
+ }else if(draws)accepted=Boolean(service.submitGrayBufferWithDraws(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId,draws.buffer,draws.byteOffset,draws.byteLength));
+ else accepted=Boolean(service.submitGrayBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId));
+ if(accepted&&translation)acceptedTranslations.set(key,{...translation,width:image.width,height:image.height});
+ else acceptedTranslations.delete(key);
+ return accepted;
 }
 function submitRetained(service:any,source:GrayImage,feature=''):boolean{
  if(rejectedSceneSurfaces.has(feature||'window'))return false;
@@ -83,12 +104,12 @@ export function getApp(){
  app=createT3AppWindow({actions:{...noopLayerActions,requestRender:()=>app?.requestRender(),startVoiceCapture:()=>voiceControlBridge.startCapture(),stopVoiceCapture:()=>voiceControlBridge.finishCapture()},
   canPaint:baseCanPaint,
   requestPaintPermission:requestBasePaintPermission,
-  submitFrame:(frame:GrayImage,retainedDraws:readonly DeferredDraw[],retainedSource?:GrayImage)=>{
+  submitFrame:(frame:GrayImage,retainedDraws:readonly DeferredDraw[],retainedSource?:GrayImage,translation?:SlideTransportHint)=>{
    publishPreview(frame);
    const service=nativeService();if(!service)return;
    const protectedState=isT3FlowProtected();if(lastProtected!==protectedState){lastProtected=protectedState;service.setWindowProtected(protectedState);}
    if(notificationSurface){const surface=surfaces.get('ui.notifications');if(surface?.visible&&!preview&&notificationMode)submitGray(service,frame,'ui.notifications',getApp().needsAnimation(),retainedDraws);}
-   else if(hostVisible&&!(retainedSource&&submitRetained(service,retainedSource)))submitGray(service,frame,'',getApp().needsAnimation(),retainedDraws);
+   else if(hostVisible&&!(retainedSource&&submitRetained(service,retainedSource)))submitGray(service,frame,'',getApp().needsAnimation(),retainedDraws,translation);
   },onClosed(){app=null;}});
  initializeT3Notifications(async()=>{getApp();});
  return app;
@@ -197,7 +218,7 @@ export function initializeAppRuntime():void{
   }
   if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
   if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;updateT3HostVisible(hostVisible);if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
-  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
+  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;acceptedTranslations.clear();prefetchedTranslations.clear();updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
   if(type==='render'){
    setPresentationTime(data.targetPresentationTimeMs);
    const feature=typeof data.surfaceId==='string'&&data.surfaceId.startsWith('extension:')?data.surfaceId.slice(10):'';

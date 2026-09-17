@@ -36,9 +36,14 @@ export const T3_SURFACE_ID = 'window:t3';
 type Screen = 'dashboard' | 'phone-settings' | 'projects' | 'sessions' | 'reader' | 'actions' | 'new-project' | 'new-model' | 'new-reasoning' | 'new-summary' | 'compose' | 'draft' | 'inbox' | 'notification' | 'questions' | 'question-text' | 'choices' | 'plan-review' | 'session-reasoning' | 'session-model' | 'proposed-plan' | 'plan-approve';
 type Navigation = { screen: Screen; selected: string; scroll: number; projectId: string; threadId: string };
 type Row = { id: string; title: string; detail?: string; disabled?: boolean; section?: boolean; action: () => void | Promise<void> };
-type SlideMotion = { fromScreen: Screen; toScreen: Screen; from: GrayImage; to?: GrayImage; direction: 1 | -1; started: number | null; progress: number };
+export type SlideTransportHint = { key: number; offsetX: number };
+type SlideMotion = { id: number; fromScreen: Screen; toScreen: Screen; from: GrayImage; to?: GrayImage; direction: 1 | -1; started: number | null; progress: number; distance: number };
 const slideEase = (progress: number): number => 1 - (1 - Math.max(0, Math.min(1, progress))) ** 3;
 const inverseSlideEase = (value: number): number => 1 - Math.cbrt(1 - Math.max(0, Math.min(1, value)));
+// Bound newly exposed columns so a delayed credit cannot turn into one large
+// glyph upload burst. At the standard viewport this keeps dense lists near the
+// SDK's recommended 100-150 newly visible glyphs per submitted frame.
+const MAX_SLIDE_STEP_PX = 64;
 let activeLayer: T3Layer | null = null;
 
 export function openT3Assistant(): void { if (!isT3FlowProtected()) activeLayer?.askAssistant(); }
@@ -88,6 +93,8 @@ export class T3Layer implements Layer {
   private notificationOrigin: CardRect | undefined;
   private motion: { model: WindowMotion; source: CardRect; from: CardRect; to: CardRect; started: number | null; closing: boolean; content?: GrayImage; heading?: GrayImage; backdrop?: GrayImage } | null = null;
   private slide: SlideMotion | null = null;
+  private nextSlideId = 1;
+  private slideTransportHint: SlideTransportHint | undefined;
   private returnFocus = 'assistant';
   private pageCount = 1;
   private planIdentity = '';
@@ -95,6 +102,7 @@ export class T3Layer implements Layer {
   private visibleActivity = false;
 
   needsAnimation(): boolean { return Boolean(this.motion || this.slide); }
+  frameTransportHint(): SlideTransportHint | undefined { return this.slideTransportHint; }
   nextAnimationDelayMs(): number | null {
     if (this.motion || this.slide || !this.visibleActivity) return null;
     const phaseMs = 140;
@@ -126,12 +134,13 @@ export class T3Layer implements Layer {
     const now = presentationNow();
     const prior = this.slide;
     if (prior && prior.fromScreen === toScreen && prior.toScreen === fromScreen) {
-      const reversedProgress = inverseSlideEase(1 - slideEase(prior.progress));
-      this.slide = { fromScreen, toScreen, from: this.paintSlideSource(fromScreen), direction,
-        started: now - reversedProgress * CARD_MOTION_MS, progress: reversedProgress };
+      const reversedDistance = Math.max(0, this.viewWidth - prior.distance);
+      const reversedProgress = inverseSlideEase(reversedDistance / this.viewWidth);
+      this.slide = { id: this.nextSlideId++, fromScreen, toScreen, from: this.paintStatic(), direction,
+        started: now - reversedProgress * CARD_MOTION_MS, progress: reversedProgress, distance: reversedDistance };
     } else {
-      const from = this.paintSlideSource(fromScreen);
-      this.slide = { fromScreen, toScreen, from, direction, started: null, progress: 0 };
+      const from = this.paintStatic();
+      this.slide = { id: this.nextSlideId++, fromScreen, toScreen, from, direction, started: null, progress: 0, distance: 0 };
     }
     this.motion?.model.cancel();
     this.motion = null;
@@ -647,6 +656,7 @@ export class T3Layer implements Layer {
   }
 
   paint(ctx: LayerContext): GrayImage {
+    this.slideTransportHint = undefined;
     const { width, height } = ctx.stack.getBaseSize();
     if (width !== this.viewWidth || height !== this.viewHeight || !this.isBaseVisible() || shell.hasOverlay()) {
       if(this.motion)console.info(`[T3Motion] cancelled reason=visibility-or-geometry overlay=${shell.hasOverlay()}`);
@@ -661,24 +671,25 @@ export class T3Layer implements Layer {
     if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; updateReaderVisibility(true); }
     const slide = this.slide;
     if (slide) {
-      // Move only a lightweight destination while navigating. The full
-      // session list/transcript is laid out once, after motion completes.
-      if (!slide.to) slide.to = this.paintSlideTarget(slide.toScreen);
+      // Lay out each complete page once. Deferred glyph identity survives the
+      // translation, while retained-copy metadata moves the overlap cheaply.
+      if (!slide.to) slide.to = this.paintStatic();
       const now = presentationNow();
       if (slide.started === null) slide.started = now;
       const linear = Math.max(0, Math.min(1, (now - slide.started) / CARD_MOTION_MS));
-      slide.progress = linear;
-      if (linear >= 1) {
-        console.info('[T3Slide] completed'); this.slide = null;
-        return this.paintStatic();
-      }
-      const eased = slideEase(linear);
-      const distance = Math.round(width * eased);
+      const desiredDistance = Math.round(width * slideEase(linear));
+      const distance = Math.min(desiredDistance, slide.distance + MAX_SLIDE_STEP_PX);
+      slide.distance = distance;
+      slide.progress = inverseSlideEase(distance / width);
       const image = new GrayImage(width, height, 0);
       const outgoingX = slide.direction === 1 ? -distance : distance;
       const incomingX = slide.direction === 1 ? width - distance : -width + distance;
       image.bitBlt(slide.from, outgoingX, 0);
       image.bitBlt(slide.to, incomingX, 0);
+      this.slideTransportHint = { key: slide.id, offsetX: outgoingX };
+      if (distance >= width) {
+        console.info('[T3Slide] completed'); this.slide = null;
+      }
       return image;
     }
     const motion = this.motion;
@@ -702,24 +713,6 @@ export class T3Layer implements Layer {
       }
     }
     return this.paintStatic();
-  }
-
-  private paintSlideTarget(screen: Screen): GrayImage {
-    if (screen !== 'sessions' && screen !== 'reader') return this.paintStatic();
-    return this.paintSlideLabel(screen === 'sessions' ? 'LOADING SESSIONS...' : 'LOADING SESSION...');
-  }
-
-  private paintSlideSource(screen: Screen): GrayImage {
-    const label = screen === 'sessions' ? 'UNLOADING SESSIONS...'
-      : screen === 'reader' ? 'UNLOADING SESSION...'
-      : 'UNLOADING DATA...';
-    return this.paintSlideLabel(label);
-  }
-
-  private paintSlideLabel(label: string): GrayImage {
-    const image = new GrayImage(this.viewWidth, this.viewHeight, 0);
-    image.drawText(getDefaultSmallFont(), 16, 10, label, CARD_TEXT_BRIGHTNESS);
-    return image;
   }
 
   private paintStatic(includeBackdrop = true, headingOnly = false): GrayImage {
@@ -1014,6 +1007,7 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
     actions: options.actions, suppressSystemMenuFallback: true, claimsNotificationDismissGesture: () => layer.claimsNotificationDismissGesture(), baseLayer: layer, menuItems: () => layer.menuItems(), receiveTextInput: text => layer.receiveText(text),
     canPaint: options.canPaint, requestPaintPermission: options.requestPaintPermission,
     retainedSceneEligible: () => layer.screen === 'dashboard' && !layer.needsAnimation(),
+    frameTransportHint: () => layer.frameTransportHint(),
     submitFrame: options.submitFrame, setSurfaceVisible: options.setSurfaceVisible, removeSurface: options.removeSurface, reconfigureSurface: options.reconfigureSurface,
     onClosed: () => { layer.onRemoved(); unsubscribe(); offWeather(); offHostState(); offHostEvent(); clearInterval(clockTimer); if (activeLayer === layer) activeLayer = null; options.onClosed(); },
   });

@@ -5,6 +5,7 @@ import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import org.json.JSONObject;
 public final class T3AppService extends FaceclawAppService {
  private static final int DRAW_RECORD_BYTES=9;
@@ -44,21 +45,29 @@ public final class T3AppService extends FaceclawAppService {
   * anywhere in T3's display path.
   */
  public boolean submitGrayBuffer(ByteBuffer gray,int offset,int length,int width,int height,String feature,boolean requestNextFrame,String traceId) {
-  return submit(gray,offset,length,width,height,feature,requestNextFrame,traceId,null);
+  return submit(gray,offset,length,width,height,feature,requestNextFrame,traceId,null,null);
  }
 
  /** Submit raster fallback pixels plus optional registered image/glyph placements. */
  public boolean submitGrayBufferWithDraws(ByteBuffer gray,int offset,int length,int width,int height,String feature,boolean requestNextFrame,String traceId,ByteBuffer drawWire,int drawOffset,int drawLength) {
-  return submit(gray,offset,length,width,height,feature,requestNextFrame,traceId,decodeDraws(drawWire,drawOffset,drawLength));
+  return submit(gray,offset,length,width,height,feature,requestNextFrame,traceId,decodeDraws(drawWire,drawOffset,drawLength),null);
  }
 
- private boolean submit(ByteBuffer gray,int offset,int length,int width,int height,String feature,boolean requestNextFrame,String traceId,DrawBatch draws) {
+ /** Submit raster fallback, cached draws, and one copy from the last accepted frame. */
+ public boolean submitGrayBufferWithDrawsAndCopy(ByteBuffer gray,int offset,int length,int width,int height,String feature,boolean requestNextFrame,String traceId,ByteBuffer drawWire,int drawOffset,int drawLength,int sourceX,int sourceY,int copyWidth,int copyHeight,int destinationX,int destinationY) {
+  RetainedRegionCopy copy;
+  try{copy=new RetainedRegionCopy(sourceX,sourceY,copyWidth,copyHeight,destinationX,destinationY);}catch(IllegalArgumentException invalid){return false;}
+  return submit(gray,offset,length,width,height,feature,requestNextFrame,traceId,decodeDraws(drawWire,drawOffset,drawLength),copy);
+ }
+
+ private boolean submit(ByteBuffer gray,int offset,int length,int width,int height,String feature,boolean requestNextFrame,String traceId,DrawBatch draws,RetainedRegionCopy copy) {
   FaceclawSession current=session();if(current==null||gray==null||width<1||height<1||length!=width*height||offset<0)return false;
   ByteBuffer source=gray.duplicate();int start=source.position()+offset;if(start<source.position()||start+length>source.limit())return false;source.position(start);source.limit(start+length);source=source.slice();
   RenderSurface surface=feature==null||feature.isEmpty()?current.windowSurface():current.extensionSurface(feature);
   if(surface.width()!=width||surface.height()!=height)return false;
   FrameMetadata.Builder metadata=FrameMetadata.builder(current.nextClientFrameId(),current.nextContentVersion()).fullDamage(width,height).requestNextFrame(requestNextFrame).traceId(traceId);
   if(draws!=null)metadata.draws(draws);
+  if(copy!=null)metadata.retainedCopy(copy);
   return surface.submitGray8(source,metadata.build());
  }
 
@@ -76,6 +85,30 @@ public final class T3AppService extends FaceclawAppService {
    if(invalid.getMessage()!=null&&invalid.getMessage().contains("Resource quota exceeded"))resourceFallback=true;
    return 0;
   }
+ }
+
+ /** Register a printable glyph with stable font/encoding identity for firmware string tables. */
+ public synchronized int registerGrayGlyphResource(String key,String fontKey,int encoding,ByteBuffer gray,int offset,int length,int width,int height) {
+  FaceclawSession current=session();if(current==null||current!=resourceSession||key==null||key.isEmpty()||key.length()>256||gray==null||width<1||height<1||length!=width*height||offset<0)return 0;
+  if(resourceFallback)return 0;ResourceHandle existing=resourcesByKey.get(key);if(existing!=null)return existing.id;
+  if(resourcesByKey.size()>=MAX_RESOURCE_ALIASES){resourceFallback=true;return 0;}
+  try{
+   ByteBuffer source=gray.duplicate();int start=source.position()+offset;if(start<source.position()||start+length>source.limit())return 0;source.position(start);source.limit(start+length);source=source.slice();
+   ResourceHandle handle=current.resources().registerGlyph(fontKey,encoding,width,height,source);
+   resourcesByKey.put(key,handle);resourcesById.put(handle.id,handle);return handle.id;
+  }catch(RuntimeException invalid){
+   if(invalid.getMessage()!=null&&invalid.getMessage().contains("Resource quota exceeded"))resourceFallback=true;
+   return 0;
+  }
+ }
+
+ /** Warm every unique resource referenced by a prepared transition frame. */
+ public synchronized boolean prefetchGrayResources(ByteBuffer drawWire,int drawOffset,int drawLength) {
+  FaceclawSession current=session();if(current==null||current!=resourceSession)return false;
+  ArrayList<ResourcePlacement> placements=decodePlacements(drawWire,drawOffset,drawLength);if(placements==null)return false;
+  LinkedHashSet<ResourceHandle> resources=new LinkedHashSet<>();for(ResourcePlacement placement:placements)resources.add(placement.resource);
+  if(resources.isEmpty()||resources.size()>128)return false;
+  try{return current.resources().prefetch(resources);}catch(RuntimeException invalid){return false;}
  }
 
  public synchronized long getResourceEpoch(){return resourceEpoch;}

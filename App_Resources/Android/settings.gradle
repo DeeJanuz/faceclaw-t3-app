@@ -1,4 +1,5 @@
-if (gradle.startParameter.projectProperties['faceclawSdkSource'] == 'true') {
+def faceclawSdkSource = new File(rootDir, '../../../faceclaw-app-platform/android-sdk/sdk')
+if (gradle.startParameter.projectProperties['faceclawSdkSource'] == 'true' || faceclawSdkSource.isDirectory()) {
  include ':faceclaw-sdk'
- project(':faceclaw-sdk').projectDir = new File(rootDir, '../../../faceclaw-app-platform/android-sdk/sdk')
+ project(':faceclaw-sdk').projectDir = faceclawSdkSource
 }

@@ -188,7 +188,7 @@ export function initializeAppRuntime():void{
    },()=>{
     const selected=preview, presentationId=selected?.presentationId;
     if(selected&&preview?.presentationId===presentationId)shell.closeNotificationPreview(selected.id,true,presentationId);
-    },()=>renderSurface('ui.notifications'),!data.woke,Number(data.durationMs));
+    },()=>renderSurface('ui.notifications'),!data.woke,Number(data.durationMs),Boolean(data.woke));
    renderSurface('ui.notifications');
   }
   if(type==='preview-handoff'){

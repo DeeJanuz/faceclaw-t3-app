@@ -134,6 +134,20 @@ test('preview tap stops the local timeout and opens only once', () => {
   now = 10_000; tick();
   assert.equal(opened, 1); assert.equal(expired, 0);
 });
+test('pointer taps and wake-origin double taps open notification previews', () => {
+  const create = (wokeDisplay, event) => {
+    let opened = 0, dismissed = 0;
+    const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+      ...previewImports, '../presentation-clock': { presentationNow: () => 0 },
+    }, { Date: { now: () => 0 }, setInterval: () => 1, clearInterval: () => {} });
+    const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => {}, () => {}, true, 5000, wokeDisplay);
+    layer.handleInput(event);
+    return { opened, dismissed };
+  };
+  assert.deepEqual(create(false, { type: 'pointer-click', x: 40, y: 30 }), { opened: 1, dismissed: 0 });
+  assert.deepEqual(create(true, { type: 'double-click' }), { opened: 1, dismissed: 0 });
+  assert.deepEqual(create(false, { type: 'double-click' }), { opened: 0, dismissed: 1 });
+});
 test('failed preview open restarts a fresh local timeout', () => {
   let now = 0, tick, expired = 0;
   const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
@@ -852,7 +866,7 @@ function finishSlide(layer, ctx, clock) {
 test('dashboard and sessions use a forward horizontal shuffle and reverse on Back', async () => {
   const clock = { now: 1000 }, h = setup(clock, true);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions');
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.drawn.length = 0; h.layer.go('sessions');
   let frame = h.layer.paint(ctx);
   assert.equal(h.layer.motion, null); assert.equal(h.layer.slide.fromScreen, 'dashboard');
   assert.equal(h.layer.slide.toScreen, 'sessions'); assert.equal(h.layer.slide.direction, 1);
@@ -863,38 +877,43 @@ test('dashboard and sessions use a forward horizontal shuffle and reverse on Bac
   clock.now = 1180; const halfway = h.layer.paint(ctx);
   assert.ok(halfway.hasDeferredDraws(), 'mid-shuffle text stays eligible for cached glyph draws');
   halfway.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide.distance, 64, 'a late credit exposes at most one bounded strip');
-  const forwardDistance = h.layer.slide.distance / 576;
+  assert.equal(h.layer.slide.progress, 0.5);
+  const forwardDistance = 1 - (1 - h.layer.slide.progress) ** 3;
   await h.layer.handleInput({ type: 'double-click' });
   assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.layer.slide.direction, -1);
   frame = h.layer.paint(ctx); frame.bakeDeferredDrawsInPlace();
-  const reverseDistance = h.layer.slide.distance / 576;
+  const reverseDistance = 1 - (1 - h.layer.slide.progress) ** 3;
   assert.ok(Math.abs(reverseDistance - (1 - forwardDistance)) < 0.000001,
-    'reversing preserves geometry while swapping the complete pages');
-  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
+    'reversing preserves geometry while swapping the lightweight pages');
   finishSlide(h.layer, ctx, clock);
   assert.equal(h.layer.slide, null); assert.equal(h.layer.selected, 'sessions');
 });
 
-test('session slides keep complete source and destination content loaded', async () => {
+test('session slides unload dense content during motion and reload it at rest', async () => {
   const clock = { now: 1000 }, h = setup(clock);
   const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('START NEW SESSION'));
-  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
+  await h.state.refresh(); h.layer.selected = 'sessions'; h.drawn.length = 0; h.layer.go('sessions'); h.layer.paint(ctx);
+  assert.ok(h.drawn.includes('UNLOADING DATA...'));
+  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
+  assert.equal(h.drawn.includes('START NEW SESSION'), false);
   finishSlide(h.layer, ctx, clock);
+  assert.ok(h.drawn.includes('START NEW SESSION'), 'the full session list loads after motion');
 
   h.drawn.length = 0;
   h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('START NEW SESSION'), 'the outgoing list remains populated');
-  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
-  assert.ok(h.drawn.some(text => text && text !== 'START NEW SESSION'), 'the complete reader is laid out before motion');
+  assert.ok(h.drawn.includes('UNLOADING SESSIONS...'));
+  assert.ok(h.drawn.includes('LOADING SESSION...'));
+  assert.equal(h.drawn.includes('START NEW SESSION'), false, 'the outgoing list is absent during motion');
   finishSlide(h.layer, ctx, clock);
+  assert.ok(h.drawn.some(text => text && !/LOADING|UNLOADING/.test(text)), 'the complete reader loads after motion');
 
   h.drawn.length = 0;
   h.layer.back(); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('START NEW SESSION'), 'the destination list is already populated');
-  assert.equal(h.drawn.some(text => /LOADING|UNLOADING/.test(text)), false);
+  assert.ok(h.drawn.includes('UNLOADING SESSION...'));
+  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
+  assert.equal(h.drawn.includes('START NEW SESSION'), false, 'the destination list waits until motion completes');
+  finishSlide(h.layer, ctx, clock);
+  assert.ok(h.drawn.includes('START NEW SESSION'), 'the destination list reloads after motion');
 });
 
 test('APK reader reports handoff then bounded app result without claiming early delivery', async () => {
@@ -936,7 +955,7 @@ test('sessions and transcript use the same forward shuffle', async () => {
   assert.equal(h.layer.slide.direction, 1);
   h.layer.paint(ctx);
   clock.now += 180; const middle = h.layer.paint(ctx); middle.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide.distance, 64);
+  assert.equal(h.layer.slide.progress, 0.5);
   assert.ok(contentPixels(middle, { x: 0, y: 0, width: 576, height: 452 }) > 20);
   finishSlide(h.layer, ctx, clock); const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
   assert.equal(h.layer.slide, null); assert.equal(h.layer.screen, 'reader');

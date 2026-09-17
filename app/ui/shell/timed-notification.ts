@@ -34,7 +34,7 @@ export class TimedNotificationLayer implements Layer {
   }
   constructor(private title: string, private text: string, private open: () => void,
     private dismiss: () => void | boolean | Promise<boolean>, private expire: () => void, private repaint: () => void,
-    private readonly showBackdrop = true, durationMs = 5000) {
+    private readonly showBackdrop = true, durationMs = 5000, private readonly wokeDisplay = false) {
     this.durationMs = [3000, 5000, 7000, 10000].includes(durationMs) ? durationMs : 5000;
     this.deadline = Date.now() + this.durationMs;
     this.timer = null;
@@ -111,7 +111,7 @@ export class TimedNotificationLayer implements Layer {
   }
   handleInput(event: InputEvent): void {
     if (this.removed) return;
-    if (event.type === 'click') {
+    if (event.type === 'click' || event.type === 'pointer-click' || (event.type === 'double-click' && this.wokeDisplay)) {
       if (this.opening) return;
       // The host has already stopped its lease on click. Stop this local
       // timeout before handing the notification to the normal T3 window.

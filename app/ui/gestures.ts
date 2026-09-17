@@ -19,6 +19,8 @@ export type BaseInputEvent = {
 /** The per-type part of InputEvent; makeInputEvent adds the BaseInputEvent fields. */
 export type InputEventPayload =
   | { type: "click"; source: InputSource }
+  /** A coordinate tap from the phone mirror or another trusted host surface. */
+  | { type: "pointer-click"; x: number; y: number }
   | { type: "double-click"; source: InputSource }
   /** Ring scroll (or a watch crown turn, then tagged source "watch"). */
   | { type: "scroll-up"; source?: InputSource }

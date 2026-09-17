@@ -118,12 +118,23 @@ async function openNotificationUi(notificationKey?: string, returnToSleep = fals
     if (notificationKey && !alert) return false;
     const foreground = shell.foregroundWindow()?.windowId;
     const previous = foreground === 'notifications' || isOwnT3Window(foreground) ? undefined : foreground;
+    // Release the host-owned preview while the physical tap is still fresh and
+    // before focusing T3 can invalidate that presentation. The notification
+    // remains in the inbox if the later app launch fails.
+    if (presentationId && alert) {
+      console.info('[T3Notification] handoff-start');
+      if (!await shell.handoffNotificationPreview(alert.id, presentationId)) {
+        console.warn('[T3Notification] handoff-rejected');
+        return false;
+      }
+      console.info('[T3Notification] handoff-complete');
+    }
     await openWindow();
     if (state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity() || (alert && !findT3Alert(alert.id)) ||
         (source && !allowedPhoneNotifications().some(item => item.key === source.key && item.postTime === source.postTime))) return false;
-    if (presentationId && alert && !await shell.handoffNotificationPreview(alert.id, presentationId)) return false;
     if (!shell.isWindowFocused('t3')) shell.focusWindow('t3');
     openT3Notification(alert?.id, previous, returnToSleep);
+    console.info('[T3Notification] reader-opened');
     return true;
   } catch {
     if (pairing === pairingIdentity() && !state.demo) state.fail(new Error('T3_NOTIFICATION_OPEN_FAILED'));

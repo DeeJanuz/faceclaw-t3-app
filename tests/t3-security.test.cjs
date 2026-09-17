@@ -317,7 +317,7 @@ test('re-pairing the same endpoint clears selected thread, plans, and alerts bef
   pending[1].resolve(); await second;
 });
 function notificationHarness(sources = [], requestReply = () => Promise.resolve({status: 'sent'}), options = {}) {
-  const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'pair-one' };
+  const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'pair-one', notificationOverride: options.notificationOverride === true };
   const state = { alerts: [], demo: false, onArrival() {}, onChange() {}, removeAlert() {}, fail() {} };
   const opened = []; const dismissed = []; const focused = []; let nativeClick;
   const api = load('app/apps/t3/notifications-ui.ts', {
@@ -326,11 +326,11 @@ function notificationHarness(sources = [], requestReply = () => Promise.resolve(
     '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
     '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {} } }),
     '../../ui/notification-routing': { setNotificationOpenRoute() {} },
-    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: async () => true, wake() {}, openNotificationModal() {} } },
+    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), wake() {}, openNotificationModal() {} } },
     '../../native/notification-icons': { requestNotificationReply: requestReply, readActiveNotifications: () => sources, dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
     '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification() {}, dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
     './runtime': { t3Workspace: state, connectT3: async () => { state.demo = false; } },
-    './t3-app': { isT3FlowProtected: () => false, openT3Thread: (id) => opened.push(id) },
+    './t3-app': { isT3FlowProtected: () => false, openT3Thread: (id) => opened.push(id), openT3Notification: (id) => opened.push(id) },
   });
   return { api, config, state, opened, dismissed, focused, nativeClick: () => nativeClick };
 }
@@ -352,6 +352,16 @@ test('a T3 notification reuses its already-focused app window', async () => {
   assert.equal(await h.api.openT3Alert(alert, false, 'preview-id'), true);
   assert.deepEqual(h.focused, []);
   assert.deepEqual(h.opened, ['["remote-environment","remote-thread"]']);
+});
+test('phone preview releases its host lease before focusing the T3 window', async () => {
+  const order = [];
+  const source = { key: 'message-key', packageName: 'fixture.messages', appName: 'Fixture', title: 'Sender', text: 'Hello', bigText: '', messages: [], lines: [], subText: '', infoText: '', summaryText: '', category: 'msg', groupKey: '', isGroupSummary: false, isForegroundService: false, isOngoing: false, userId: 0, conversationId: '', postTime: 9, actions: [] };
+  const h = notificationHarness([source], undefined, { notificationOverride: true, handoff: async () => { order.push('handoff'); return true; } });
+  h.api.initializeT3Notifications(async () => { order.push('open-window'); });
+  const alert = { id: 'phone:message-key:9', kind: 'phone', threadId: 'message-key', title: 'Sender', body: 'Hello', createdAt: 9 };
+  assert.equal(await h.api.openT3Alert(alert, false, 'preview-id'), true);
+  assert.deepEqual(order, ['handoff', 'open-window']);
+  assert.deepEqual(h.opened, ['phone:message-key:9']);
 });
 test('native notification awaiting window cannot cross a new pairing', async () => {
   const h = notificationHarness(); let resolve;

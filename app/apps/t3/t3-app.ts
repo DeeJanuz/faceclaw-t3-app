@@ -78,6 +78,7 @@ export class T3Layer implements Layer {
   private notificationNotice = '';
   private notificationReviewPending=false;
   private notificationClosing=false;
+  private notificationReturnTransition=false;
   private notificationReturnToSleep = false;
   private atReaderEnd = false;
   private viewWidth = 576;
@@ -173,7 +174,7 @@ export class T3Layer implements Layer {
   onRemoved(): void {
     if(this.motion)console.info('[T3Motion] cancelled reason=input-or-lifecycle');
     if(this.slide)console.info('[T3Slide] cancelled reason=input-or-lifecycle');
-    this.motion?.model.cancel(); this.motion = null; this.slide = null;
+    this.motion?.model.cancel(); this.motion = null; this.slide = null; this.notificationReturnTransition = false;
   }
   setNotificationOrigin(rect: CardRect): void { this.notificationOrigin = { ...rect }; }
   private paintMotionBackdrop(image: GrayImage, selected: string, dim: boolean): void {
@@ -305,7 +306,17 @@ export class T3Layer implements Layer {
     });
   }
 
-  private back(animateTransition = true): void {
+  private returnNotificationVisit(visitId: string, fallbackWindowId?: string | null): void {
+    if (!visitId || typeof shell.returnNotificationVisit !== 'function') {
+      if (fallbackWindowId) shell.focusWindow(fallbackWindowId);
+      return;
+    }
+    void shell.returnNotificationVisit(visitId).then(restored => {
+      if (!restored && fallbackWindowId) shell.focusWindow(fallbackWindowId);
+    });
+  }
+
+  private back(animateTransition = true, acknowledgeBack = true): void {
     // A notification visit is a temporary interruption. It must always be
     // possible to leave it, even while the opened T3 session is still busy.
     if (state.busy && this.screen !== 'notification' && !this.returnWindowId && !this.notificationVisitId) return;
@@ -313,31 +324,28 @@ export class T3Layer implements Layer {
     const returnToSleep = this.screen === 'notification' && this.notificationReturnToSleep;
     this.notificationReturnToSleep = false;
     if (returnToSleep) shell.sleepAtAppRoot();
-    if (this.screen === 'dashboard') { this.history = []; this.returnWindowId = null; shell.respondToBack(true); return; }
-    shell.respondToBack(false);
+    if (this.screen === 'dashboard') {
+      this.history = []; this.returnWindowId = null;
+      if (acknowledgeBack) shell.respondToBack(true);
+      return;
+    }
+    if (acknowledgeBack) shell.respondToBack(false);
     const draftCreation = this.creation;
     if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftIsDictated = false; this.draftLocked = false; this.dictatingAnswer = false; this.reviewedReplyDestination = null; this.creation = null; }
     if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) {
       const id = this.returnWindowId;
       const visitId = this.notificationVisitId;
-      if (visitId && typeof shell.returnNotificationVisit === 'function') {
-        void shell.returnNotificationVisit(visitId).then(restored => {
-          if (restored) { this.returnWindowId = null; this.notificationVisitId = ''; }
-          else { this.notificationNotice = 'Return to the previous app failed. Try again.'; this.repaint(); }
-        });
-      } else {
-        this.returnWindowId = null;
-        shell.focusWindow(id);
-      }
+      // Consume the visit before yielding to IPC. A delayed acknowledgement
+      // must not let a repeated gesture return the same visit twice.
+      this.returnWindowId = null;
+      this.notificationVisitId = '';
+      this.returnNotificationVisit(visitId, id);
       return;
     }
-    if (this.notificationVisitId && typeof shell.returnNotificationVisit === 'function') {
-      const visitId = this.notificationVisitId;
-      void shell.returnNotificationVisit(visitId).then(restored => {
-        if (restored) this.notificationVisitId = '';
-        else { this.notificationNotice = 'Return to the notification origin failed. Try again.'; this.repaint(); }
-      });
-    }
+    const visitId = this.notificationVisitId;
+    this.notificationVisitId = '';
+    this.returnNotificationVisit(visitId);
+    if (visitId && animateTransition) this.notificationReturnTransition = true;
     if (this.screen === 'reader') {
       // Replies, steering and plan edits are internal to this thread visit.
       // Back leaves the visit instead of restoring a reader's earlier page.
@@ -354,7 +362,12 @@ export class T3Layer implements Layer {
       if (previous.screen === 'new-summary') this.creation = draftCreation;
       this.screen = previous.screen; this.selected = previous.selected; this.scroll = previous.scroll; this.projectId = previous.projectId; updateReaderVisibility(this.screen === 'reader');
       if (previous.threadId && previous.threadId !== state.selectedThreadKey) void state.openThread(previous.threadId);
-    } else { this.go('dashboard', false, animateTransition); return; }
+    } else {
+      this.go('dashboard', false, animateTransition);
+      if (!this.motion) this.notificationReturnTransition = false;
+      return;
+    }
+    if (!this.motion) this.notificationReturnTransition = false;
     this.repaint();
   }
 
@@ -694,6 +707,7 @@ export class T3Layer implements Layer {
       if(this.slide)console.info(`[T3Slide] cancelled reason=visibility-or-geometry overlay=${shell.hasOverlay()}`);
       this.motion = null;
       this.slide = null;
+      this.notificationReturnTransition = false;
     }
     this.viewWidth = width; this.viewHeight = height;
     const pending = state.getPlan(state.selectedThreadId);
@@ -730,7 +744,9 @@ export class T3Layer implements Layer {
       // Start after preparing the first lightweight frame, not before layout.
       const frame = motion.model.sample(presentationNow());
       motion.started = motion.model.started;
-      if (!frame || frame.done) { console.info('[T3Motion] completed');this.motion = null; }
+      if (!frame || frame.done) {
+        console.info('[T3Motion] completed'); this.motion = null; this.notificationReturnTransition = false;
+      }
       else {
         let content = motion.heading;
         if (frame.bodyVisible) {
@@ -870,12 +886,23 @@ export class T3Layer implements Layer {
   }
 
   async handleInput(event: InputEvent): Promise<void> {
+    const isBackGesture = event.type === 'double-click' || event.type === 'swipe-left';
+    if (isBackGesture && this.notificationReturnTransition) {
+      shell.respondToBack(false);
+      return;
+    }
+    if (this.notificationClosing) {
+      // The first gesture owns dismissal. Still acknowledge repeated physical
+      // back gestures promptly so the SDK does not wait or reroute them.
+      if (isBackGesture) shell.respondToBack(false);
+      return;
+    }
     // Synthetic release/menu notifications must not cancel a just-started animation.
     if (['click', 'scroll-up', 'scroll-down', 'swipe-up', 'swipe-down', 'swipe-right'].includes(event.type)) this.onRemoved();
     if (this.screen === 'inbox' && event.type === 'swipe-left') { const alert = findT3Alert(this.selected); if (alert) dismissT3Alert(alert); return; }
     if (event.type === 'long-press' && this.claimsNotificationDismissGesture()) { await this.dismissSelectedNotification(); return; }
-    if (event.type === 'double-click' || event.type === 'swipe-left') {
-      if (this.screen === 'notification') await this.dismissSelectedNotification(); else this.back();
+    if (isBackGesture) {
+      if (this.screen === 'notification') await this.dismissSelectedNotification(true); else this.back();
       return;
     }
     if (['question-text', 'choices', 'plan-review'].includes(this.screen) && state.getPlan(state.selectedThreadId)?.locked) return;
@@ -995,19 +1022,25 @@ export class T3Layer implements Layer {
 
   claimsNotificationDismissGesture(): boolean { return this.isBaseVisible() && ['inbox', 'notification'].includes(this.screen); }
 
-  private async dismissSelectedNotification(): Promise<void> {
+  private async dismissSelectedNotification(acknowledgeBack = false): Promise<void> {
+    if (acknowledgeBack) shell.respondToBack(false);
     const visible = visibleT3Alerts();
     const index = visible.findIndex(alert => alert.id === this.selected);
     const alert = this.screen === 'notification' ? this.currentNotification() : visible[index < 0 ? 0 : index];
     if (!alert) {
       // A reply can remove its native notification before the reader is closed.
-      if (this.screen === 'notification') await this.closeNotificationReader();
+      if (this.screen === 'notification') this.closeNotificationReader();
       return;
     }
     const screen = this.screen, visit = this.history[this.history.length - 1], notificationId = this.notificationId;
-    if (!await dismissT3Alert(alert)) return;
+    if (this.screen === 'notification') { this.notificationClosing = true; this.repaint(); }
+    if (!await dismissT3Alert(alert)) {
+      this.notificationClosing = false;
+      if (this.screen === screen && this.notificationId === notificationId) this.repaint();
+      return;
+    }
     if (this.screen !== screen || this.history[this.history.length - 1] !== visit || this.notificationId !== notificationId) return;
-    if (this.screen === 'notification') await this.closeNotificationReader();
+    if (this.screen === 'notification') this.closeNotificationReader();
     else {
       const remaining = visibleT3Alerts();
       this.selected = remaining[Math.max(0, Math.min(index, remaining.length - 1))]?.id || '';
@@ -1015,39 +1048,30 @@ export class T3Layer implements Layer {
     }
   }
 
-  private async closeNotificationReader(animateTransition = true): Promise<void> {
+  private closeNotificationReader(animateTransition = true): void {
     const returnToSleep = this.notificationReturnToSleep;
     const returnToInbox = this.history[this.history.length - 1]?.screen === 'inbox';
     const returnWindowId = this.returnWindowId;
     const visitId = this.notificationVisitId;
-    if (visitId && typeof shell.returnNotificationVisit === 'function') {
-      // Acknowledge SDK back while the host still has the physical gesture
-      // pending. The visit operation then restores only its captured origin.
-      shell.respondToBack(false);
-      const restored = await shell.returnNotificationVisit(visitId);
-      this.returnWindowId = null;
-      this.notificationVisitId = '';
-      this.notificationNotice = '';
-      this.notificationReturnToSleep = false;
-      this.notificationId = '';
-      this.notificationGroupId = '';
-      // A rejected or lost acknowledgement must not strand a reader whose
-      // notification was already removed by a successful reply. Fall back to
-      // the host-provided origin hint and always leave the temporary reader.
-      if (!restored && returnWindowId) shell.focusWindow(returnWindowId);
-      if (returnWindowId) this.go('inbox', false);
-      else this.back(animateTransition);
-      return;
-    }
+    this.returnWindowId = null;
+    this.notificationVisitId = '';
     this.notificationNotice = '';
     this.notificationReturnToSleep = false;
     this.notificationId = '';
     this.notificationGroupId = '';
-    // Blank before restoring any underlying app. Closing reply review alone
-    // never sleeps; dismissal/back completes this notification wake-up visit.
-    if (returnToSleep) shell.sleepAtAppRoot();
-    if (this.returnWindowId) { const id = this.returnWindowId; this.returnWindowId = null; this.go('inbox', false); shell.respondToBack(false); shell.focusWindow(id); }
-    else { if (returnToSleep || !returnToInbox) shell.closeNotificationReader(); this.back(animateTransition); }
+    // Start host restoration, then perform the same local navigation used by
+    // the bell reader. IPC acknowledgement can arrive well after the host has
+    // already focused or slept the captured origin.
+    if (!visitId && returnToSleep) shell.sleepAtAppRoot();
+    this.returnNotificationVisit(visitId, returnWindowId);
+    if (returnWindowId) {
+      this.go('inbox', false);
+    } else {
+      if (returnToSleep || !returnToInbox) shell.closeNotificationReader();
+      this.notificationReturnTransition = Boolean(visitId && animateTransition);
+      this.back(animateTransition, false);
+    }
+    this.notificationClosing = false;
   }
 
 }

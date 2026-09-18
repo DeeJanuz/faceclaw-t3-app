@@ -49,8 +49,8 @@ test.before(async () => { hub = load('app/apps/t3/hub-view-model.ts', { '@evenre
 const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': load('app/t3/security.ts') });
 const { T3DemoApi } = load('app/apps/t3/demo.ts');
 function setup(animationClock, raster = false) {
-  const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0, returned: [], backAcks: 0 }; let permitDismiss = true;
-  const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; let returnResult = true; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
+  const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0, returned: [], backAcks: 0 }; let permitDismiss = true, deferDismiss = false, resolveDismiss;
+  const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; let returnResult = true, deferReturn = false, resolveReturn; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
   const alerts = () => visible || state.alerts;
   // Layout-only tests do not inspect raster bytes. Avoid retaining hundreds of
   // full viewport buffers now that a slide deliberately caches both pages.
@@ -58,7 +58,7 @@ function setup(animationClock, raster = false) {
   const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
   const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
   const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
-  const shell = { respondToBack(atRoot) { if(atRoot) { navigation.yielded++; navigation.events.push('sleep'); } else navigation.backAcks++; }, closeNotificationReader() {}, getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, returnNotificationVisit(id) { navigation.returned.push(id); return Promise.resolve(returnResult); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
+  const shell = { respondToBack(atRoot) { if(atRoot) { navigation.yielded++; navigation.events.push('sleep'); } else navigation.backAcks++; }, closeNotificationReader() {}, getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, returnNotificationVisit(id) { navigation.returned.push(id); return deferReturn ? new Promise(resolve => { resolveReturn = () => resolve(returnResult); }) : Promise.resolve(returnResult); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
     wakeWindowForNotification: id => {
       if (visibility.on || visibility.foreground !== id || visibility.overlay || visibility.preview) return false;
       visibility.on = true; navigation.wakes++; return true;
@@ -71,7 +71,7 @@ function setup(animationClock, raster = false) {
       const selected=typeof reply==='function'?reply(id):reply;
       if(!selected)return selected;
       return {...selected,review:current=>new Promise(resolve=>{let used=false;reviews.push([{label:'Send reply',onSend:text=>{if(used||!current())return;used=true;const accepted=selected.send(text,status=>resolve(status));if(!accepted)resolve('rejected');else if(!selected.successMessage)resolve('sent');}},current,()=>resolve('rejected')]);})};
-    }, dismissT3Alert(alert) { dismissed.push(alert.id); if (!permitDismiss) return false; state.removeAlert(alert.id); return true; } }, '@nativescript/core': { Frame: { topmost: () => ({ navigate: () => navigation.phone++ }) } },
+    }, dismissT3Alert(alert) { dismissed.push(alert.id); if (!permitDismiss) return false; if (deferDismiss) return new Promise(resolve => { resolveDismiss = () => { state.removeAlert(alert.id); resolve(true); }; }); state.removeAlert(alert.id); return true; } }, '@nativescript/core': { Frame: { topmost: () => ({ navigate: () => navigation.phone++ }) } },
     '../../ui/shell/notification-card': { ...notificationCard, paintNotificationCard(image, rect, font, content) { cards.push(rect); notificationCard.paintNotificationCard(image, rect, font, content); } },
     './hub-view-model': hub, './card-motion': { ...load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }), paintCardFace(image, rect) { cards.push(rect); if (raster) face.paintCardFace(image, rect); }, paintSelectionChevron(_image, x, y) { chevrons.push({ x, y }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
     './dashboard': { dashboardTargets: () => targets, paintT3Dashboard: (_w, _h, _selected, count) => {
@@ -86,7 +86,7 @@ function setup(animationClock, raster = false) {
   }, animationClock ? { Date: class extends Date { static now() { return animationClock.now; } } } : {});
   const layer = new T3Layer(() => {}, () => visibility.appBase);
   state.onChange(() => layer.contentChanged());
-  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, setReturnResult: value => { returnResult = value; }, denyDismiss: () => { permitDismiss = false; }, layer };
+  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, setReturnResult: value => { returnResult = value; }, deferDismiss: () => { deferDismiss = true; }, resolveDismiss: () => { deferDismiss = false; const done = resolveDismiss; resolveDismiss = undefined; done?.(); }, deferReturn: () => { deferReturn = true; }, resolveReturn: () => { deferReturn = false; const done = resolveReturn; resolveReturn = undefined; done?.(); }, denyDismiss: () => { permitDismiss = false; }, layer };
 }
 test('assistant draft requires review tap and preserves assistant.start intent', async () => {
   const { api, state, layer } = setup(); await state.refresh();
@@ -118,6 +118,14 @@ test('notification visit return acknowledges SDK back and uses the opaque host v
   await h.layer.handleInput({ type: 'double-click' });
   assert.deepEqual(h.navigation.returned, ['lease-1']);
   assert.equal(h.navigation.backAcks, 1);
+});
+test('notification return transition absorbs a repeated back instead of sleeping the dashboard', async () => {
+  const h = setup(); await h.state.refresh(); h.layer.openThread('voice', undefined, true, 'lease-1');
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.navigation.yielded, 0);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.navigation.yielded, 0); assert.equal(h.navigation.backAcks, 2); assert.deepEqual(h.navigation.returned, ['lease-1']);
+  h.layer.onRemoved(); await h.layer.handleInput({ type: 'double-click' }); assert.equal(h.navigation.yielded, 1);
 });
 test('preview timeout leaves inbox untouched; swipe uses dismissal callback once', () => {
   let now = 0, tick, cleared = 0, expired = 0, opened = 0, dismissed = 0;
@@ -1082,6 +1090,17 @@ test('long press dismisses the selected list item and exiting an expanded item r
  const h=setup();h.state.alerts=[{id:'one',kind:'phone'},{id:'two',kind:'phone'}];h.layer.go('inbox');h.layer.selected='one';
  await h.layer.handleInput({type:'long-press'});assert.deepEqual(h.dismissed,['one']);assert.equal(h.layer.screen,'inbox');assert.equal(h.layer.selected,'two');
  h.layer.openNotification('two');await h.layer.handleInput({type:'double-click'});assert.deepEqual(h.dismissed,['one','two']);assert.equal(h.layer.screen,'inbox');assert.equal(h.navigation.yielded,0);
+});
+test('expanded notification dismissal is single-flight and acknowledges repeated back gestures', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('inbox');h.layer.openNotification('one',undefined,false,'lease-1');h.deferDismiss();
+ const first=h.layer.handleInput({type:'double-click'});await Promise.resolve();
+ await h.layer.handleInput({type:'double-click'});assert.deepEqual(h.dismissed,['one']);assert.equal(h.navigation.backAcks,2);assert.equal(h.layer.screen,'notification');
+ h.resolveDismiss();await first;assert.equal(h.layer.screen,'inbox');assert.deepEqual(h.navigation.returned,['lease-1']);
+});
+test('expanded notification returns locally without waiting for the host visit acknowledgement', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('inbox');h.layer.openNotification('one',undefined,false,'lease-1');h.deferReturn();
+ await h.layer.handleInput({type:'double-click'});assert.equal(h.layer.screen,'inbox');assert.deepEqual(h.navigation.returned,['lease-1']);assert.equal(h.navigation.backAcks,1);
+ h.resolveReturn();await Promise.resolve();assert.equal(h.layer.screen,'inbox');
 });
 test('a confirmed reply closes even if Android already removed its notification', async () => {
  const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('sessions');h.layer.openNotification('one','apk:com.faceclaw.t3/com.faceclaw.t3.T3AppService');

@@ -140,6 +140,17 @@ export class T3Workspace {
   }
 
   disconnected(): void {
+    // A transport replacement gets a fresh read epoch. Do not let a request
+    // from the dead socket block its replacement, and do not allow a late
+    // response to publish data into the new connection. Keep the selected
+    // thread itself: a reconnect is a transport event, not a new pairing.
+    this.generation++;
+    this.transcriptRequest++;
+    this.refreshPending = null;
+    this.sessionsRefreshPending = null;
+    this.transcriptRefreshPending = null;
+    this.transcriptRefreshPendingThread = '';
+    this.transcriptRefreshQueued = false;
     // A new snapshot is a baseline, never a replay of missed notifications.
     this.initialized = false;
     this.status = 'Disconnected';

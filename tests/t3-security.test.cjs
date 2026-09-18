@@ -50,6 +50,14 @@ test('dropped T3 requests fail without replay and stale socket callbacks cannot 
   assert.equal(sockets[1].frames.length, 0);
   client.close();
 });
+test('T3 transport diagnostics preserve only bounded failure categories', async () => {
+  const { client, sockets, config } = transport(); const diagnostics = [];
+  client.configure(config); client.onDiagnostic(diagnostic => diagnostics.push(diagnostic));
+  const connecting = client.connect(); sockets[0].listener.onOpen(); await connecting;
+  sockets[0].listener.onFailure('network:callback-backlog');
+  assert.equal(JSON.stringify(diagnostics), JSON.stringify([{ kind: 'transport', category: 'callback-backlog', generation: 3, pendingRequests: 0 }]));
+  client.close();
+});
 test('unsolicited and stale response ids cannot settle a current request', async () => {
   const { client, sockets, config } = transport(); client.configure(config);
   const connecting = client.connect(); sockets[0].listener.onOpen(); await connecting;
@@ -268,21 +276,34 @@ test('uncertain send errors keep drafts locked, definite pre-dispatch failure pe
     assert.equal(workspace.canRetryLastSend, retry);
   }
 });
-function runtimeHarness() {
-  const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'identity-one', enabled: true, allowInsecureLocal: false };
+function runtimeHarness(options = {}) {
+  const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'identity-one', enabled: options.enabled ?? true, allowInsecureLocal: false };
   const pending = [];
   let rpcCalls = 0;
+  const rpcMethods = [];
+  let stateListener = () => {};
+  let eventListener = () => {};
   const client = {
-    configure() {}, onStateChange() {}, onEvent() {},
-    connect: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
-    rpc: async (method) => { rpcCalls++; return method === 'projects.list' ? { projects: [] } : method === 'models.list' ? { models: [] } : { unsettled: [], settled: [] }; },
+    connected: false,
+    configure() {},
+    onStateChange(listener) { stateListener = listener; return () => {}; },
+    onEvent(listener) { eventListener = listener; return () => {}; },
+    connect: () => new Promise((resolve, reject) => pending.push({ resolve: () => { client.connected = true; resolve(); }, reject })),
+    rpc: async (method) => {
+      rpcCalls++;
+      rpcMethods.push(method);
+      if (method === 'projects.list') return { projects: [] };
+      if (method === 'models.list') return { models: [] };
+      if (method === 'transcript.get') return { session: { id: 'visible-thread', status: 'ready' }, turns: [], pendingPlanInput: null };
+      return { unsettled: [], settled: [] };
+    },
   };
   const api = load('app/apps/t3/runtime.ts', {
     '../../t3/client': { t3Client: client }, '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
     '../../t3/security': security, './workspace': { T3Workspace }, './demo': load('app/apps/t3/demo.ts'),
-    '../../t3/tools': { startT3ToolRelay() {} }, '../../t3/drafts': {},
-  });
-  return { api, pending, config, rpcCalls: () => rpcCalls };
+    '../../t3/tools': { startT3ToolRelay() {} }, '../../t3/drafts': {}, '../../native/power-monitor': { startT3PowerMonitor() { return () => {}; } },
+  }, { setTimeout: () => 1, clearTimeout() {} });
+  return { api, pending, config, rpcCalls: () => rpcCalls, rpcMethods, client, emitState: state => stateListener(state), emitEvent: event => eventListener(event) };
 }
 test('reconnect backoff escalates with bounded jitter and caps at thirty seconds', () => {
   const { api } = runtimeHarness();
@@ -303,6 +324,31 @@ test('late live connect success/failure cannot refresh or change sample mode', a
     assert.equal(api.t3Workspace.error, '');
     assert.equal(rpcCalls(), 0);
   }
+});
+test('a reconnect re-subscribes a visible conversation without requiring navigation', async () => {
+  const harness = runtimeHarness({ enabled: false });
+  const { api, config, pending, client, emitState } = harness;
+  api.initializeT3();
+  config.enabled = true;
+  const first = api.connectT3();
+  pending[0].resolve();
+  await first;
+  api.t3Workspace.selectedThreadId = 'visible-thread';
+  api.setT3HostVisible(true);
+  api.setT3ReaderVisible(true);
+  await flush();
+  const initialReads = harness.rpcCalls();
+  assert.ok(initialReads >= 4);
+
+  emitState({ connected: false, phase: 'failed', status: 'T3_CONNECTION_DROPPED' });
+  client.connected = false;
+  const reconnect = api.connectT3();
+  pending[1].resolve();
+  await reconnect;
+  emitState({ connected: true, phase: 'connected', status: 'T3 connected' });
+  await flush();
+  assert.equal(harness.rpcCalls(), initialReads + 7, 'reconnect refreshes summaries and the visible transcript');
+  assert.equal(harness.rpcMethods.slice(-1)[0], 'transcript.get');
 });
 test('re-pairing the same endpoint clears selected thread, plans, and alerts before reconnect', async () => {
   const { api, pending, config } = runtimeHarness();

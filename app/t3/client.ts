@@ -3,7 +3,9 @@ import { getT3Config, type T3Config } from './config';
 import { toJavaBytes } from '../native/cloud-stt';
 declare const com: any;
 export interface T3Event { v: 1; type: 'event'; event: string; payload: any }
-export interface T3State { phase: 'idle' | 'connecting' | 'connected' | 'failed'; status: string; connected: boolean }
+export type T3FailureCategory = 'connect-timeout' | 'network' | 'callback-backlog' | 'peer-close' | 'protocol' | 'local' | 'unknown';
+export interface T3State { phase: 'idle' | 'connecting' | 'connected' | 'failed'; status: string; connected: boolean; failureCategory?: T3FailureCategory }
+export interface T3Diagnostic { kind: 'transport'; category: T3FailureCategory; generation: number; pendingRequests: number }
 export class T3Error extends Error { constructor(public readonly code: string, public readonly dispatched = false) { super(code); } }
 export class T3Client {
   private static readonly MAX_PENDING_REQUESTS = 64;
@@ -16,6 +18,7 @@ export class T3Client {
   private pending = new Map<string, { resolve: (value: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private events = new Set<(event: T3Event) => void>();
   private states = new Set<(state: T3State) => void>();
+  private diagnostics = new Set<(diagnostic: T3Diagnostic) => void>();
   private connecting: Promise<void> | null = null;
   private rejectConnect: ((e: Error) => void) | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -23,6 +26,7 @@ export class T3Client {
   state(): T3State { return this.current; }
   onEvent(listener: (event: T3Event) => void): () => void { this.events.add(listener); return () => this.events.delete(listener); }
   onStateChange(listener: (state: T3State) => void): () => void { this.states.add(listener); return () => this.states.delete(listener); }
+  onDiagnostic(listener: (diagnostic: T3Diagnostic) => void): () => void { this.diagnostics.add(listener); return () => this.diagnostics.delete(listener); }
   configure(config: T3Config): void {
     if (this.config && JSON.stringify(this.config) === JSON.stringify(config)) return;
     this.close(); this.config = { ...config };
@@ -47,8 +51,8 @@ export class T3Client {
           this.clearConnect(); this.setState('connected', 'T3 connected'); resolve();
         },
         onTextMessage: (raw: string) => { if (generation === this.generation) this.receive(String(raw)); },
-        onClosed: () => { if (generation === this.generation) this.lost('T3_CONNECTION_DROPPED'); },
-        onFailure: () => { if (generation === this.generation) this.lost('T3_CONNECTION_DROPPED'); },
+        onClosed: () => { if (generation === this.generation) this.lost('T3_CONNECTION_DROPPED', 'peer-close'); },
+        onFailure: (message: string) => { if (generation === this.generation) this.lost('T3_CONNECTION_DROPPED', this.failureCategory(message)); },
       });
       try { this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listener, 'Sec-WebSocket-Protocol', `even-t3-v1, auth.${config.token}`); }
       catch { this.lost('T3_CONNECT_FAILED'); }
@@ -73,7 +77,7 @@ export class T3Client {
     if (!this.connected || !this.ws) throw new T3Error('T3_NOT_CONNECTED');
     if (!this.ws.sendBinary(toJavaBytes(bytes))) throw new T3Error('T3_AUDIO_SEND_FAILED', true);
   }
-  close(): void { this.lost('T3_CLOSED'); this.setState('idle', 'T3 disconnected'); }
+  close(): void { this.lost('T3_CLOSED', 'peer-close'); this.setState('idle', 'T3 disconnected'); }
   private receive(raw: string): void {
     if (raw.length > 4 * 1024 * 1024) { this.lost('T3_FRAME_TOO_LARGE'); return; }
     let frame: any; try { frame = JSON.parse(raw); } catch { return; }
@@ -91,7 +95,14 @@ export class T3Client {
     }
   }
   private clearConnect(): void { if (this.connectTimer) clearTimeout(this.connectTimer); this.connectTimer = null; this.rejectConnect = null; }
-  private lost(code: string): void {
+  private failureCategory(message: unknown): T3FailureCategory {
+    const value = typeof message === 'string' ? message : '';
+    if (value === 'network:callback-backlog') return 'callback-backlog';
+    if (value.startsWith('network:http=')) return 'protocol';
+    if (value.startsWith('network:')) return 'network';
+    return 'unknown';
+  }
+  private lost(code: string, category: T3FailureCategory = code === 'T3_CONNECT_TIMEOUT' ? 'connect-timeout' : 'unknown'): void {
     ++this.generation;
     const ws = this.ws; this.ws = null; this.listener = null;
     this.rejectConnect?.(new T3Error(code)); this.clearConnect(); this.connecting = null;
@@ -102,7 +113,11 @@ export class T3Client {
       else ws?.close(1000, 'closed');
     } catch { /* Already closed. */ }
     for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(new T3Error(code, true)); }
-    this.pending.clear(); this.setState('failed', code);
+    const pendingRequests = this.pending.size;
+    this.pending.clear();
+    const diagnostic = { kind: 'transport' as const, category, generation: this.generation, pendingRequests };
+    for (const listener of this.diagnostics) { try { listener(diagnostic); } catch { /* Consumer isolation. */ } }
+    this.setState('failed', code);
   }
   private setState(phase: T3State['phase'], status: string): void {
     this.current = { phase, status, connected: phase === 'connected' };

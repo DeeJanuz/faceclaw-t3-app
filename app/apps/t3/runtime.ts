@@ -5,6 +5,7 @@ import { T3Workspace } from './workspace';
 import { T3DemoApi } from './demo';
 import { startT3ToolRelay } from '../../t3/tools';
 import { saveT3PlanDraft, loadT3PlanDraft, deleteT3PlanDraft } from '../../t3/drafts';
+import { startT3PowerMonitor } from '../../native/power-monitor';
 
 export const t3Workspace = new T3Workspace(t3Client);
 let started = false;
@@ -16,6 +17,7 @@ let retries = 0;
 let modeGeneration = 0;
 let connectionAttempt = 0;
 let liveIdentity = '';
+let powerRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let readerVisible = false;
 let hostSurfaceVisible = false;
 let phonePreviewVisible = false;
@@ -45,7 +47,8 @@ function clearTimers(): void {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   if (eventTimer) clearTimeout(eventTimer);
   if (stableTimer) clearTimeout(stableTimer);
-  reconnectTimer = null; eventTimer = null; stableTimer = null;
+  if (powerRecoveryTimer) clearTimeout(powerRecoveryTimer);
+  reconnectTimer = null; eventTimer = null; stableTimer = null; powerRecoveryTimer = null;
 }
 function current(mode: number, attempt?: number): boolean {
   return mode === modeGeneration && !t3Workspace.demo && (attempt === undefined || attempt === connectionAttempt);
@@ -64,6 +67,18 @@ export function initializeT3(): void {
     removeApproval: key => deleteT3PlanDraft(key),
   });
   onT3ConfigChanged(() => { if (!t3Workspace.demo) void connectT3(); });
+  startT3PowerMonitor(hint => {
+    if (t3Workspace.demo || !getT3Config().enabled || t3Client.connected) return;
+    // A callback is a scheduling hint. Do not reconnect while the platform is
+    // still in idle or there is no active route; the authenticated handshake
+    // remains the reachability check.
+    if ((hint.kind === 'network' && hint.available !== true) || (hint.kind === 'idle' && hint.idle === true)) return;
+    if (powerRecoveryTimer) return;
+    powerRecoveryTimer = setTimeout(() => {
+      powerRecoveryTimer = null;
+      if (!t3Workspace.demo && getT3Config().enabled && !t3Client.connected) void connectT3();
+    }, 0);
+  });
   t3Client.onStateChange(state => {
     if (t3Workspace.demo) return;
     if (state.connected) {
@@ -74,6 +89,14 @@ export function initializeT3(): void {
         if (current(mode, attempt) && t3Client.connected) retries = 0;
       }, 60_000);
       void t3Workspace.refresh();
+      // The bridge's subscription set belongs to the WebSocket connection.
+      // Re-read a visible conversation on every real reconnect so
+      // transcript.get installs the subscription on the new socket; waiting
+      // for transcript.changed cannot work when the new socket is not yet
+      // subscribed.
+      if (readerVisible && (hostSurfaceVisible || phonePreviewVisible) && t3Workspace.selectedThreadId) {
+        void t3Workspace.refreshTranscript();
+      }
     }
     else {
       if (stableTimer) clearTimeout(stableTimer);

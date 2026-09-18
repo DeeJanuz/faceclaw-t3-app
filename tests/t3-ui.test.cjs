@@ -49,8 +49,8 @@ test.before(async () => { hub = load('app/apps/t3/hub-view-model.ts', { '@evenre
 const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': load('app/t3/security.ts') });
 const { T3DemoApi } = load('app/apps/t3/demo.ts');
 function setup(animationClock, raster = false) {
-  const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0 }; let permitDismiss = true;
-  const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
+  const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0, returned: [], backAcks: 0 }; let permitDismiss = true;
+  const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; let returnResult = true; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
   const alerts = () => visible || state.alerts;
   // Layout-only tests do not inspect raster bytes. Avoid retaining hundreds of
   // full viewport buffers now that a slide deliberately caches both pages.
@@ -58,7 +58,7 @@ function setup(animationClock, raster = false) {
   const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
   const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
   const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
-  const shell = { respondToBack(atRoot) { if(atRoot) { navigation.yielded++; navigation.events.push('sleep'); } }, closeNotificationReader() {}, getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
+  const shell = { respondToBack(atRoot) { if(atRoot) { navigation.yielded++; navigation.events.push('sleep'); } else navigation.backAcks++; }, closeNotificationReader() {}, getBatteryLevels: () => ({ headset: 72, headsetCharging: false }), startVoiceInput() {}, openReviewedVoiceInput: (...args) => reviews.push(args), focusWindow(id) { navigation.focused.push(id); navigation.events.push('focus:' + id); }, returnNotificationVisit(id) { navigation.returned.push(id); return Promise.resolve(returnResult); }, sleepAtAppRoot() { navigation.yielded++; navigation.events.push('sleep'); }, isWindowFocused: () => focused, isWindowVisible: id => visibility.on && visibility.foreground === id, hasOverlay: () => visibility.overlay, getNotificationPreviewId: () => visibility.preview,
     wakeWindowForNotification: id => {
       if (visibility.on || visibility.foreground !== id || visibility.overlay || visibility.preview) return false;
       visibility.on = true; navigation.wakes++; return true;
@@ -86,7 +86,7 @@ function setup(animationClock, raster = false) {
   }, animationClock ? { Date: class extends Date { static now() { return animationClock.now; } } } : {});
   const layer = new T3Layer(() => {}, () => visibility.appBase);
   state.onChange(() => layer.contentChanged());
-  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, denyDismiss: () => { permitDismiss = false; }, layer };
+  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, setReturnResult: value => { returnResult = value; }, denyDismiss: () => { permitDismiss = false; }, layer };
 }
 test('assistant draft requires review tap and preserves assistant.start intent', async () => {
   const { api, state, layer } = setup(); await state.refresh();
@@ -112,6 +112,13 @@ test('notification back leaves a retained T3 reader for the dashboard', async ()
   await layer.handleInput({ type: 'double-click' });
   assert.equal(layer.screen, 'dashboard'); assert.equal(layer.scroll, 0);
 });
+test('notification visit return acknowledges SDK back and uses the opaque host visit', async () => {
+  const h = setup(); h.state.alerts = [{ id: 'one', kind: 'phone', threadId: 'phone', title: 'Sender', body: 'Hello', createdAt: 1 }];
+  h.layer.openNotification('one', 'prior-app', false, 'lease-1');
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.deepEqual(h.navigation.returned, ['lease-1']);
+  assert.equal(h.navigation.backAcks, 1);
+});
 test('preview timeout leaves inbox untouched; swipe uses dismissal callback once', () => {
   let now = 0, tick, cleared = 0, expired = 0, opened = 0, dismissed = 0;
   const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
@@ -124,15 +131,85 @@ test('preview timeout leaves inbox untouched; swipe uses dismissal callback once
   const next = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => {}, () => {});
   next.handleInput({ type: 'swipe-down' }); assert.equal(dismissed, 1); next.onRemoved();
 });
-test('preview tap stops the local timeout and opens only once', () => {
+test('preview tap opens only once and keeps a bounded handoff watchdog', () => {
   let now = 0, tick, opened = 0, expired = 0;
   const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
     '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face, '../presentation-clock': { presentationNow: () => now },
   }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
   const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => {}, () => { expired++; }, () => {});
   layer.handleInput({ type: 'click' }); layer.handleInput({ type: 'click' });
-  now = 10_000; tick();
-  assert.equal(opened, 1); assert.equal(expired, 0);
+  now = 7000; tick(); assert.equal(expired, 0);
+  now = 8000; tick();
+  assert.equal(opened, 1); assert.equal(expired, 1);
+});
+test('host-bound previews leave expiry arbitration to the host lease', () => {
+  let now = 0, tick, opened = 0, expired = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    ...previewImports, '../presentation-clock': { presentationNow: () => now },
+  }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
+  const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => {}, () => expired++, () => {}, true, 5000, false, true);
+  layer.paint(previewContext, previewImage);
+  now = 20_000; tick();
+  assert.equal(expired, 1, 'a lost host close must still have a bounded local recovery');
+  layer.handleInput({ type: 'click' });
+  assert.equal(opened, 0, 'a recovered preview cannot be reopened after its watchdog closed it');
+});
+test('host deadline drives the fallback after the revealed-frame lease', () => {
+  let now = 0, tick, expired = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    ...previewImports, '../presentation-clock': { presentationNow: () => now },
+  }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
+  const layer = new TimedNotificationLayer('Title', 'Text', () => {}, () => {}, () => { expired++; layer.onRemoved(); }, () => {}, true, 5000, false, true);
+  layer.paint(previewContext, previewImage);
+  layer.setHostDeadline(7000);
+  now = 9999; tick(); assert.equal(expired, 0);
+  now = 10_000; tick(); assert.equal(expired, 1);
+});
+test('host-bound preview cannot be held forever by a stuck reader open', () => {
+  let now = 0, expired = 0, sequence = 0;
+  const active = new Map();
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    ...previewImports, '../presentation-clock': { presentationNow: () => now },
+  }, { Date: { now: () => now }, setInterval: cb => { active.set(++sequence, cb); return sequence; }, clearInterval: id => active.delete(id) });
+  const layer = new TimedNotificationLayer('Title', 'Text', () => new Promise(() => {}), () => {}, () => { expired++; layer.onRemoved(); }, () => {}, true, 5000, false, true);
+  layer.paint(previewContext, previewImage);
+  layer.handleInput({ type: 'click' });
+  assert.equal(active.size, 1, 'tap must retain the handoff watchdog');
+  now = 9000; for (const tick of [...active.values()]) tick();
+  assert.equal(expired, 1);
+  assert.equal(active.size, 0);
+});
+test('plain long press dismisses the interruption and never opens its reader', () => {
+  let opened = 0, dismissed = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    ...previewImports, '../presentation-clock': { presentationNow: () => 0 },
+  }, { Date: { now: () => 0 }, setInterval: () => 1, clearInterval: () => {} });
+  const layer = new TimedNotificationLayer('Title', 'Text', () => opened++, () => dismissed++, () => {}, () => {});
+  layer.handleInput({ type: 'long-press' });
+  layer.handleInput({ type: 'long-press-release' });
+  layer.handleInput({ type: 'click' });
+  assert.equal(dismissed, 1);
+  assert.equal(opened, 0);
+});
+test('a replacement preview resets an interrupted open operation', async () => {
+  let resolveOpen;
+  let opened = 0, expired = 0;
+  const { TimedNotificationLayer } = load('app/ui/shell/timed-notification.ts', {
+    ...previewImports, '../presentation-clock': { presentationNow: () => 0 },
+  }, { Date: { now: () => 0 }, setInterval: () => 1, clearInterval: () => {} });
+  const layer = new TimedNotificationLayer('A', 'A', () => {
+    opened++;
+    return new Promise(resolve => { resolveOpen = resolve; });
+  }, () => {}, () => { expired++; }, () => {});
+  layer.handleInput({ type: 'click' });
+  layer.update('B', 'B', true, 5000);
+  // The replacement is independently tappable even while A's promise is
+  // unresolved. Its second tap is ignored only after it starts its own open.
+  layer.handleInput({ type: 'click' });
+  assert.equal(opened, 2);
+  resolveOpen?.(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(expired, 0);
 });
 test('pointer taps and wake-origin double taps open notification previews', () => {
   const create = (wokeDisplay, event) => {
@@ -154,9 +231,9 @@ test('failed preview open restarts a fresh local timeout', () => {
     '../../graphics/image': {}, '../../graphics/ui-fonts': {}, '../../graphics/textwrap': {}, './geometry': {}, './notification-card': notificationCard, '../card-presentation': face, '../presentation-clock': { presentationNow: () => now },
   }, { Date: { now: () => now }, setInterval: cb => { tick = cb; return 1; }, clearInterval: () => {} });
   const layer = new TimedNotificationLayer('Title', 'Text', () => {}, () => {}, () => { expired++; layer.onRemoved(); }, () => {});
-  layer.handleInput({ type: 'click' }); now = 10_000; tick(); assert.equal(expired, 0);
-  layer.reopenAfterOpenFailure(); now = 14_500; tick(); assert.equal(expired, 0);
-  now = 14_676; tick(); assert.equal(expired, 1);
+  layer.handleInput({ type: 'click' }); now = 7000; tick(); assert.equal(expired, 0);
+  layer.reopenAfterOpenFailure(); now = 11_500; tick(); assert.equal(expired, 0);
+  now = 11_676; tick(); assert.equal(expired, 1);
 });
 test('notification preview duration accepts only the four supported windows', () => {
   for (const duration of [3000, 5000, 7000, 10000]) {
@@ -921,7 +998,7 @@ test('APK reader reports handoff then bounded app result without claiming early 
  h.state.alerts = [{ id: 'apk-one', kind: 'phone', threadId: 'apk:app/.Service:1', title: 'Sender', body: 'Message' }];
  h.setReply({ isCurrent: () => true, successMessage: 'Reply submitted to app.', send: (_text, callback) => { result = callback; return true; } });
  h.layer.openNotification('apk-one'); await h.layer.handleInput({ type: 'click' }); h.reviews[0][0].onSend('Reviewed');
- assert.equal(h.layer.notificationNotice, 'Review reply on glasses.'); result('draft-saved'); await new Promise(resolve=>setImmediate(resolve)); assert.match(h.layer.notificationNotice, /Draft saved in app/);
+ assert.equal(h.layer.notificationNotice, ''); result('draft-saved'); await new Promise(resolve=>setImmediate(resolve)); assert.match(h.layer.notificationNotice, /Draft saved in app/);
  h.layer.go('dashboard'); result('sent'); assert.notEqual(h.layer.notificationNotice, 'Reply sent.');
 });
 test('explicit APK conversation action clears wake-return state without sleeping', () => {
@@ -1010,6 +1087,18 @@ test('a confirmed reply closes even if Android already removed its notification'
  const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('sessions');h.layer.openNotification('one','apk:com.faceclaw.t3/com.faceclaw.t3.T3AppService');
  h.setReply({isCurrent:()=>true,send:()=>{h.state.alerts=[];return true;}});await h.layer.handleInput({type:'click'});h.reviews[0][0].onSend('Reply');await new Promise(resolve=>setImmediate(resolve));
  assert.equal(h.layer.screen,'sessions');assert.deepEqual(h.navigation.events,[]);
+});
+
+test('a confirmed reply returns on a clean frame without retaining the notification animation', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.openNotification('one');
+ h.setReply({isCurrent:()=>true,send:()=>{h.state.alerts=[];return true;}});await h.layer.handleInput({type:'click'});h.reviews[0][0].onSend('Reply');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.layer.screen,'dashboard');assert.equal(h.layer.motion,null);
+});
+
+test('a failed visit acknowledgement still leaves a removed notification reader', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.go('sessions');h.layer.openNotification('one',undefined,false,'lease-1');h.setReturnResult(false);
+ h.setReply({isCurrent:()=>true,send:()=>{h.state.alerts=[];return true;}});await h.layer.handleInput({type:'click'});h.reviews[0][0].onSend('Reply');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.layer.screen,'sessions');assert.equal(h.layer.notificationNotice,'');assert.deepEqual(h.navigation.returned,['lease-1']);
 });
 
 

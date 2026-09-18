@@ -40,6 +40,13 @@ function baseSurfaceFeature():string{return notificationSurface&&surfaces.get('u
 function baseConsumerVisible():boolean{return phoneVisible||hostVisible||Boolean(baseSurfaceFeature());}
 function baseCanPaint():boolean{if(phoneVisible)return true;const service=nativeService();const feature=baseSurfaceFeature();return baseConsumerVisible()&&Boolean(service?.hasRenderCredit?.(feature));}
 function requestBasePaintPermission():void{const service=nativeService();if(!service)return;const feature=baseSurfaceFeature();if((feature&&surfaces.get(feature)?.visible)||(!feature&&hostVisible))service.invalidateSurface(feature,0);}
+function requestWindowPaintAfterNotificationHandoff():void{
+ // Closing the provider surface can leave one request for the old window
+ // pixels in flight. Paint now, then once more after that credit/outcome has
+ // settled so the reader state cannot be stranded behind the cached frame.
+ getApp().requestRender();
+ setTimeout(()=>{if(!notificationSurface&&hostVisible)getApp().requestRender();},100);
+}
 function takeRenderTrace(feature:string):string{const key=feature||'window',trace=renderTraceIds.get(key)??'';renderTraceIds.delete(key);return trace;}
 export function reconcileRuntimeSurfaces(current:Map<string,RuntimeSurface>,wire:readonly any[]):Map<string,RuntimeSurface>{
  const next=new Map<string,RuntimeSurface>();
@@ -163,20 +170,29 @@ export function initializeAppRuntime():void{
    // Keep the opaque presentation identity through async open/dismiss work.
    // Host replacement can close an old surface after the newer preview exists.
    preview=data;notificationHostPresentationId=typeof data.hostPresentationId==='string'?data.hostPresentationId:undefined;notificationMode='preview';
-   if(previewLayer)previewLayer.update(data.title,data.text,type==='preview',Number(data.durationMs));
+   if(previewLayer)previewLayer.update(data.title,data.text,type==='preview',Number(data.durationMs),Boolean(data.hostPresentationId));
    else previewLayer=new TimedNotificationLayer(data.title,data.text,()=>{
     const selected=preview, presentationId=selected?.presentationId;
     if(!selected)return;
     const origin=previewLayer?.currentRect();if(origin)setT3NotificationOrigin(origin);
-     settle(selected.open(selected.woke,presentationId).then((opened:boolean)=>{
-     if(preview?.presentationId!==presentationId)return;
-     if(opened){
-      // A successful open has already handed the host surface back to the
-      // regular T3 window. Keep this identity guard for stale completions.
-      shell.closeNotificationPreview(selected.id,false,presentationId,false);
-      notificationMode='reader';renderSurface('ui.notifications');
-     } else previewLayer?.reopenAfterOpenFailure();
-    }));
+    const layer=previewLayer;
+    let opening: Promise<boolean>;
+    try { opening=Promise.resolve(selected.open(selected.woke,presentationId,selected.hostPresentationId)); }
+    catch { opening=Promise.reject(new Error('T3_NOTIFICATION_OPEN_FAILED')); }
+    opening.then((opened:boolean)=>{
+      // A replacement may have arrived while the old open was pending. Only
+      // the same preview/layer may consume this result.
+      if(preview?.presentationId!==presentationId || previewLayer!==layer)return;
+      if(opened){
+        // A successful open has already handed the host surface back to the
+        // regular T3 window. Keep this identity guard for stale completions.
+        if (typeof shell.completeNotificationHandoff === 'function') shell.completeNotificationHandoff(selected.id,presentationId);
+        else shell.closeNotificationPreview(selected.id,false,presentationId,false);
+        notificationMode='reader';requestWindowPaintAfterNotificationHandoff();
+      } else layer.reopenAfterOpenFailure();
+    },()=>{
+      if(preview?.presentationId===presentationId && previewLayer===layer) layer.reopenAfterOpenFailure();
+    });
    },()=>{
     const selected=preview, presentationId=selected?.presentationId;
     if(!selected)return Promise.resolve(false);
@@ -187,8 +203,14 @@ export function initializeAppRuntime():void{
     },()=>false);
    },()=>{
     const selected=preview, presentationId=selected?.presentationId;
-    if(selected&&preview?.presentationId===presentationId)shell.closeNotificationPreview(selected.id,true,presentationId);
-    },()=>renderSurface('ui.notifications'),!data.woke,Number(data.durationMs),Boolean(data.woke));
+    if(selected&&preview?.presentationId===presentationId){
+     // If a tap canceled the host lease but its destination never opened,
+     // retire the host visit as well as the local card. This request is best
+     // effort because local cleanup must remain bounded across disconnects.
+     if(previewLayer?.didOpeningTimeout()&&selected.hostPresentationId)void shell.abandonNotificationVisit(selected.hostPresentationId);
+     shell.closeNotificationPreview(selected.id,true,presentationId);
+    }
+    },()=>renderSurface('ui.notifications'),!data.woke,Number(data.durationMs),Boolean(data.woke),Boolean(data.hostPresentationId));
    renderSurface('ui.notifications');
   }
   if(type==='preview-handoff'){
@@ -249,17 +271,40 @@ export function initializeAppRuntime():void{
     }
     surfaces.set(feature,surface);
    }
-   const surface=surfaces.get(feature);if(surface && data.type==='visibility'){surface.visible=Boolean(data.visible&&data.screenOn!==false);if(feature==='ui.notifications'&&!surface.visible){previewLayer?.onRemoved();previewLayer=null;preview=null;notificationMode=undefined;}}
+   const surface=surfaces.get(feature);if(surface && data.type==='visibility'){
+    surface.visible=Boolean(data.visible&&data.screenOn!==false);
+    // The host hides the extension surface before acknowledging a reader
+    // handoff. Preserve the exact opening presentation until its promise
+    // completes; that completion clears notification-surface routing and
+    // requests the first frame on the regular T3 window.
+    if(feature==='ui.notifications'&&!surface.visible&&!previewLayer?.isOpening()){
+     previewLayer?.onRemoved();previewLayer=null;preview=null;notificationMode=undefined;
+    }
+   }
    renderSurface(feature);
   }
   if(type==='extension-event'){
    const feature=data.feature,content=data.data??{};
    if(data.type==='input'){
-    const input=content.input??content;
-    if(feature==='ui.notifications'){if(preview&&previewLayer){previewLayer.handleInput(input);}else settle(deliverInput(input));}
+   const input=content.input??content;
+    if(feature==='ui.notifications'){
+     console.info(`[NotificationInput] runtime-received trace=${typeof input.traceId==='string'?input.traceId.slice(0,128):'none'} type=${String(input.type).slice(0,32)} mode=${notificationMode??'none'} preview=${Boolean(preview&&previewLayer)}`);
+     if(preview&&previewLayer){
+      // Return through the native input callback before a popup tap requests
+      // its host-surface handoff. Starting that action in the same callback
+      // can remove the overlay while starving the action result and the first
+      // reader frame. Bind the deferred tap to this exact local presentation.
+      const selected=preview, layer=previewLayer;
+      setTimeout(()=>{
+       if(preview!==selected||previewLayer!==layer)return;
+       layer.handleInput(input);
+      },0);
+     }else settle(deliverInput(input));
+    }
     else{const surface=surfaces.get(feature);if(surface?.stack){if(input.type==='pointer-click'&&Number.isInteger(input.x)&&Number.isInteger(input.y)&&input.x>=0&&input.y>=0&&input.x<surface.width&&input.y<surface.height)settle(surface.stack.hitTest(input.x,input.y).then(()=>renderSurface(feature)));else settle(surface.stack.handleInput(input).then(()=>renderSurface(feature)));}}
    }
    if(content.event==='notification-arrived'){if(notificationMode!=='reader'&&notificationMode!=='inbox'){setNotificationWakeOrigin(Boolean(content.wokeScreen));shell.setNotificationPreviewDuration(Number(content.durationMs));handlePhoneNotification(content.key??content.id,typeof content.presentationId==='string'?content.presentationId:undefined);if(typeof content.presentationId==='string'){notificationHostPresentationId=content.presentationId;shell.bindNotificationPreviewHostPresentation(content.presentationId);}}renderSurface('ui.notifications');}
+   if(content.event==='notification-deadline'&&previewLayer&&typeof content.presentationId==='string'&&content.presentationId===notificationHostPresentationId)previewLayer.setHostDeadline(Number(content.expiresAtMs));
    if(content.event==='notification-open'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode='reader';notificationSurface=true;const n=hostState.notifications.find(n=>n.key===content.key);openT3Notification(n?`phone:${n.key}:${n.postTime}`:undefined,content.previousWindowId??hostState.focusedWindowId,Boolean(content.returnToSleep));renderSurface('ui.notifications');}
    if(feature==='ui.app-menu' && content.event==='menu'){
     const surface=surfaces.get(feature);

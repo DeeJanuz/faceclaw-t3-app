@@ -12,7 +12,10 @@ export function requestNotificationReply(key:string,version:number,actionIndex:n
  if(!current())return Promise.reject(new Error('NOTIFICATION_REVIEW_STALE'));
  const callId=`review-${Date.now()}-${++reviewSequence}`;
  let cancelled=false;
- const cancel=()=>{if(!cancelled){cancelled=true;sendHostAction('ui.notifications','notification-cancel-review',{callId});}};
+ // Cancellation is its own one-way action. Keep its transport callId distinct
+ // from the review it targets so a cancellation acknowledgement cannot settle
+ // the pending reviewed-send request before its `sent` result arrives.
+ const cancel=()=>{if(!cancelled){cancelled=true;sendHostAction('ui.notifications','notification-cancel-review',{reviewCallId:callId});}};
  const check=()=>{if(!current())cancel();};
  activeReviews.add(cancel);
  const timer=setInterval(check,100);const off=onHostState(check);

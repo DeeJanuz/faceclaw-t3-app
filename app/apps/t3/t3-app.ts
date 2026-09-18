@@ -43,12 +43,12 @@ const inverseSlideEase = (value: number): number => 1 - Math.cbrt(1 - Math.max(0
 let activeLayer: T3Layer | null = null;
 
 export function openT3Assistant(): void { if (!isT3FlowProtected()) activeLayer?.askAssistant(); }
-export function openT3Thread(threadId: string, returnWindowId?: string): void { activeLayer?.openThread(threadId, returnWindowId, true); }
+export function openT3Thread(threadId: string, returnWindowId?: string, notificationVisitId?: string): void { activeLayer?.openThread(threadId, returnWindowId, true, notificationVisitId); }
 export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question-text", "choices", "plan-review", "proposed-plan", "plan-approve", "session-reasoning", "session-model"].includes(activeLayer.screen)); }
 export function showT3AlertInCurrentConversation(alert: T3Alert): boolean { return activeLayer?.showAlertInCurrentConversation(alert) ?? false; }
 export function openT3Inbox(): void { activeLayer?.go('inbox'); }
 export function setT3NotificationOrigin(rect: CardRect): void { activeLayer?.setNotificationOrigin(rect); }
-export function openT3Notification(alertId?: string, returnWindowId?: string, returnToSleep = false): void { activeLayer?.openNotification(alertId, returnWindowId, returnToSleep); }
+export function openT3Notification(alertId?: string, returnWindowId?: string, returnToSleep = false, notificationVisitId?: string): void { activeLayer?.openNotification(alertId, returnWindowId, returnToSleep, notificationVisitId); }
 
 export class T3Layer implements Layer {
   readonly acceptsDirectional = true;
@@ -71,10 +71,13 @@ export class T3Layer implements Layer {
   private checked: number[] = [];
   private dictatingAnswer = false;
   private returnWindowId: string | null = null;
+  /** Opaque host visit identity. It remains until the host acknowledges return. */
+  private notificationVisitId = '';
   private notificationId = '';
   private notificationGroupId = '';
   private notificationNotice = '';
   private notificationReviewPending=false;
+  private notificationClosing=false;
   private notificationReturnToSleep = false;
   private atReaderEnd = false;
   private viewWidth = 576;
@@ -240,9 +243,10 @@ export class T3Layer implements Layer {
     this.screen = screen; this.selected = screen === 'dashboard' ? 'assistant' : ''; this.scroll = 0; this.atReaderEnd = false; updateReaderVisibility(screen === 'reader'); this.repaint();
   }
 
-  openThread(threadId: string, returnWindowId?: string, fromNotification = false): void {
+  openThread(threadId: string, returnWindowId?: string, fromNotification = false, notificationVisitId?: string): void {
     if (returnWindowId && returnWindowId !== T3_WINDOW_ID && !returnWindowId.startsWith('apk:com.faceclaw.t3/')) this.returnWindowId = returnWindowId;
     else this.returnWindowId = null;
+    this.notificationVisitId = fromNotification && typeof notificationVisitId === 'string' ? notificationVisitId : '';
     if (fromNotification) {
       // A notification opens a visit, not another page in the previous thread.
       this.history = [{ screen: 'dashboard', selected: 'inbox', scroll: 0, projectId: '', threadId: '' }];
@@ -252,14 +256,16 @@ export class T3Layer implements Layer {
     void state.openThread(threadId);
   }
 
-  openNotification(alertId?: string, returnWindowId?: string, returnToSleep = false): void {
+  openNotification(alertId?: string, returnWindowId?: string, returnToSleep = false, notificationVisitId?: string): void {
     this.returnWindowId = returnWindowId && returnWindowId !== T3_WINDOW_ID && !returnWindowId.startsWith('apk:com.faceclaw.t3/') ? returnWindowId : null;
+    this.notificationVisitId = typeof notificationVisitId === 'string' ? notificationVisitId : '';
     if (this.screen === 'dashboard') this.selected = 'inbox';
     this.notificationId = alertId || '';
     const alert = alertId ? findT3Alert(alertId) : undefined;
     this.notificationReturnToSleep = alert?.kind === 'phone' && returnToSleep;
     this.notificationGroupId = alert?.kind === 'phone' ? alert.groupId || '' : '';
     this.notificationNotice = '';
+    this.notificationClosing = false;
     this.go(alertId ? 'notification' : 'inbox');
     if (alertId && this.notificationOrigin) { const origin = this.notificationOrigin; this.notificationOrigin = undefined; this.onRemoved(); this.animate(origin, this.fullRect()); }
   }
@@ -280,11 +286,19 @@ export class T3Layer implements Layer {
     this.notificationNotice = '';
     if(this.notificationReviewPending)return;
     this.notificationReviewPending=true;
-    this.notificationNotice="Review reply on glasses.";
     this.repaint();
-    void reply.review(isCurrent).then(status => {
+    void reply.review(isCurrent).then(async status => {
+      if (status === 'sent') {
+        this.notificationClosing=true;
+        // A successful send removes the source notification underneath us.
+        // Return on one clean frame instead of retaining its glyphs through a
+        // closing-card animation whose source disappears mid-transition.
+        if (sameVisit()) await this.closeNotificationReader(false);
+        this.notificationReviewPending=false;
+        this.notificationClosing=false;
+        return;
+      }
       this.notificationReviewPending=false;
-      if (status === 'sent') { if (sameVisit()) this.closeNotificationReader(); return; }
       if (!isVisible()) return;
       this.notificationNotice = { sent: 'Reply sent.', 'draft-saved': 'Draft saved in app. Open app to send.', unknown: 'Send outcome unknown. Check app before retrying.', rejected: 'Reply unavailable. Nothing sent.' }[status];
       this.repaint();
@@ -292,7 +306,9 @@ export class T3Layer implements Layer {
   }
 
   private back(animateTransition = true): void {
-    if (state.busy && this.screen !== 'notification') return;
+    // A notification visit is a temporary interruption. It must always be
+    // possible to leave it, even while the opened T3 session is still busy.
+    if (state.busy && this.screen !== 'notification' && !this.returnWindowId && !this.notificationVisitId) return;
     if (!animateTransition) this.motion = null;
     const returnToSleep = this.screen === 'notification' && this.notificationReturnToSleep;
     this.notificationReturnToSleep = false;
@@ -301,7 +317,27 @@ export class T3Layer implements Layer {
     shell.respondToBack(false);
     const draftCreation = this.creation;
     if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftIsDictated = false; this.draftLocked = false; this.dictatingAnswer = false; this.reviewedReplyDestination = null; this.creation = null; }
-    if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) { const id = this.returnWindowId; this.returnWindowId = null; shell.focusWindow(id); return; }
+    if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) {
+      const id = this.returnWindowId;
+      const visitId = this.notificationVisitId;
+      if (visitId && typeof shell.returnNotificationVisit === 'function') {
+        void shell.returnNotificationVisit(visitId).then(restored => {
+          if (restored) { this.returnWindowId = null; this.notificationVisitId = ''; }
+          else { this.notificationNotice = 'Return to the previous app failed. Try again.'; this.repaint(); }
+        });
+      } else {
+        this.returnWindowId = null;
+        shell.focusWindow(id);
+      }
+      return;
+    }
+    if (this.notificationVisitId && typeof shell.returnNotificationVisit === 'function') {
+      const visitId = this.notificationVisitId;
+      void shell.returnNotificationVisit(visitId).then(restored => {
+        if (restored) this.notificationVisitId = '';
+        else { this.notificationNotice = 'Return to the notification origin failed. Try again.'; this.repaint(); }
+      });
+    }
     if (this.screen === 'reader') {
       // Replies, steering and plan edits are internal to this thread visit.
       // Back leaves the visit instead of restoring a reader's earlier page.
@@ -564,7 +600,7 @@ export class T3Layer implements Layer {
     }
     if (this.screen === 'notification') {
       const alert = this.currentNotification();
-      return alert ? `${alert.title}\n\n${alert.body}` : 'Notification no longer available.';
+      return alert ? `${alert.title}\n\n${alert.body}` : this.notificationClosing ? '' : 'Notification no longer available.';
     }
     if (this.screen === 'phone-settings') return 'Check your phone\n\nManage your T3 connection, assistant, models, and dictation in T3 Assistant settings on your phone.\n\nDouble-tap to return.';
     if (this.screen === 'new-summary') return `${state.projects.find(project => project.id === this.creation?.projectId && project.environmentId === this.creation?.environmentId)?.title || 'New session'}\n\n${this.pickedModel?.name || ''}\nReasoning: ${this.pickedModel?.reasoningChoices.find(choice => choice.id === this.creation?.modelSelection?.reasoningId)?.label || 'Provider default'}\nSpeed: Normal`;
@@ -808,8 +844,8 @@ export class T3Layer implements Layer {
       if (this.screen === 'draft' && (this.draftLocked || state.error)) image.drawText(font, x + 16, height - font.lineHeight - 16, truncateText(font, state.error || 'SENDING TO T3 CODE', textWidth), 180);
       if (this.screen === 'notification') {
         const alert = this.currentNotification();
-        const hint = this.notificationNotice || (alert && getT3NotificationReply(alert.id) ? 'Tap to dictate reply' : 'Reply unavailable for this notification');
-        image.drawText(font, x + 16, height - font.lineHeight - 16, truncateText(font, hint, textWidth), 180);
+        const hint = this.notificationNotice || (this.notificationReviewPending || this.notificationClosing ? '' : alert && getT3NotificationReply(alert.id) ? 'Tap to dictate reply' : 'Reply unavailable for this notification');
+        if (hint) image.drawText(font, x + 16, height - font.lineHeight - 16, truncateText(font, hint, textWidth), 180);
       }
     } else {
       if (!rows.some(row => row.id === this.selected && !row.section)) this.selected = rows.find(row => !row.section)?.id || '';
@@ -965,13 +1001,13 @@ export class T3Layer implements Layer {
     const alert = this.screen === 'notification' ? this.currentNotification() : visible[index < 0 ? 0 : index];
     if (!alert) {
       // A reply can remove its native notification before the reader is closed.
-      if (this.screen === 'notification') this.closeNotificationReader();
+      if (this.screen === 'notification') await this.closeNotificationReader();
       return;
     }
     const screen = this.screen, visit = this.history[this.history.length - 1], notificationId = this.notificationId;
     if (!await dismissT3Alert(alert)) return;
     if (this.screen !== screen || this.history[this.history.length - 1] !== visit || this.notificationId !== notificationId) return;
-    if (this.screen === 'notification') this.closeNotificationReader();
+    if (this.screen === 'notification') await this.closeNotificationReader();
     else {
       const remaining = visibleT3Alerts();
       this.selected = remaining[Math.max(0, Math.min(index, remaining.length - 1))]?.id || '';
@@ -979,9 +1015,30 @@ export class T3Layer implements Layer {
     }
   }
 
-  private closeNotificationReader(): void {
+  private async closeNotificationReader(animateTransition = true): Promise<void> {
     const returnToSleep = this.notificationReturnToSleep;
     const returnToInbox = this.history[this.history.length - 1]?.screen === 'inbox';
+    const returnWindowId = this.returnWindowId;
+    const visitId = this.notificationVisitId;
+    if (visitId && typeof shell.returnNotificationVisit === 'function') {
+      // Acknowledge SDK back while the host still has the physical gesture
+      // pending. The visit operation then restores only its captured origin.
+      shell.respondToBack(false);
+      const restored = await shell.returnNotificationVisit(visitId);
+      this.returnWindowId = null;
+      this.notificationVisitId = '';
+      this.notificationNotice = '';
+      this.notificationReturnToSleep = false;
+      this.notificationId = '';
+      this.notificationGroupId = '';
+      // A rejected or lost acknowledgement must not strand a reader whose
+      // notification was already removed by a successful reply. Fall back to
+      // the host-provided origin hint and always leave the temporary reader.
+      if (!restored && returnWindowId) shell.focusWindow(returnWindowId);
+      if (returnWindowId) this.go('inbox', false);
+      else this.back(animateTransition);
+      return;
+    }
     this.notificationNotice = '';
     this.notificationReturnToSleep = false;
     this.notificationId = '';
@@ -989,8 +1046,8 @@ export class T3Layer implements Layer {
     // Blank before restoring any underlying app. Closing reply review alone
     // never sleeps; dismissal/back completes this notification wake-up visit.
     if (returnToSleep) shell.sleepAtAppRoot();
-    if (this.returnWindowId) { const id = this.returnWindowId; this.returnWindowId = null; this.go('inbox', false); shell.focusWindow(id); }
-    else { if (returnToSleep || !returnToInbox) shell.closeNotificationReader(); this.back(); }
+    if (this.returnWindowId) { const id = this.returnWindowId; this.returnWindowId = null; this.go('inbox', false); shell.respondToBack(false); shell.focusWindow(id); }
+    else { if (returnToSleep || !returnToInbox) shell.closeNotificationReader(); this.back(animateTransition); }
   }
 
 }

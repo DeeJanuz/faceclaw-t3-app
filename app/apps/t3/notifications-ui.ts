@@ -10,10 +10,16 @@ import { initializeT3PhoneNotifications, postT3Notification, dismissT3Notificati
 import { t3Workspace as state, connectT3 } from './runtime';
 import { showT3AlertInCurrentConversation, isT3FlowProtected, openT3Thread, openT3Notification } from './t3-app';
 import type { T3Alert } from './workspace';
+declare const android: any;
 
 let openWindow: () => Promise<void> = async () => {};
 let initialized = false;
 let openingNotification = false;
+function notificationTrace(stage: string, warning = false): void {
+  try {
+    if (typeof android !== 'undefined') (warning ? android.util.Log.w : android.util.Log.i)('T3Notification', stage);
+  } catch { /* Native diagnostics are best effort. */ }
+}
 function isOwnT3Window(windowId?: string): boolean {
   return windowId === 't3' || Boolean(windowId?.startsWith('apk:com.faceclaw.t3/'));
 }
@@ -104,42 +110,62 @@ export function getT3NotificationReply(id: string): { isCurrent: () => boolean; 
  return {isCurrent,async review(current=()=>true){if(requested||!isCurrent()||!current())return 'rejected';requested=true;try{const result=await requestNotificationReply(notification.key,notification.postTime,action.index,()=>current()&&pairingIdentity()===pairing&&getT3Config().notificationOverride===true);return ['sent','draft-saved','unknown','rejected'].includes(result.status)?result.status:'unknown';}catch(error){return ['NOTIFICATION_REVIEW_STALE','HOST_CAPABILITY_UNAVAILABLE','HOST_ACTION_UNAVAILABLE','HOST_ACTION_DUPLICATE'].includes(error instanceof Error?error.message:'')?'rejected':'unknown';}}};
 }
 
-async function openNotificationUi(notificationKey?: string, returnToSleep = false, presentationId?: string): Promise<boolean> {
-  if (openingNotification) return false;
+async function openNotificationUi(notificationKey?: string, returnToSleep = false, presentationId?: string, hostPresentationId?: string): Promise<boolean> {
+  if (openingNotification) { notificationTrace('open-rejected reason=already-opening', true); return false; }
   openingNotification = true;
+  notificationTrace('open-start');
+  let handedOff = false;
+  let opened = false;
   const pairing = pairingIdentity();
   try {
     // An explicit system notification open may leave sample mode, as native T3 opens do.
     if (state.demo) await connectT3();
-    if (state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity()) return false;
+    if (state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity()) { notificationTrace('open-rejected reason=mode-or-pairing', true); return false; }
     const source = notificationKey ? allowedPhoneNotifications().find(item => item.key === notificationKey) : undefined;
-    if (notificationKey && !source) return false;
+    if (notificationKey && !source) { notificationTrace('open-rejected reason=source-stale', true); return false; }
     const alert = source ? visibleT3Alerts().find(item => item.kind === 'phone' && item.groupId === phoneConversationId(source)) : undefined;
-    if (notificationKey && !alert) return false;
+    if (notificationKey && !alert) { notificationTrace('open-rejected reason=alert-stale', true); return false; }
     const foreground = shell.foregroundWindow()?.windowId;
     const previous = foreground === 'notifications' || isOwnT3Window(foreground) ? undefined : foreground;
     // Release the host-owned preview while the physical tap is still fresh and
     // before focusing T3 can invalidate that presentation. The notification
     // remains in the inbox if the later app launch fails.
     if (presentationId && alert) {
-      console.info('[T3Notification] handoff-start');
+      notificationTrace('handoff-start');
       if (!await shell.handoffNotificationPreview(alert.id, presentationId)) {
-        console.warn('[T3Notification] handoff-rejected');
+        notificationTrace('handoff-rejected', true);
         return false;
       }
-      console.info('[T3Notification] handoff-complete');
+      handedOff = true;
+      notificationTrace('handoff-complete');
     }
     await openWindow();
     if (state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity() || (alert && !findT3Alert(alert.id)) ||
-        (source && !allowedPhoneNotifications().some(item => item.key === source.key && item.postTime === source.postTime))) return false;
-    if (!shell.isWindowFocused('t3')) shell.focusWindow('t3');
-    openT3Notification(alert?.id, previous, returnToSleep);
-    console.info('[T3Notification] reader-opened');
+        (source && !allowedPhoneNotifications().some(item => item.key === source.key && item.postTime === source.postTime))) {
+      notificationTrace(`open-rejected reason=state-changed mode=${state.demo?'demo':'live'} override=${getT3Config().notificationOverride===true} pairing=${pairing===pairingIdentity()} alert=${!alert||Boolean(findT3Alert(alert.id))} source=${!source||allowedPhoneNotifications().some(item=>item.key===source.key&&item.postTime===source.postTime)}`, true); return false;
+    }
+    // The host can make the APK window foreground before its next host-state
+    // snapshot reaches this provider. Do not wait on that stale snapshot: the
+    // bell path focuses and paints immediately, and the host rejects the open
+    // request synchronously when it cannot accept it.
+    if (!shell.isWindowFocused('t3') && shell.focusWindow('t3') === false) { notificationTrace('open-rejected reason=focus-failed', true); return false; }
+    notificationTrace('reader-state-opening');
+    openT3Notification(alert?.id, previous, returnToSleep, hostPresentationId);
+    opened = true;
+    notificationTrace('reader-opened');
     return true;
   } catch {
+    notificationTrace('open-rejected reason=exception', true);
     if (pairing === pairingIdentity() && !state.demo) state.fail(new Error('T3_NOTIFICATION_OPEN_FAILED'));
     return false;
   } finally {
+    if (handedOff && !opened && presentationId && typeof shell.reopenNotificationPreview === 'function') {
+      const restored = await shell.reopenNotificationPreview(presentationId);
+      if (!restored) {
+        if (typeof shell.abandonNotificationVisit === 'function') await shell.abandonNotificationVisit(presentationId);
+        if (typeof shell.abortNotificationPreview === 'function') shell.abortNotificationPreview(presentationId);
+      }
+    }
     openingNotification = false;
   }
 }
@@ -203,7 +229,7 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
       trackedT3Alerts.add(alert.id);
     }
     shell.showNotificationPreview(alert.id, alert.title, alert.previewBody || alert.body,
-      (wokeDisplay, presentationId) => openT3Alert(alert, wokeDisplay, presentationId), () => dismissT3Alert(alert), isT3FlowProtected(), hostPresentationId, readT3NotificationPreviewSeconds() * 1000);
+      (wokeDisplay, presentationId, visitId) => openT3Alert(alert, wokeDisplay, presentationId, visitId), () => dismissT3Alert(alert), isT3FlowProtected(), hostPresentationId, readT3NotificationPreviewSeconds() * 1000);
   };
   // T3-owned completions get their host lease from the returned Android
   // publication event. The local alert id is not that lease and must never be
@@ -253,30 +279,49 @@ export function handlePhoneNotification(key: string, hostPresentationId?: string
     state.changed();
   } else state.addAlert(alert, changed);
   if (!changed && previous) shell.updateNotificationPreview(previous.id, alert.id, alert.title, alert.previewBody || alert.body,
-    (wokeDisplay, presentationId) => openT3Alert(alert, wokeDisplay, presentationId), () => dismissT3Alert(alert), hostPresentationId);
+    (wokeDisplay, presentationId, visitId) => openT3Alert(alert, wokeDisplay, presentationId, visitId), () => dismissT3Alert(alert), hostPresentationId);
 }
 
-export async function openT3Alert(alert: T3Alert, returnToSleep = false, presentationId?: string): Promise<boolean> {
+export async function openT3Alert(alert: T3Alert, returnToSleep = false, presentationId?: string, hostPresentationId?: string): Promise<boolean> {
   if (alert.kind === 'phone' ? !findT3Alert(alert.id) : !state.alerts.includes(alert)) return false;
   if (alert.kind === "phone" && alert.threadId.startsWith("apk:") && getT3Config().notificationOverride !== true) return invokeExternalNotification(alert.threadId, 0);
   const pairing = pairingIdentity();
   const demo = state.demo;
   if (alert.kind === 'phone') {
-    if (getT3Config().notificationOverride === true && !state.demo) return openNotificationUi(alert.threadId, returnToSleep, presentationId);
+    if (getT3Config().notificationOverride === true && !state.demo) return openNotificationUi(alert.threadId, returnToSleep, presentationId, hostPresentationId);
     else if (state.demo) openT3Notification(alert.id, undefined, returnToSleep);
     else shell.openNotificationModal(alert.threadId, returnToSleep);
     return true;
   }
   const foreground = shell.foregroundWindow()?.windowId;
   const previous = isOwnT3Window(foreground) ? undefined : foreground;
-  await openWindow();
-  if (!state.alerts.includes(alert) || state.demo !== demo || pairing !== pairingIdentity()) return false;
-  if (presentationId && !await shell.handoffNotificationPreview(alert.id, presentationId)) return false;
-  if (!shell.isWindowFocused('t3')) shell.focusWindow('t3');
-  openT3Thread(resourceKey(alert.threadId, alert.environmentId), previous);
-  if (!presentationId) shell.closeNotificationPreview(alert.id, false);
-  dismissT3Alert(alert);
-  return true;
+  // Release an active host preview before requesting the normal T3 window.
+  // The host rejects window.open while the notification surface is still on
+  // top, and the handoff token is bound to this fresh physical tap.
+  let handedOff = false;
+  let opened = false;
+  try {
+    if (presentationId) {
+      if (!await shell.handoffNotificationPreview(alert.id, presentationId)) return false;
+      handedOff = true;
+    }
+    await openWindow();
+    if (!state.alerts.includes(alert) || state.demo !== demo || pairing !== pairingIdentity()) return false;
+    if (!shell.isWindowFocused('t3') && shell.focusWindow('t3') === false) return false;
+    openT3Thread(resourceKey(alert.threadId, alert.environmentId), previous, hostPresentationId);
+    opened = true;
+    if (!presentationId) shell.closeNotificationPreview(alert.id, false);
+    dismissT3Alert(alert);
+    return true;
+  } finally {
+    if (handedOff && !opened && presentationId && typeof shell.reopenNotificationPreview === 'function') {
+      const restored = await shell.reopenNotificationPreview(presentationId);
+      if (!restored) {
+        if (typeof shell.abandonNotificationVisit === 'function') await shell.abandonNotificationVisit(presentationId);
+        if (typeof shell.abortNotificationPreview === 'function') shell.abortNotificationPreview(presentationId);
+      }
+    }
+  }
 }
 
 export function openT3NotificationApp(id: string): boolean {

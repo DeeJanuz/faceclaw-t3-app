@@ -4,7 +4,7 @@ function setup({rejectHandoff=false,requestOpenWindow=false}={}){
  const imports={
   '../../native/notification-icons':{openNotification:()=>{}},
   '../../apps/t3/runtime':{t3Workspace:{demo:false}},
-  '../../extensions/host':{hostState:{screenOn:true},nativeService:()=>requestOpenWindow?{requestOpenWindow:()=>{openRequests++;return true;}}:null,onHostEvent:fn=>{event=fn;},requestHostAction:(...args)=>{actions.push(args);return rejectHandoff?Promise.reject(new Error('stale')):Promise.resolve({ok:true});},sendHostAction:(...args)=>{actions.push(args);return true;},ownsFeature:()=>true}
+  '../../extensions/host':{hostState:{screenOn:true},nativeService:()=>requestOpenWindow?{requestOpenWindow:()=>{openRequests++;return true;}}:null,onHostEvent:fn=>{event=fn;},requestHostAction:(...args)=>{actions.push(args);return rejectHandoff&&args[1]==='close-surface'?Promise.reject(rejectHandoff instanceof Error?rejectHandoff:new Error('stale')):Promise.resolve({ok:true});},sendHostAction:(...args)=>{actions.push(args);return true;},ownsFeature:()=>true}
  };
  vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/ui/shell/shell.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{exports,require:name=>imports[name]});
  return {...exports,event,actions,get openRequests(){return openRequests;}};
@@ -53,9 +53,12 @@ test('matching preview handoff releases the host lease without restoring sleep',
  h.event('extension-surface',{feature:'ui.notifications',type:'open'});
  h.shell.showNotificationPreview('fixture','','',async()=>true,()=>true,false,'host-lease');
  assert.equal(await h.shell.handoffNotificationPreview('fixture','host-lease'),true);
+ assert.equal(h.shell.hasOverlay(),false);
+ assert.equal(events.some(event=>event[0]==='preview-handoff'),false);
+ assert.equal(JSON.stringify(h.actions.at(-1)),JSON.stringify(['ui.notifications','close-surface',{presentationId:'host-lease',restoreSleep:false},5000]));
+ assert.equal(h.shell.completeNotificationHandoff('fixture','host-lease'),true);
  assert.equal(h.shell.getNotificationPreviewId(),null);
  assert.equal(events.at(-1)?.[0],'preview-handoff');
- assert.equal(JSON.stringify(h.actions.at(-1)),JSON.stringify(['ui.notifications','close-surface',{presentationId:'host-lease',restoreSleep:false}]));
 });
 
 test('rejected preview handoff retains the card for timeout recovery',async()=>{
@@ -63,6 +66,17 @@ test('rejected preview handoff retains the card for timeout recovery',async()=>{
  h.shell.showNotificationPreview('fixture','','',async()=>true,()=>true,false,'host-lease');
  assert.equal(await h.shell.handoffNotificationPreview('fixture','host-lease'),false);
  assert.equal(h.shell.getNotificationPreviewId(),'fixture');
+});
+
+test('a lost handoff acknowledgement requests the exact host lease again',async()=>{
+ const h=setup({rejectHandoff:new Error('HOST_ACTION_OUTCOME_UNKNOWN')});let preview;
+ h.localShellEvents?.add?.((type,data)=>{if(type==='preview')preview=data;});
+ h.event('extension-surface',{feature:'ui.notifications',type:'open'});
+ h.shell.showNotificationPreview('fixture','','',async()=>true,()=>true,false,'host-lease');
+ assert.equal(await h.shell.handoffNotificationPreview('fixture',preview.presentationId),false);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.shell.getNotificationPreviewId(),'fixture');
+ assert.deepEqual(JSON.parse(JSON.stringify(h.actions.at(-1))),['ui.notifications','notification-reopen',{presentationId:'host-lease'},5000]);
 });
 
 test('a local T3 preview can leave the medium surface without inventing a host lease',async()=>{
@@ -84,4 +98,19 @@ test('an acknowledged handoff closes local surface state before a later host clo
  h.event('extension-surface',{feature:'ui.notifications',type:'close'});
  h.shell.focusWindow('t3');
  assert.equal(h.openRequests,1);
+});
+
+test('preview recovery translates the local identity to the host lease',async()=>{
+ const h=setup();let preview;
+ h.localShellEvents?.add?.((type,data)=>{if(type==='preview')preview=data;});
+ h.event('extension-surface',{feature:'ui.notifications',type:'open'});
+ h.shell.showNotificationPreview('fixture','','',async()=>true,()=>true,false,'host-lease');
+ assert.equal(await h.shell.handoffNotificationPreview('fixture',preview.presentationId),true);
+ assert.equal(await h.shell.reopenNotificationPreview(preview.presentationId),true);
+ assert.equal(await h.shell.abandonNotificationVisit(preview.presentationId),true);
+ const recovery=h.actions.filter(args=>args[1]==='notification-reopen'||args[1]==='notification-abandon');
+ assert.deepEqual(JSON.parse(JSON.stringify(recovery)),[
+  ['ui.notifications','notification-reopen',{presentationId:'host-lease'},5000],
+  ['ui.notifications','notification-abandon',{presentationId:'host-lease'},5000],
+ ]);
 });

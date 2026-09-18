@@ -30,7 +30,12 @@ public final class T3AppService extends FaceclawAppService {
  }
  @Override protected void onHostSnapshot(HostSnapshot snapshot) { deliver("host-snapshot",snapshot.toJson()); }
  @Override protected void onInput(RenderSurface surface,FaceclawInputEvent event) {
-  if(surface.id().startsWith("extension:"))deliver("extension-event",Protocol.object("feature",surface.id().substring(10),"generation",surface.generation(),"type","input","data",Protocol.object("input",event.extras)));
+  if(surface.id().startsWith("extension:")){
+   long extensionGeneration=event.extras.optLong("extensionGeneration",-1L);
+   android.util.Log.i("NotificationInput","provider-received feature="+surface.id().substring(10)+" trace="+event.traceId+" type="+event.type+" extensionGeneration="+extensionGeneration+" surfaceGeneration="+surface.generation());
+   if(extensionGeneration<0L){android.util.Log.w("NotificationInput","provider-rejected reason=missing-extension-generation trace="+event.traceId);return;}
+   deliver("extension-event",Protocol.object("feature",surface.id().substring(10),"generation",extensionGeneration,"type","input","data",Protocol.object("input",event.extras)));
+  }
   else deliver("input",event.extras);
  }
  @Override protected void onControlEvent(ControlEvent event) { deliver(event.type,event.data); }

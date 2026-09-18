@@ -50,6 +50,21 @@ test('dropped T3 requests fail without replay and stale socket callbacks cannot 
   assert.equal(sockets[1].frames.length, 0);
   client.close();
 });
+test('T3 separates missing VPN/DNS routes from bridge and protocol failures', async () => {
+  const api = load('app/t3/client.ts', { './security': security, './config': { getT3Config: () => ({}) }, '../native/cloud-stt': { toJavaBytes: value => value } });
+  assert.equal(api.classifyT3Failure('network:UnknownHostException'), 'network-unavailable');
+  assert.equal(api.classifyT3Failure('network:NoRouteToHostException'), 'network-unavailable');
+  assert.equal(api.classifyT3Failure('network:callback-backlog'), 'callback-backlog');
+  assert.equal(api.classifyT3Failure('network:http=401'), 'protocol');
+  assert.equal(api.classifyT3Failure('network:SocketTimeoutException'), 'network');
+  assert.equal(api.classifyT3Failure('T3_CONNECTION_DROPPED'), 'unknown');
+  const { client, sockets, config } = transport(); const states = [];
+  client.configure(config); client.onStateChange(state => states.push(state));
+  const connecting = client.connect(); sockets[0].listener.onFailure('network:UnknownHostException');
+  await assert.rejects(connecting);
+  assert.equal(states.at(-1).failureCategory, 'network-unavailable');
+  assert.match(states.at(-1).status, /network unavailable/i);
+});
 test('T3 transport diagnostics preserve only bounded failure categories', async () => {
   const { client, sockets, config } = transport(); const diagnostics = [];
   client.configure(config); client.onDiagnostic(diagnostic => diagnostics.push(diagnostic));
@@ -372,11 +387,11 @@ function notificationHarness(sources = [], requestReply = () => Promise.resolve(
     '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
     '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {} } }),
     '../../ui/notification-routing': { setNotificationOpenRoute() {} },
-    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), wake() {}, openNotificationModal() {} } },
+    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), reopenNotificationPreview: options.reopen || (async () => true), abandonNotificationVisit: options.abandon || (async () => true), ensureWindowOpen: options.ensureWindowOpen, wake() {}, openNotificationModal() {} } },
     '../../native/notification-icons': { requestNotificationReply: requestReply, readActiveNotifications: () => sources, dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
     '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification() {}, dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
     './runtime': { t3Workspace: state, connectT3: async () => { state.demo = false; } },
-    './t3-app': { isT3FlowProtected: () => false, openT3Thread: (id) => opened.push(id), openT3Notification: (id) => opened.push(id) },
+    './t3-app': { isT3FlowProtected: () => false, openT3Thread: (...args) => opened.push(args), openT3Notification: (...args) => opened.push(args) },
   });
   return { api, config, state, opened, dismissed, focused, nativeClick: () => nativeClick };
 }
@@ -397,17 +412,49 @@ test('a T3 notification reuses its already-focused app window', async () => {
   h.state.alerts = [alert];
   assert.equal(await h.api.openT3Alert(alert, false, 'preview-id'), true);
   assert.deepEqual(h.focused, []);
-  assert.deepEqual(h.opened, ['["remote-environment","remote-thread"]']);
+  assert.deepEqual(h.opened, [['["remote-environment","remote-thread"]', undefined, undefined]]);
 });
 test('phone preview releases its host lease before focusing the T3 window', async () => {
   const order = [];
   const source = { key: 'message-key', packageName: 'fixture.messages', appName: 'Fixture', title: 'Sender', text: 'Hello', bigText: '', messages: [], lines: [], subText: '', infoText: '', summaryText: '', category: 'msg', groupKey: '', isGroupSummary: false, isForegroundService: false, isOngoing: false, userId: 0, conversationId: '', postTime: 9, actions: [] };
-  const h = notificationHarness([source], undefined, { notificationOverride: true, handoff: async () => { order.push('handoff'); return true; } });
+  const h = notificationHarness([source], undefined, {
+    notificationOverride: true,
+    handoff: async () => { order.push('handoff'); return true; },
+    // A host-state acknowledgement can lag the already accepted focus request.
+    // The reader must follow the same immediate focus-and-paint route as the bell.
+    ensureWindowOpen: () => { throw new Error('must not wait for a second open acknowledgement'); },
+  });
   h.api.initializeT3Notifications(async () => { order.push('open-window'); });
   const alert = { id: 'phone:message-key:9', kind: 'phone', threadId: 'message-key', title: 'Sender', body: 'Hello', createdAt: 9 };
   assert.equal(await h.api.openT3Alert(alert, false, 'preview-id'), true);
   assert.deepEqual(order, ['handoff', 'open-window']);
-  assert.deepEqual(h.opened, ['phone:message-key:9']);
+  assert.deepEqual(h.opened, [['phone:message-key:9', undefined, false, undefined]]);
+});
+test('T3 completion preview releases its host lease before launching the window', async () => {
+  const order = [];
+  const h = notificationHarness([], undefined, {
+    handoff: async () => { order.push('handoff'); return true; },
+    focused: false,
+  });
+  h.api.initializeT3Notifications(async () => { order.push('open-window'); });
+  const alert = { id: 'completion', kind: 't3', threadId: 'remote-thread', environmentId: 'remote-environment' };
+  h.state.alerts = [alert];
+  assert.equal(await h.api.openT3Alert(alert, false, 'preview-id', 'host-lease'), true);
+  assert.deepEqual(order, ['handoff', 'open-window']);
+  assert.deepEqual(h.opened, [['["remote-environment","remote-thread"]', undefined, 'host-lease']]);
+});
+test('a failed session launch requests an exact preview lease retry', async () => {
+  const calls = [];
+  const h = notificationHarness([], undefined, {
+    handoff: async () => true,
+    reopen: async id => { calls.push(['reopen', id]); return true; },
+    focused: false,
+  });
+  h.api.initializeT3Notifications(async () => { throw new Error('window unavailable'); });
+  const alert = { id: 'completion-retry', kind: 't3', threadId: 'remote-thread', environmentId: 'remote-environment' };
+  h.state.alerts = [alert];
+  await assert.rejects(h.api.openT3Alert(alert, false, 'preview-id'));
+  assert.deepEqual(calls, [['reopen', 'preview-id']]);
 });
 test('native notification awaiting window cannot cross a new pairing', async () => {
   const h = notificationHarness(); let resolve;

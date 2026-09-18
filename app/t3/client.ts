@@ -3,9 +3,25 @@ import { getT3Config, type T3Config } from './config';
 import { toJavaBytes } from '../native/cloud-stt';
 declare const com: any;
 export interface T3Event { v: 1; type: 'event'; event: string; payload: any }
-export type T3FailureCategory = 'connect-timeout' | 'network' | 'callback-backlog' | 'peer-close' | 'protocol' | 'local' | 'unknown';
+export type T3FailureCategory = 'connect-timeout' | 'network' | 'network-unavailable' | 'callback-backlog' | 'peer-close' | 'protocol' | 'local' | 'unknown';
 export interface T3State { phase: 'idle' | 'connecting' | 'connected' | 'failed'; status: string; connected: boolean; failureCategory?: T3FailureCategory }
 export interface T3Diagnostic { kind: 'transport'; category: T3FailureCategory; generation: number; pendingRequests: number }
+export function classifyT3Failure(message: unknown): T3FailureCategory {
+  const value = typeof message === 'string' ? message : '';
+  if (value === 'network:callback-backlog') return 'callback-backlog';
+  if (value.startsWith('network:http=')) return 'protocol';
+  if (value.startsWith('network:')) {
+    // OkHttp reports a missing Tailscale/DNS route as the exception class,
+    // without exposing a stable human-readable message to NativeScript.
+    // Keep this distinct from a reachable bridge that closed the socket so
+    // the runtime can show the right state and use a slower retry cadence.
+    if (/(UnknownHostException|NoRouteToHostException|UnresolvedAddressException|Network is unreachable)/i.test(value)) {
+      return 'network-unavailable';
+    }
+    return 'network';
+  }
+  return 'unknown';
+}
 export class T3Error extends Error { constructor(public readonly code: string, public readonly dispatched = false) { super(code); } }
 export class T3Client {
   private static readonly MAX_PENDING_REQUESTS = 64;
@@ -96,11 +112,7 @@ export class T3Client {
   }
   private clearConnect(): void { if (this.connectTimer) clearTimeout(this.connectTimer); this.connectTimer = null; this.rejectConnect = null; }
   private failureCategory(message: unknown): T3FailureCategory {
-    const value = typeof message === 'string' ? message : '';
-    if (value === 'network:callback-backlog') return 'callback-backlog';
-    if (value.startsWith('network:http=')) return 'protocol';
-    if (value.startsWith('network:')) return 'network';
-    return 'unknown';
+    return classifyT3Failure(message);
   }
   private lost(code: string, category: T3FailureCategory = code === 'T3_CONNECT_TIMEOUT' ? 'connect-timeout' : 'unknown'): void {
     ++this.generation;
@@ -117,10 +129,18 @@ export class T3Client {
     this.pending.clear();
     const diagnostic = { kind: 'transport' as const, category, generation: this.generation, pendingRequests };
     for (const listener of this.diagnostics) { try { listener(diagnostic); } catch { /* Consumer isolation. */ } }
-    this.setState('failed', code);
+    const status = category === 'network-unavailable'
+      ? 'T3 network unavailable; waiting for the bridge route'
+      : code;
+    this.setState('failed', status, category);
   }
-  private setState(phase: T3State['phase'], status: string): void {
-    this.current = { phase, status, connected: phase === 'connected' };
+  private setState(phase: T3State['phase'], status: string, failureCategory?: T3FailureCategory): void {
+    this.current = {
+      phase,
+      status,
+      connected: phase === 'connected',
+      ...(failureCategory ? { failureCategory } : {}),
+    };
     for (const listener of this.states) { try { listener(this.current); } catch { /* Consumer isolation. */ } }
   }
 }

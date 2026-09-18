@@ -8,6 +8,7 @@ import { saveT3PlanDraft, loadT3PlanDraft, deleteT3PlanDraft } from '../../t3/dr
 import { startT3PowerMonitor } from '../../native/power-monitor';
 
 export const t3Workspace = new T3Workspace(t3Client);
+const NETWORK_UNAVAILABLE_RETRY_MS = 30_000;
 let started = false;
 let demoApi: T3DemoApi | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,11 +103,21 @@ export function initializeT3(): void {
       if (stableTimer) clearTimeout(stableTimer);
       stableTimer = null;
       t3Workspace.disconnected();
+      if (state.failureCategory === 'network-unavailable') {
+        // Keep the transport diagnosis visible in the glasses workspace as
+        // well as the phone settings page; the next network callback or
+        // bounded retry will replace it with Connecting….
+        t3Workspace.status = state.status;
+        t3Workspace.changed();
+      }
       if (getT3Config().enabled && state.phase === 'failed' && !reconnectTimer) {
         const mode = modeGeneration;
+        const delay = state.failureCategory === 'network-unavailable'
+          ? NETWORK_UNAVAILABLE_RETRY_MS
+          : t3ReconnectDelayMs(retries++);
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null; if (current(mode)) void connectT3();
-        }, t3ReconnectDelayMs(retries++));
+        }, delay);
       }
     }
   });

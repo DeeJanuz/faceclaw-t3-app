@@ -9,6 +9,11 @@ test('phone assistant picker lists both computers, persists the owner, and scope
  '../extensions/settings':{customizationGroups:[],customizationsEnabled:()=>true},
  '../extensions/host':{onHostEvent:()=>()=>{},effectiveFeature:()=>null,ownsFeature:()=>false},
  '../t3/config':{getT3Config:()=>config,saveT3Config:update=>{config={...config,...update}}},
+ '../t3/activity-indicator-mode':{
+  normalizeT3ActivityIndicatorMode:value=>value==='efficient'||value==='static'?value:'fluid',
+  T3_ACTIVITY_INDICATOR_MODES:['fluid','efficient','static'],
+  t3ActivityIndicatorLabel:value=>value==='efficient'?'Battery saver (2 updates/sec)':value==='static'?'Static':'Smooth (about 7 updates/sec)',
+ },
  '../t3/pairing':{},'../t3/notification-preferences':{
   readT3PhoneNotificationsEnabled:()=>false,
   readT3NotificationPreviewSeconds:()=>5,

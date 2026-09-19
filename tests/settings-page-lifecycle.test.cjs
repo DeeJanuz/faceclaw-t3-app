@@ -9,6 +9,11 @@ test('settings reconnects its model after Activity stop/start without navigation
   '../extensions/settings': { customizationGroups: [{ id: 'navigation', label: 'T3 gestures' }], customizationsEnabled: () => true, customizationEnabled: () => true, setCustomizationEnabled: (...args) => changes.push(args) },
   '../extensions/host': { onHostEvent: listener => { hostListeners.add(listener); return () => hostListeners.delete(listener); }, effectiveFeature: () => undefined, ownsFeature: () => active },
   '../t3/config': { getT3Config: () => ({ bridgeUrl: '' }) },
+  '../t3/activity-indicator-mode': {
+   normalizeT3ActivityIndicatorMode: value => value === 'efficient' || value === 'static' ? value : 'fluid',
+   T3_ACTIVITY_INDICATOR_MODES: ['fluid', 'efficient', 'static'],
+   t3ActivityIndicatorLabel: value => value === 'efficient' ? 'Battery saver (2 updates/sec)' : value === 'static' ? 'Static' : 'Smooth (about 7 updates/sec)',
+  },
   '../t3/client': { t3Client: { state: () => ({ status: 'Connected' }), onStateChange: listener => { stateListeners.add(listener); return () => stateListeners.delete(listener); } } },
   '../t3/notification-preferences': {
    readT3PhoneNotificationsEnabled: () => false,

@@ -48,7 +48,7 @@ test('duplicate project labels use computer names and preserve both resource ide
 test.before(async () => { hub = load('app/apps/t3/hub-view-model.ts', { '@evenrealities/pretext': await import('@evenrealities/pretext'), '../../graphics/textwrap': load('app/graphics/textwrap.ts') }); });
 const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': load('app/t3/security.ts') });
 const { T3DemoApi } = load('app/apps/t3/demo.ts');
-function setup(animationClock, raster = false) {
+function setup(animationClock, raster = false, t3Config = {}) {
   const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0, returned: [], backAcks: 0 }; let permitDismiss = true, deferDismiss = false, resolveDismiss;
   const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; let returnResult = true, deferReturn = false, resolveReturn; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
   const alerts = () => visible || state.alerts;
@@ -82,7 +82,8 @@ function setup(animationClock, raster = false) {
     '../../ui/presentation-clock': { presentationNow: () => animationClock?.now ?? Date.now() },
     '../../extensions/host': { onHostEvent: () => () => {}, onHostState: () => () => {} },
     '../../ui/shell/shell': { shell }, '../../ui/shell/in-process-window': {},
-    '../../t3/config': { getT3Config: () => ({}) }, './runtime': { t3Workspace: state },
+    '../../t3/config': { getT3Config: () => t3Config },
+    '../../t3/activity-indicator-mode': load('app/t3/activity-indicator-mode.ts'), './runtime': { t3Workspace: state },
   }, animationClock ? { Date: class extends Date { static now() { return animationClock.now; } } } : {});
   const layer = new T3Layer(() => {}, () => visibility.appBase);
   state.onChange(() => layer.contentChanged());
@@ -664,6 +665,20 @@ test('thinking and tool activity use a visible geometric indicator without shift
     assert.ok(label); assert.equal(label.x, 46); // 22px indicator + 8px gap after x=16
     assert.ok(h.drawn.every(text => !/[◐◓◑◒]/.test(text)));
     assert.ok(h.placements.every(row => row.y + 17 <= 452));
+  }
+});
+
+test('battery activity modes slow or stop only decorative indicator deadlines', async () => {
+  for (const [mode, expectedDelay] of [['efficient', 500], ['static', null]]) {
+    const h = setup({ now: 1000 }, false, { activityIndicatorMode: mode });
+    await h.state.refresh(); await h.state.openThread('voice');
+    h.state.transcript.session.status = 'running';
+    h.state.transcript.turns = [{ id: 'live', startedAt: '2026-09-07T00:00:00Z', endedAt: null, durationSeconds: null, messages: [] }];
+    h.state.transcript.liveActivities = [];
+    h.state.transcript.liveActivity = { phase: 'thinking', label: 'Thinking', updatedAt: '2026-09-07T00:00:01Z' };
+    h.layer.screen = 'reader'; h.layer.motion = null;
+    h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } });
+    assert.equal(h.layer.nextAnimationDelayMs(), expectedDelay);
   }
 });
 

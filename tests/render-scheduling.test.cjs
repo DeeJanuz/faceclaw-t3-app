@@ -147,6 +147,7 @@ test('the real T3 window factory forwards paint permission controls', () => {
   imports['../../extensions/host'] = { onHostState: () => () => {}, onHostEvent: () => () => {} };
   imports['../../ui/shell/shell'] = { shell: { isWindowVisible: () => false } };
   imports['../../t3/config'] = { getT3Config: () => ({ enabled: false }) };
+  imports['../../t3/activity-indicator-mode'] = load('app/t3/activity-indicator-mode.ts', {});
   imports['../../ui/shell/in-process-window'] = { createInProcessWindow: options => {
     captured = options;
     return { stack: { isAtBase: () => true } };

@@ -10,6 +10,7 @@ import { openConnectionNotificationSettings } from '../native/foreground-service
 import { dashboardController } from '../g2/dashboard-controller';
 import { connectT3, useT3SampleData, t3Workspace } from '../apps/t3/runtime';
 import type { EnvironmentSummary, ModelSummary, ProjectSummary } from '../apps/t3/protocol';
+import { normalizeT3ActivityIndicatorMode, T3_ACTIVITY_INDICATOR_MODES, t3ActivityIndicatorLabel, type T3ActivityIndicatorMode } from '../t3/activity-indicator-mode';
 
 class T3SettingsModel extends Observable {
   private config: T3Config;
@@ -19,6 +20,7 @@ class T3SettingsModel extends Observable {
   private ready = false;
   private notificationRequest = 0;
   private notificationPreviewRequest = 0;
+  private activityIndicatorRequest = 0;
   private offExtensions:()=>void=()=>{};
   constructor() {
     super(); this.config = getT3Config();
@@ -32,7 +34,7 @@ class T3SettingsModel extends Observable {
     });
     this.ready = true;
   }
-  dispose(): void { this.ready = false; this.notificationRequest++; this.notificationPreviewRequest++; this.offState(); this.offExtensions(); this.offNotificationPreviewSeconds(); this.set('passphrase', ''); }
+  dispose(): void { this.ready = false; this.notificationRequest++; this.notificationPreviewRequest++; this.activityIndicatorRequest++; this.offState(); this.offExtensions(); this.offNotificationPreviewSeconds(); this.set('passphrase', ''); }
   private sync(): void {
     this.syncCustomizations();
     this.set('phoneNotifications', readT3PhoneNotificationsEnabled());
@@ -43,6 +45,7 @@ class T3SettingsModel extends Observable {
     this.set('modelLabel', this.config.assistantModel ? `Model: ${this.config.assistantModel}` : 'Choose assistant model');
     this.set('reasoningLabel', `Reasoning: ${this.config.assistantReasoning || 'Default'}`);
     this.set('refinementLabel', this.config.refinementProvider === 't3' ? 'Luna · low · T3 bridge' : 'Anthropic · Faceclaw configuration');
+    this.set('activityIndicatorLabel', `Activity indicator: ${t3ActivityIndicatorLabel(this.config.activityIndicatorMode)}`);
   }
   private syncNotificationPreviewSeconds(): void {
     const seconds = readT3NotificationPreviewSeconds();
@@ -124,6 +127,19 @@ class T3SettingsModel extends Observable {
     if (index < 0) return;
     const seconds = T3_NOTIFICATION_PREVIEW_SECONDS[index] as T3NotificationPreviewSeconds;
     if (seconds !== readT3NotificationPreviewSeconds()) saveT3NotificationPreviewSeconds(seconds);
+  };
+  chooseActivityIndicatorMode = async () => {
+    if (!this.ready) return;
+    const generation = ++this.activityIndicatorRequest;
+    const labels = T3_ACTIVITY_INDICATOR_MODES.map(t3ActivityIndicatorLabel);
+    const selected = await action({ title: 'Activity indicator', cancelButtonText: 'Cancel', actions: labels });
+    if (!this.ready || generation !== this.activityIndicatorRequest) return;
+    const index = labels.indexOf(selected);
+    if (index < 0) return;
+    const mode = T3_ACTIVITY_INDICATOR_MODES[index] as T3ActivityIndicatorMode;
+    if (mode !== normalizeT3ActivityIndicatorMode(this.config.activityIndicatorMode)) {
+      this.save({ activityIndicatorMode: mode });
+    }
   };
 
   pair = async () => {

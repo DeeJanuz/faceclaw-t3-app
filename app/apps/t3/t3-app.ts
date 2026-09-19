@@ -18,7 +18,8 @@ import { type InputEvent } from '../../ui/gestures';
 import { presentationNow } from '../../ui/presentation-clock';
 import { shell } from '../../ui/shell/shell';
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from '../../ui/shell/in-process-window';
-import { getT3Config } from '../../t3/config';
+import { getT3Config, onT3ConfigChanged } from '../../t3/config';
+import { normalizeT3ActivityIndicatorMode, t3ActivityIndicatorCadenceMs, t3ActivityIndicatorFrame, type T3ActivityIndicatorMode } from '../../t3/activity-indicator-mode';
 import { onHostEvent, onHostState } from '../../extensions/host';
 import { t3Workspace as state, initializeT3, connectT3, setT3ReaderVisible } from './runtime';
 import type { ReviewedReplyDestination } from './workspace';
@@ -100,13 +101,22 @@ export class T3Layer implements Layer {
   private planIdentity = '';
   private optionPage = 0;
   private visibleActivity = false;
+  private activityIndicatorMode: T3ActivityIndicatorMode =
+    normalizeT3ActivityIndicatorMode(getT3Config().activityIndicatorMode);
 
   needsAnimation(): boolean { return Boolean(this.motion || this.slide); }
   frameTransportHint(): SlideTransportHint | undefined { return this.slideTransportHint; }
   nextAnimationDelayMs(): number | null {
     if (this.motion || this.slide || !this.visibleActivity) return null;
-    const phaseMs = 140;
+    const phaseMs = t3ActivityIndicatorCadenceMs(this.activityIndicatorMode);
+    if (phaseMs === null) return null;
     return phaseMs - (presentationNow() % phaseMs);
+  }
+  refreshActivityIndicatorMode(): void {
+    const next = normalizeT3ActivityIndicatorMode(getT3Config().activityIndicatorMode);
+    if (next === this.activityIndicatorMode) return;
+    this.activityIndicatorMode = next;
+    this.repaint();
   }
   private animate(from: CardRect, to: CardRect, closing = false): void {
     if (this.screen === 'compose' || !this.isBaseVisible() || shell.hasOverlay()) {
@@ -854,7 +864,7 @@ export class T3Layer implements Layer {
       const step = cardLineStep(font);
       lines.forEach((line, index) => {
         if (activity?.line === index) paintActivityIndicator(image, font, x + 16, top + index * step,
-          textWidth, step, activity.label, Math.floor(presentationNow() / 140));
+          textWidth, step, activity.label, t3ActivityIndicatorFrame(this.activityIndicatorMode, presentationNow()));
         else image.drawText(font, x + 16, top + index * step, line, CARD_TEXT_BRIGHTNESS);
       });
       if (this.screen === 'draft' && (this.draftLocked || state.error)) image.drawText(font, x + 16, height - font.lineHeight - 16, truncateText(font, state.error || 'SENDING TO T3 CODE', textWidth), 180);
@@ -1085,6 +1095,9 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
   const unsubscribe = state.onChange(() => { layer.contentChanged(); repaint(); });
   const offWeather = weatherBridge.onStateChange(() => { layer.backdropChanged(); repaint(); });
   const offHostState = onHostState(change => layer.hostStateChanged(change));
+  const offConfig = typeof onT3ConfigChanged === 'function'
+    ? onT3ConfigChanged(() => layer.refreshActivityIndicatorMode())
+    : () => {};
   const offHostEvent = onHostEvent((type,data) => {
     if (type==='extensions' && (!Array.isArray(data.changedFeatures) || data.changedFeatures.some((feature:string)=>['ui.typography','ui.navigation','ui.window-layout','ui.notifications'].includes(feature)))) layer.onRemoved();
     if (['visibility', 'close', 'disconnected', 'destroyed', 'extension-surface', 'shared-style'].includes(type)) layer.onRemoved();
@@ -1098,7 +1111,7 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
     retainedSceneEligible: () => layer.screen === 'dashboard' && !layer.needsAnimation(),
     frameTransportHint: () => layer.frameTransportHint(),
     submitFrame: options.submitFrame, setSurfaceVisible: options.setSurfaceVisible, removeSurface: options.removeSurface, reconfigureSurface: options.reconfigureSurface,
-    onClosed: () => { layer.onRemoved(); unsubscribe(); offWeather(); offHostState(); offHostEvent(); clearInterval(clockTimer); if (activeLayer === layer) activeLayer = null; options.onClosed(); },
+    onClosed: () => { layer.onRemoved(); unsubscribe(); offWeather(); offHostState(); offHostEvent(); offConfig(); clearInterval(clockTimer); if (activeLayer === layer) activeLayer = null; options.onClosed(); },
   });
   if (getT3Config().enabled && !state.demo) void connectT3();
   return app;

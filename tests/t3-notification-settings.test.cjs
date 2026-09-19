@@ -10,6 +10,8 @@ function loadSettings(actionResult) {
   let resolveAction;
   const actionPromise = new Promise(resolve => { resolveAction = resolve; });
   const saves = [];
+  const configSaves = [];
+  let config = { bridgeUrl: '', notificationOverride: true, assistantProjectId: '', assistantEnvironmentId: '', assistantModel: '', assistantReasoning: '', refinementProvider: 't3', activityIndicatorMode: 'fluid' };
   class Observable {
     constructor() { this.values = {}; }
     set(key, value) { this.values[key] = value; }
@@ -19,7 +21,12 @@ function loadSettings(actionResult) {
     '@nativescript/core': { Observable, Frame: {}, Application: { android: {} }, Utils: {}, action: () => actionResult === undefined ? actionPromise : Promise.resolve(actionResult), alert: async () => {} },
     '../extensions/settings': { customizationGroups: [], customizationsEnabled: () => true, customizationEnabled: () => true, setCustomizationsEnabled: () => {}, setCustomizationEnabled: () => {} },
     '../extensions/host': { onHostEvent: () => () => {}, effectiveFeature: () => undefined, ownsFeature: () => false },
-    '../t3/config': { getT3Config: () => ({ bridgeUrl: '', notificationOverride: true, assistantProjectId: '', assistantEnvironmentId: '', assistantModel: '', assistantReasoning: '', refinementProvider: 't3' }), saveT3Config: () => {} },
+    '../t3/config': { getT3Config: () => config, saveT3Config: update => { configSaves.push(update); config = { ...config, ...update }; } },
+    '../t3/activity-indicator-mode': {
+      normalizeT3ActivityIndicatorMode: value => value === 'efficient' || value === 'static' ? value : 'fluid',
+      T3_ACTIVITY_INDICATOR_MODES: ['fluid', 'efficient', 'static'],
+      t3ActivityIndicatorLabel: value => value === 'efficient' ? 'Battery saver (2 updates/sec)' : value === 'static' ? 'Static' : 'Smooth (about 7 updates/sec)',
+    },
     '../t3/pairing': {},
     '../t3/client': { t3Client: { state: () => ({ status: 'Disconnected' }), onStateChange: () => () => {} } },
     '../t3/notification-preferences': {
@@ -37,7 +44,7 @@ function loadSettings(actionResult) {
   const source = fs.readFileSync('app/phone-ui/t3-settings-page.ts', 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText,
     { module, exports: module.exports, require: name => imports[name] });
-  return { module, actionPromise, resolveAction, saves };
+  return { module, actionPromise, resolveAction, saves, configSaves };
 }
 
 test('notification duration picker offers exact choices and persists selection', async () => {
@@ -47,6 +54,18 @@ test('notification duration picker offers exact choices and persists selection',
   assert.equal(page.bindingContext.get('notificationPreviewLabel'), 'Notification preview: 5 seconds');
   await page.bindingContext.chooseNotificationPreviewSeconds();
   assert.deepEqual(saves, [7]);
+  module.exports.unloaded({ object: page });
+});
+
+test('activity indicator picker persists the bounded battery-saver mode', async () => {
+  const { module, configSaves } = loadSettings('Battery saver (2 updates/sec)');
+  const page = {};
+  module.exports.loaded({ object: page });
+  assert.equal(page.bindingContext.get('activityIndicatorLabel'), 'Activity indicator: Smooth (about 7 updates/sec)');
+  await page.bindingContext.chooseActivityIndicatorMode();
+  assert.equal(configSaves.length, 1);
+  assert.equal(configSaves[0].activityIndicatorMode, 'efficient');
+  assert.equal(page.bindingContext.get('activityIndicatorLabel'), 'Activity indicator: Battery saver (2 updates/sec)');
   module.exports.unloaded({ object: page });
 });
 

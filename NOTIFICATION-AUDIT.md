@@ -32,3 +32,11 @@ Use matching host and T3 builds. Check each case from display-off, the T3 dashbo
 6. After closing a visit, receive another popup and repeat. Verify visible frames and gestures, not only populated inbox data.
 
 Hardware timing and physical display behavior are not established by the automated tests.
+
+## Physical test follow-up: native lifecycle actions
+
+The display-on popup, expansion and reply worked on the glasses. A display-off arrival then expanded and replied successfully, but returned to the dashboard without turning the display off.
+
+Root cause: `ExtensionContract.action()` omitted `notification-return`, `notification-reopen` and `notification-abandon`. Both the provider SDK and host native ingress rejected these actions before the TypeScript handlers could run. The local reader still returned to its saved page; the host retained its handed-off visit, which could suppress subsequent arrivals. Restarting the diagnostic host cleared that state and allowed another screen-off preview.
+
+The native allowlist now admits these three actions exclusively under `ui.notifications`. Existing host checks still bind them to the current provider generation, opaque presentation identity, foreground window, display state and protected-flow rules. The SDK regression fails before the change and passes afterward; the SDK suite and 38 focused host tests pass. Both APKs must be rebuilt against the updated SDK. Content-free arrival and return logs were added for physical verification. Final sleep restoration remains pending the user retest.

@@ -85,7 +85,8 @@ test('a local T3 preview can leave the medium surface without inventing a host l
  h.event('extension-surface',{feature:'ui.notifications',type:'open'});
  h.shell.showNotificationPreview('fixture','','',async()=>true,()=>true);
  assert.equal(await h.shell.handoffNotificationPreview('fixture',preview.presentationId),true);
- assert.equal(h.shell.getNotificationPreviewId(),null);
+ assert.equal(h.shell.isNotificationPreviewCurrent(preview.presentationId),true);
+ assert.equal(h.shell.completeNotificationHandoff('fixture',preview.presentationId),true);
  assert.equal(h.actions.some(args=>args[0]==='ui.notifications'),false);
 });
 
@@ -113,4 +114,30 @@ test('preview recovery translates the local identity to the host lease',async()=
   ['ui.notifications','notification-reopen',{presentationId:'host-lease'},5000],
   ['ui.notifications','notification-abandon',{presentationId:'host-lease'},5000],
  ]);
+});
+
+test('late host close preserves the opening card until the destination is ready', async () => {
+ const h=setup();let preview;
+ h.localShellEvents.add((type,data)=>{if(type==='preview')preview=data;});
+ h.event('extension-surface',{feature:'ui.notifications',type:'open'});
+ h.shell.showNotificationPreview('fixture','','',async()=>true,()=>true,false,'host-lease');
+ await h.shell.handoffNotificationPreview('fixture',preview.presentationId);
+ h.event('extension-surface',{feature:'ui.notifications',type:'close',presentationId:'host-lease'});
+ assert.equal(h.shell.isNotificationPreviewCurrent(preview.presentationId),true);
+ assert.equal(h.shell.completeNotificationHandoff('fixture',preview.presentationId),true);
+});
+
+test('notification window readiness follows the SDK result, not transport acceptance',async()=>{
+ const source=fs.readFileSync('app/ui/shell/shell.ts','utf8');
+ for(const state of ['applied','rejected','unknown']) {
+  let resolve;const calls=[],exports={};
+  const imports={
+   '../../native/notification-icons':{},'../../apps/t3/runtime':{},
+   '../../extensions/host':{hostState:{screenOn:true},onHostEvent(){},sdkControls:()=>({supports:()=>true,request:(...args)=>{calls.push(args);return new Promise(done=>{resolve=done;});}})},
+  };
+  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{exports,require:name=>imports[name]});
+  let completed=false;const pending=exports.shell.ensureWindowOpen('t3').then(value=>{completed=true;return value;});
+  await Promise.resolve();assert.equal(completed,false);assert.equal(calls[0][0],'window.open');assert.equal(calls[0][1].target,'');
+  resolve({state});assert.equal(await pending,state==='applied');
+ }
 });

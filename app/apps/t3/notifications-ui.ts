@@ -140,15 +140,11 @@ async function openNotificationUi(notificationKey?: string, returnToSleep = fals
       notificationTrace('handoff-complete');
     }
     await openWindow();
-    if (state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity() || (alert && !findT3Alert(alert.id)) ||
+    if (presentationId ? !await shell.ensureWindowOpen('t3') : !shell.isWindowFocused('t3') && shell.focusWindow('t3') === false) { notificationTrace('open-rejected reason=focus-failed', true); return false; }
+    if ((presentationId && !shell.isNotificationPreviewCurrent(presentationId)) || state.demo || getT3Config().notificationOverride !== true || pairing !== pairingIdentity() || (alert && !findT3Alert(alert.id)) ||
         (source && !allowedPhoneNotifications().some(item => item.key === source.key && item.postTime === source.postTime))) {
       notificationTrace(`open-rejected reason=state-changed mode=${state.demo?'demo':'live'} override=${getT3Config().notificationOverride===true} pairing=${pairing===pairingIdentity()} alert=${!alert||Boolean(findT3Alert(alert.id))} source=${!source||allowedPhoneNotifications().some(item=>item.key===source.key&&item.postTime===source.postTime)}`, true); return false;
     }
-    // The host can make the APK window foreground before its next host-state
-    // snapshot reaches this provider. Do not wait on that stale snapshot: the
-    // bell path focuses and paints immediately, and the host rejects the open
-    // request synchronously when it cannot accept it.
-    if (!shell.isWindowFocused('t3') && shell.focusWindow('t3') === false) { notificationTrace('open-rejected reason=focus-failed', true); return false; }
     notificationTrace('reader-state-opening');
     openT3Notification(alert?.id, previous, returnToSleep, hostPresentationId);
     opened = true;
@@ -306,8 +302,8 @@ export async function openT3Alert(alert: T3Alert, returnToSleep = false, present
       handedOff = true;
     }
     await openWindow();
-    if (!state.alerts.includes(alert) || state.demo !== demo || pairing !== pairingIdentity()) return false;
-    if (!shell.isWindowFocused('t3') && shell.focusWindow('t3') === false) return false;
+    if (presentationId ? !await shell.ensureWindowOpen('t3') : !shell.isWindowFocused('t3') && shell.focusWindow('t3') === false) return false;
+    if ((presentationId && !shell.isNotificationPreviewCurrent(presentationId)) || !state.alerts.includes(alert) || state.demo !== demo || pairing !== pairingIdentity()) return false;
     openT3Thread(resourceKey(alert.threadId, alert.environmentId), previous, hostPresentationId);
     opened = true;
     if (!presentationId) shell.closeNotificationPreview(alert.id, false);

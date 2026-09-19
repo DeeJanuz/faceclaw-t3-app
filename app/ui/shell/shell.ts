@@ -81,7 +81,7 @@ export const shell={
   // T3-owned completions may arrive before the host publishes the Android
   // notification lease. They still need to leave the medium preview locally;
   // there is no host lease that can be safely echoed in an action.
-  if(!hostPresentationId){notificationSurface=false;preview=null;local('preview-handoff',{...selected});return true;}
+  if(!hostPresentationId){notificationSurface=false;return true;}
   pendingHandoffHostPresentationId=hostPresentationId;
   try {
    await requestHostAction('ui.notifications','close-surface',{presentationId:hostPresentationId,restoreSleep:false},5000);
@@ -93,17 +93,17 @@ export const shell={
    if(error&&typeof error==='object'&&String((error as Error).message)==='HOST_ACTION_OUTCOME_UNKNOWN')void requestHostAction('ui.notifications','notification-reopen',{presentationId:hostPresentationId},5000).catch(()=>{});
    return false;
   }
-  pendingHandoffHostPresentationId=undefined;
-  if(!preview||preview.presentationId!==selected.presentationId)return true;
+  if(!preview||preview.presentationId!==selected.presentationId)return false;
   // Keep the local card and its identity until the destination confirms that
   // it is open. If window creation fails, the host can reopen the same lease
   // and the still-bound card remains the retry target.
   notificationSurface=false;return true;
  },
+ isNotificationPreviewCurrent(presentationId:string):boolean{return Boolean(preview&&(preview.presentationId===presentationId||preview.hostPresentationId===presentationId));},
  completeNotificationHandoff(id:string,presentationId?:string):boolean{
   if(!preview||preview.id!==id||!presentationId||
      !(preview.presentationId===presentationId||preview.hostPresentationId===presentationId))return false;
-  const completed=preview;preview=null;local('preview-handoff',{...completed});return true;
+  const completed=preview;pendingHandoffHostPresentationId=undefined;preview=null;local('preview-handoff',{...completed});return true;
  },
  closeNotificationPreview(id:string,_restore=true,presentationId?:string,releaseHostSurface=true){
   if(preview?.id===id && (!presentationId || preview.presentationId===presentationId || preview.hostPresentationId===presentationId)){
@@ -124,8 +124,8 @@ export const shell={
   const hostPresentationId=preview&&(preview.presentationId===presentationId||preview.hostPresentationId===presentationId)?preview.hostPresentationId:presentationId;
   if(!hostPresentationId)return Promise.resolve(false);
   return requestHostAction('ui.notifications','notification-reopen',{presentationId:hostPresentationId},5000)
-   .then((result:any)=>result?.ok===true)
-   .catch(()=>false);
+   .then((result:any)=>{if(pendingHandoffHostPresentationId===hostPresentationId)pendingHandoffHostPresentationId=undefined;return result?.ok===true;})
+   .catch(()=>{if(pendingHandoffHostPresentationId===hostPresentationId)pendingHandoffHostPresentationId=undefined;return false;});
  },
  abandonNotificationVisit(presentationId:string):Promise<boolean>{
   if(typeof presentationId!=='string'||presentationId.length===0)return Promise.resolve(false);
@@ -146,6 +146,8 @@ export const shell={
  ensureWindowOpen(id:string):Promise<boolean>{
   if(id!=='t3')return Promise.resolve(shell.isWindowFocused(id)||shell.focusWindow(id));
   if(notificationSurface||shell.isWindowFocused('t3'))return Promise.resolve(!notificationSurface);
+  const controls=sdkControls();
+  if(controls.supports('control.result'))return controls.request('window.open',{target:''},3000).then(result=>result.state==='applied').catch(()=>false);
   const baseline=t3OpenSignal;
   let done=false,timer:ReturnType<typeof setTimeout>|null=null,unsubscribe=()=>{};
   const finish=(result:boolean)=>{if(done)return;done=true;if(timer!==null)clearTimeout(timer);unsubscribe();resolve(result);};

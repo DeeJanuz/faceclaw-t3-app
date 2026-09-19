@@ -387,7 +387,7 @@ function notificationHarness(sources = [], requestReply = () => Promise.resolve(
     '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
     '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {} } }),
     '../../ui/notification-routing': { setNotificationOpenRoute() {} },
-    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), reopenNotificationPreview: options.reopen || (async () => true), abandonNotificationVisit: options.abandon || (async () => true), ensureWindowOpen: options.ensureWindowOpen, wake() {}, openNotificationModal() {} } },
+    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), reopenNotificationPreview: options.reopen || (async () => true), abandonNotificationVisit: options.abandon || (async () => true), isNotificationPreviewCurrent: options.previewCurrent || (() => true), ensureWindowOpen: options.ensureWindowOpen || (async () => true), wake() {}, openNotificationModal() {} } },
     '../../native/notification-icons': { requestNotificationReply: requestReply, readActiveNotifications: () => sources, dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
     '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification() {}, dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
     './runtime': { t3Workspace: state, connectT3: async () => { state.demo = false; } },
@@ -420,14 +420,12 @@ test('phone preview releases its host lease before focusing the T3 window', asyn
   const h = notificationHarness([source], undefined, {
     notificationOverride: true,
     handoff: async () => { order.push('handoff'); return true; },
-    // A host-state acknowledgement can lag the already accepted focus request.
-    // The reader must follow the same immediate focus-and-paint route as the bell.
-    ensureWindowOpen: () => { throw new Error('must not wait for a second open acknowledgement'); },
+    ensureWindowOpen: async () => { order.push('window-ready'); return true; },
   });
   h.api.initializeT3Notifications(async () => { order.push('open-window'); });
   const alert = { id: 'phone:message-key:9', kind: 'phone', threadId: 'message-key', title: 'Sender', body: 'Hello', createdAt: 9 };
   assert.equal(await h.api.openT3Alert(alert, false, 'preview-id'), true);
-  assert.deepEqual(order, ['handoff', 'open-window']);
+  assert.deepEqual(order, ['handoff', 'open-window', 'window-ready']);
   assert.deepEqual(h.opened, [['phone:message-key:9', undefined, false, undefined]]);
 });
 test('T3 completion preview releases its host lease before launching the window', async () => {
@@ -755,4 +753,21 @@ test('assistant rejects an owner mismatch without retrying or reading the wrong 
   const api=load('app/t3/assistant.ts',{'./config':{getT3Config:()=>({assistantEnvironmentId:'mac',assistantProjectId:'p',assistantProvider:'codex',assistantModel:'model'})},'./client':{t3Client:client}});
   api.sendT3Assistant('hello',{onError:e=>errors.push(e)},()=>{throw Error('fallback')});await flush();
   assert.deepEqual(calls,['assistant.start']);assert.deepEqual(errors,['T3_OPERATION_UNCERTAIN']);
+});
+
+test('popup reader waits for window readiness and rejects a superseded presentation', async () => {
+  for (const ready of [false, true]) {
+    let resolve; let current = true; const reopened = [];
+    const h = notificationHarness([], undefined, {
+      ensureWindowOpen: () => new Promise(done => { resolve = done; }),
+      previewCurrent: () => current, reopen: async id => { reopened.push(id); return true; },
+    });
+    h.api.initializeT3Notifications(async () => {});
+    const alert = { id: 'completion', kind: 't3', threadId: 'thread' }; h.state.alerts = [alert];
+    const pending = h.api.openT3Alert(alert, true, 'preview', 'host');
+    await flush(); assert.deepEqual(h.opened, []);
+    if (ready) current = false;
+    resolve(ready); assert.equal(await pending, false);
+    assert.deepEqual(h.opened, []); assert.deepEqual(reopened, ['preview']);
+  }
 });

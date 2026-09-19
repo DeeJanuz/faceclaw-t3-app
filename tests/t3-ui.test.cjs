@@ -1212,3 +1212,23 @@ test('reader token tracker follows model changes without moving the selected tra
   assert.match(h.layer.readerPage().title, /LUNA · CTX 22k\/128k \| TOTAL 330k/);
   assert.equal(h.layer.scroll, 0);
 });
+
+test('popup dismissal restores the exact T3 page retained behind another app', async () => {
+ const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];
+ h.layer.go('sessions');h.layer.selected='session-7';h.layer.scroll=3;
+ h.layer.openNotification('one','compass',false,'host-visit');
+ await h.layer.handleInput({type:'double-click'});
+ assert.equal(h.layer.screen,'sessions');assert.equal(h.layer.selected,'session-7');assert.equal(h.layer.scroll,3);
+ assert.deepEqual(h.navigation.returned,['host-visit']);
+});
+
+test('popup over the dashboard preserves its selection on reply or dismissal', async () => {
+ for(const reply of [false,true]) {
+  const h=setup();h.state.alerts=[{id:'one',kind:'phone'}];h.layer.selected='sessions';
+  h.layer.openNotification('one',undefined,true,'host-visit');
+  if(reply){h.setReply({isCurrent:()=>true,send:()=>true});await h.layer.handleInput({type:'click'});h.reviews[0][0].onSend('Reply');await new Promise(resolve=>setImmediate(resolve));}
+  else await h.layer.handleInput({type:'double-click'});
+  assert.equal(h.layer.screen,'dashboard');assert.equal(h.layer.selected,'sessions');
+  assert.deepEqual(h.navigation.returned,['host-visit']);assert.equal(h.navigation.yielded,0,'host visit owns power restoration');
+ }
+});

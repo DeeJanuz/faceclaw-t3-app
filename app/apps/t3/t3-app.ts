@@ -260,7 +260,7 @@ export class T3Layer implements Layer {
   openNotification(alertId?: string, returnWindowId?: string, returnToSleep = false, notificationVisitId?: string): void {
     this.returnWindowId = returnWindowId && returnWindowId !== T3_WINDOW_ID && !returnWindowId.startsWith('apk:com.faceclaw.t3/') ? returnWindowId : null;
     this.notificationVisitId = typeof notificationVisitId === 'string' ? notificationVisitId : '';
-    if (this.screen === 'dashboard') this.selected = 'inbox';
+    if (this.screen === 'dashboard' && !notificationVisitId) this.selected = 'inbox';
     this.notificationId = alertId || '';
     const alert = alertId ? findT3Alert(alertId) : undefined;
     this.notificationReturnToSleep = alert?.kind === 'phone' && returnToSleep;
@@ -1064,13 +1064,9 @@ export class T3Layer implements Layer {
     // already focused or slept the captured origin.
     if (!visitId && returnToSleep) shell.sleepAtAppRoot();
     this.returnNotificationVisit(visitId, returnWindowId);
-    if (returnWindowId) {
-      this.go('inbox', false);
-    } else {
-      if (returnToSleep || !returnToInbox) shell.closeNotificationReader();
-      this.notificationReturnTransition = Boolean(visitId && animateTransition);
-      this.back(animateTransition, false);
-    }
+    if (!visitId && (returnToSleep || !returnToInbox)) shell.closeNotificationReader();
+    this.notificationReturnTransition = Boolean(visitId && animateTransition);
+    this.back(animateTransition, false);
     this.notificationClosing = false;
   }
 

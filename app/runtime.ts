@@ -188,7 +188,7 @@ export function initializeAppRuntime():void{
         // regular T3 window. Keep this identity guard for stale completions.
         if (typeof shell.completeNotificationHandoff === 'function') shell.completeNotificationHandoff(selected.id,presentationId);
         else shell.closeNotificationPreview(selected.id,false,presentationId,false);
-        notificationMode='reader';requestWindowPaintAfterNotificationHandoff();
+        requestWindowPaintAfterNotificationHandoff();
       } else layer.reopenAfterOpenFailure();
     },()=>{
       if(preview?.presentationId===presentationId && previewLayer===layer) layer.reopenAfterOpenFailure();
@@ -215,6 +215,7 @@ export function initializeAppRuntime():void{
   }
   if(type==='preview-handoff'){
    if(preview&&data?.presentationId&&data.presentationId!==preview.presentationId&&data.presentationId!==preview.hostPresentationId)return;
+   surfaces.delete('ui.notifications');
    preview=null;previewLayer?.onRemoved();previewLayer=null;notificationHostPresentationId=undefined;notificationMode=undefined;notificationSurface=false;
    getApp().resize(width,height);setAppViewport(width,height);getApp().requestRender();
   }
@@ -259,7 +260,9 @@ export function initializeAppRuntime():void{
     // Keep the local card alive until that result decides whether to settle or
     // reopen it after an unknown/rejected action.
     if(feature==='ui.notifications'&&previewLayer?.isOpening()&&
-       (!data.presentationId||data.presentationId===notificationHostPresentationId))return;
+       (!data.presentationId||data.presentationId===notificationHostPresentationId)){
+     surfaces.delete(feature);notificationSurface=false;return;
+    }
     surfaces.delete(feature);if(feature==='ui.notifications'){notificationSurface=false;notificationHostPresentationId=undefined;notificationMode=undefined;preview=null;previewLayer?.onRemoved();previewLayer=null;getApp().resize(width,height);setAppViewport(width,height);}return;
    }
    if(data.type==='open'||data.type==='resize'){

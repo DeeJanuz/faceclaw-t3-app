@@ -6,7 +6,11 @@ const ts = require('typescript');
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (!(name in imports)) throw new Error(name); return imports[name]; }, URL, setTimeout, clearTimeout, ...globals });
+  vm.runInNewContext(code, { module, exports: module.exports, require: (name) => {
+    if (name === './resource') return load('app/apps/t3/resource.ts');
+    if (name === './token-accounting') return load('app/apps/t3/token-accounting.ts');
+    if (!(name in imports)) throw new Error(name); return imports[name];
+  }, URL, setTimeout, clearTimeout, ...globals });
   return module.exports;
 }
 const security = load('app/t3/security.ts');
@@ -627,8 +631,8 @@ test('transcript load sanitizes optional controls and rejects a mismatched threa
   await f.workspace.refreshTranscript(); assert.match(f.workspace.error, /T3_INVALID_RESPONSE/);
 });
 
-test('token contexts follow Astra to Luna to Astra while the session total stays cumulative', async () => {
-  const usage = (contextTokens, contextWindowTokens, totalTokens, updatedAt) => ({ contextTokens, contextWindowTokens, totalTokens, updatedAt });
+test('token contexts follow Astra to Luna to Astra while each model transition resets total usage', async () => {
+  const usage = (contextTokens, contextWindowTokens, totalTokens, updatedAt, latestTotalTokens = totalTokens) => ({ contextTokens, contextWindowTokens, totalTokens, latestTotalTokens, updatedAt });
   const transcript = (model, tokenUsage) => ({ snapshotId: String(tokenUsage.totalTokens),
     session: { id: 'thread', projectId: 'project', status: 'ready', modelSelection: { instanceId: 'codex', model } },
     tokenUsage, turns: [], liveActivity: null, liveActivities: [] });
@@ -639,19 +643,36 @@ test('token contexts follow Astra to Luna to Astra while the session total stays
 
   response = transcript('gpt-5.6-luna', usage(48000, 272000, 312000, '2026-09-15T12:00:00.000Z'));
   await workspace.refreshTranscript();
-  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(null, null, 312000, null), 'unchanged Astra event is not relabeled as Luna');
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(null, null, 0, null, 312000), 'unchanged Astra event is not relabeled as Luna');
 
   response = transcript('gpt-5.6-luna', usage(22000, 128000, 330000, '2026-09-15T12:01:00.000Z'));
   await workspace.refreshTranscript();
-  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(22000, 128000, 330000, '2026-09-15T12:01:00.000Z'));
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(22000, 128000, 18000, '2026-09-15T12:01:00.000Z', 330000));
 
   response = transcript('gpt-6-astra', usage(22000, 128000, 330000, '2026-09-15T12:01:00.000Z'));
   await workspace.refreshTranscript();
-  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(48000, 272000, 330000, '2026-09-15T12:00:00.000Z'), 'switching back restores Astra context with the latest session total');
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(48000, 272000, 0, '2026-09-15T12:00:00.000Z', 330000), 'switching back restores Astra context and resets total');
 
   response = transcript('gpt-6-astra', { ...usage(50000, 272000, 340000, '2026-09-15T12:02:00.000Z'), secret: 'removed' });
   await workspace.refreshTranscript();
-  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(50000, 272000, 340000, '2026-09-15T12:02:00.000Z'));
+  assert.deepEqual(JSON.parse(JSON.stringify(workspace.transcript.tokenUsage)), usage(50000, 272000, 10000, '2026-09-15T12:02:00.000Z', 340000));
+});
+test('model-scoped token intervals survive workspace recreation for the same pairing', async () => {
+  const records = { value: null };
+  const storage = { scope: () => 'paired-host', load: () => records.value,
+    save: value => { records.value = JSON.parse(JSON.stringify(value)); } };
+  let response = { snapshotId: '1', session: { id: 'thread', projectId: 'project', status: 'ready',
+    modelSelection: { instanceId: 'codex', model: 'astra' } }, tokenUsage: {
+      contextTokens: 50, contextWindowTokens: 100, totalTokens: 100, latestTotalTokens: 100, updatedAt: '2026-09-15T12:00:00Z' },
+    turns: [], liveActivity: null, liveActivities: [] };
+  const api = { rpc: async () => JSON.parse(JSON.stringify(response)) };
+  let workspace = new T3Workspace(api); workspace.setTokenAccountingStorage(storage);
+  await workspace.openThread('thread');
+  response.session.modelSelection.model = 'luna'; await workspace.refreshTranscript();
+  response.tokenUsage = { ...response.tokenUsage, totalTokens: 130, latestTotalTokens: 130, updatedAt: '2026-09-15T12:01:00Z' };
+  await workspace.refreshTranscript(); assert.equal(workspace.transcript.tokenUsage.totalTokens, 30);
+  workspace = new T3Workspace(api); workspace.setTokenAccountingStorage(storage);
+  await workspace.openThread('thread'); assert.equal(workspace.transcript.tokenUsage.totalTokens, 30);
 });
 test('draft mode applies only to idle sends and never silently changes an active steer', async () => {
   const f = controlWorkspace();
@@ -672,6 +693,13 @@ test('reasoning controls retain expected model identity and refuse stale or acti
   assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0].params)), { threadId: 'thread', reasoningId: 'low', expectedModel: { instanceId: 'codex', model: 'model' } });
   f.calls.length = 0; f.transcript.session.status = 'running';
   assert.equal(await f.workspace.setReasoning('thread', 'high', { instanceId: 'codex', model: 'model' }), false); assert.equal(f.calls.length, 0);
+});
+test('model controls strip reasoning metadata from the strict optimistic-concurrency payload', async () => {
+  const f = controlWorkspace();
+  assert.equal(await f.workspace.setModel('thread', { instanceId: 'codex', model: 'other', reasoningId: 'low' },
+    { instanceId: 'codex', model: 'model', reasoningId: 'high' }), true);
+  assert.equal(f.calls[0].method, 'thread.model.set');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0].params.expectedModel)), { instanceId: 'codex', model: 'model' });
 });
 test('plan approval persists intent before dispatch and blocks duplicate approvals across restart', async () => {
   const f = controlWorkspace(); const original = f.api.rpc;

@@ -39,7 +39,7 @@ class T3SettingsModel extends Observable {
     this.syncCustomizations();
     this.set('phoneNotifications', readT3PhoneNotificationsEnabled());
     this.syncNotificationPreviewSeconds();
-    for (const key of ['enabled', 'preferAssistant', 'bridgeDictation', 'allowTools', 'notificationOverride'] as const) this.set(key, this.config[key]);
+    for (const key of ['enabled', 'preferAssistant', 'bridgeDictation', 'allowTools', 'notificationOverride', 'composerOverride'] as const) this.set(key, this.config[key]);
     const project = t3Workspace.projects.find(p => p.id === this.config.assistantProjectId && (this.config.assistantEnvironmentId ? p.environmentId === this.config.assistantEnvironmentId : t3Workspace.environments?.find(e => e.isPrimary)?.environmentId === p.environmentId));
     this.set('projectLabel', project ? `Project: ${project.title}${project.environmentLabel ? " · " + project.environmentLabel : ""}` : this.config.assistantProjectId ? 'Change assistant project' : 'Choose assistant project');
     this.set('modelLabel', this.config.assistantModel ? `Model: ${this.config.assistantModel}` : 'Choose assistant model');
@@ -55,7 +55,7 @@ class T3SettingsModel extends Observable {
   private syncCustomizations():void {
     this.set('customizationsEnabled',customizationsEnabled());
     for(const group of customizationGroups){this.set(`custom_${group.id.replace('-','_')}`,customizationEnabled(group.id));}
-    this.set('overrideStatus',[...customizationGroups.map(g=>({feature:`ui.${g.id}`,label:g.label})),{feature:'notification-content',label:'Own inbox content'},{feature:'ui.notifications',label:'Notifications'},{feature:'assistant',label:'Assistant'},{feature:'transcription',label:'Transcription'},{feature:'refinement',label:'Refinement'},{feature:'device-tools',label:'Device tools'}].map(item=>`${item.label}: ${item.feature==='notification-content'?(effectiveFeature(item.feature)?.contenders?.some(candidate=>candidate.component?.startsWith('com.faceclaw.t3/')&&candidate.granted)?'Allowed while T3 is visible':'Awaiting host approval'):ownsFeature(item.feature)?'Active':effectiveFeature(item.feature)?.component?'Another app has priority':'Disabled or awaiting host approval'}`).join('\n'));
+    this.set('overrideStatus',[...customizationGroups.map(g=>({feature:`ui.${g.id}`,label:g.label})),{feature:'notification-content',label:'Own inbox content'},{feature:'ui.notifications',label:'Notifications'},{feature:'ui.composer',label:'Message composer'},{feature:'assistant',label:'Assistant'},{feature:'transcription',label:'Transcription'},{feature:'refinement',label:'Refinement'},{feature:'device-tools',label:'Device tools'}].map(item=>`${item.label}: ${item.feature==='notification-content'?(effectiveFeature(item.feature)?.contenders?.some(candidate=>candidate.component?.startsWith('com.faceclaw.t3/')&&candidate.granted)?'Allowed while T3 is visible':'Awaiting host approval'):ownsFeature(item.feature)?'Active':effectiveFeature(item.feature)?.component?'Another app has priority':'Disabled or awaiting host approval'}`).join('\n'));
   }
   toggleCustomizations=(args:EventData)=>{if(this.ready)setCustomizationsEnabled(this.checked(args));this.syncCustomizations();};
   toggleLauncher=(args:EventData)=>{if(this.ready)setCustomizationEnabled('launcher',this.checked(args));this.syncCustomizations();};
@@ -101,6 +101,7 @@ class T3SettingsModel extends Observable {
   toggleDictation = (args: EventData) => { if (this.ready && this.checked(args) !== this.config.bridgeDictation) this.save({ bridgeDictation: this.checked(args) }); };
   toggleTools = (args: EventData) => { if (this.ready && this.checked(args) !== this.config.allowTools) this.save({ allowTools: this.checked(args) }); };
   toggleNotifications = (args: EventData) => { if (this.ready && this.checked(args) !== this.config.notificationOverride) this.save({ notificationOverride: this.checked(args) }); };
+  toggleComposer = (args: EventData) => { if (this.ready && this.checked(args) !== this.config.composerOverride) this.save({ composerOverride: this.checked(args) }); };
   togglePhoneNotifications = async (args: EventData) => {
     if (!this.ready) return;
     const requested = this.checked(args);

@@ -24,12 +24,23 @@ type T3DictationOptions = {
   /** Called after the sole review surface's send tap. */
   onDraft: (text: string) => void;
   onCancelled: () => void;
+  /** Session-scoped capture transport. The host supplies this for cross-app composition. */
+  capture?: {
+    onTranscript: (listener: (value: VoiceTranscriptEvent) => void) => () => void;
+    onStatus: (listener: (value: { status: string }) => void) => () => void;
+    start: (mode: "message" | "edit") => void | Promise<void>;
+    finish: () => void | Promise<void>;
+    cancel?: () => void | Promise<void>;
+  };
+  initialText?: string;
+  destinationLabel?: string;
+  confirmLabel?: string;
   refine?: (options: { original: string; followup: string; onDone: (text: string) => void; onError: (error: string) => void }) => AnthropicStreamHandle;
 };
 
 /** T3's direct capture surface, independent of the shell's generic send menu. */
 export class T3DictationLayer implements Layer {
-  private phase: "capturing" | "finalizing" | "review" | "continuing" | "finalizing-refinement" | "refining" | "error" | "closing" = "capturing";
+  private phase: "capturing" | "finalizing" | "review" | "continuing" | "finalizing-refinement" | "refining" | "cancelling" | "error" | "closing" = "capturing";
   private text = "";
   private cachedLayout: { source: string; font: ReturnType<typeof getDefaultSmallFont>; width: number; height: number; pages: string[][]; lines: string[] } | null = null;
   private motionContent: GrayImage | null = null;
@@ -50,8 +61,36 @@ export class T3DictationLayer implements Layer {
   private reviewPage = 0;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
+  private cancellationRequested = false;
 
-  constructor(private readonly options: T3DictationOptions) {}
+  constructor(private readonly options: T3DictationOptions) {
+    const initial = options.initialText?.trim() ?? "";
+    if (initial) { this.text = initial; this.phase = "review"; }
+  }
+
+  private captureTransport() {
+    return this.options.capture ?? {
+      onTranscript: (listener: (value: VoiceTranscriptEvent) => void) => voiceControlBridge.onTranscript(listener),
+      onStatus: (listener: (value: { status: string }) => void) => voiceControlBridge.onStatus(listener),
+      start: (_mode: "message" | "edit") => this.options.actions.startVoiceCapture(false),
+      finish: () => this.options.actions.stopVoiceCapture(),
+      cancel: () => voiceControlBridge.cancelCapture?.(),
+    };
+  }
+
+  private bindCaptureEvents(): void {
+    if (this.unsubscribeTranscript || this.unsubscribeStatus) return;
+    const capture = this.captureTransport();
+    this.unsubscribeTranscript = capture.onTranscript(event => this.onTranscript(event));
+    let subscribing = true;
+    this.unsubscribeStatus = capture.onStatus(state => {
+      if (subscribing || this.removed || this.phase === "closing" || this.phase === "cancelling") return;
+      if (/^Ignored|^T3_STT_UNAVAILABLE|not downloaded|needs an active|Could not start|Voice control failed/i.test(state.status)) {
+        this.fail(/^Ignored/i.test(state.status) ? "Voice not recognized. Nothing sent." : "Dictation unavailable. Nothing sent.");
+      }
+    });
+    subscribing = false;
+  }
 
   isAnimatingCard(): boolean {
     return !this.removed && (this.phase === "closing" ? presentationNow() - this.closedAt < CARD_MOTION_MS
@@ -70,20 +109,13 @@ export class T3DictationLayer implements Layer {
 
   startCapture(): void {
     if (this.removed || this.capturing) return;
+    if (this.phase === "review") { this.options.actions.requestRender(); return; }
     this.startedAt = Date.now();
     this.expansionStartedAt = null;
     this.capturing = true;
-    this.unsubscribeTranscript = voiceControlBridge.onTranscript(event => this.onTranscript(event));
-    // onStatus replays the preceding capture's status upon subscription.
-    // Ignore that replay; only events emitted after this capture starts apply.
-    let subscribing = true;
-    this.unsubscribeStatus = voiceControlBridge.onStatus(state => {
-      if (subscribing || this.removed || this.phase === "closing") return;
-      if (/^Ignored|^T3_STT_UNAVAILABLE|not downloaded|needs an active|Could not start|Voice control failed/i.test(state.status)) {
-        this.fail(/^Ignored/i.test(state.status) ? "Voice not recognized. Nothing sent." : "Dictation unavailable. Nothing sent.");
-      }
-    });
-    subscribing = false;
+    const capture = this.captureTransport();
+    // onStatus may replay the preceding capture. bindCaptureEvents ignores it.
+    this.bindCaptureEvents();
     // Only the elapsed-seconds label is timer driven. Card motion itself asks
     // for its next host render credit through the submitted frame.
     this.elapsedTimer = setInterval(() => {
@@ -93,7 +125,7 @@ export class T3DictationLayer implements Layer {
       this.lastRenderedSecond = second;this.options.actions.requestRender();
     }, 1000);
     try {
-      void Promise.resolve(this.options.actions.startVoiceCapture(false)).catch(() => this.fail("Could not start dictation. Nothing sent."));
+      void Promise.resolve(capture.start("message")).catch(() => this.fail("Could not start dictation. Nothing sent."));
     } catch {
       this.fail("Could not start dictation. Nothing sent.");
     }
@@ -113,14 +145,14 @@ export class T3DictationLayer implements Layer {
 
   private stopCapture(): void {
     try {
-      void Promise.resolve(this.options.actions.stopVoiceCapture()).catch(() => this.fail("Could not finish dictation. Nothing sent."));
+      void Promise.resolve(this.captureTransport().finish()).catch(() => this.fail("Could not finish dictation. Nothing sent."));
     } catch {
       this.fail("Could not finish dictation. Nothing sent.");
     }
   }
 
   private onTranscript(event: VoiceTranscriptEvent): void {
-    if (this.removed || this.phase === "closing" || this.phase === "error" || this.delivered) return;
+    if (this.removed || this.phase === "closing" || this.phase === "cancelling" || this.phase === "error" || this.delivered) return;
     if (this.phase === "refining" || this.phase === "review") return;
     // Events contain the entire current utterance, not incremental deltas.
     this.text = event.text.trim();
@@ -175,19 +207,10 @@ export class T3DictationLayer implements Layer {
   }
 
   handleInput(event: InputEvent): void {
-    if (this.removed || this.phase === "closing") return;
+    if (this.removed || this.phase === "closing" || this.phase === "cancelling") return;
     if (event.type === "double-click" || (event.type === "click" && this.phase === "error")) {
-      this.phase = "closing";
-      this.closedAt = presentationNow();
-      this.backdrop = null;
-      this.text = "";
-      this.cachedLayout = null;
-      this.motionContent = null;
-      if (this.capturing) {
-        this.capturing = false;
-        this.stopCapture();
-      }
-      this.options.actions.requestRender();
+      if (this.options.capture?.cancel) this.cancelSharedCapture();
+      else this.closeLocalCapture();
     } else if (this.phase === "review" && (event.type === "swipe-down" || event.type === "scroll-down")) {
       this.startContinuation();
     } else if (this.phase === "review" && (event.type === "swipe-up" || event.type === "scroll-up")) {
@@ -201,6 +224,55 @@ export class T3DictationLayer implements Layer {
     } else if (event.type === "click") {
       this.endCapture();
     }
+  }
+
+  /** A shared composer dismissal is one host transaction. Do not finish the
+   * recognizer first: finish and cancel both consume the same physical gesture. */
+  private cancelSharedCapture(): void {
+    if (this.cancellationRequested || this.removed) return;
+    this.cancellationRequested = true;
+    this.capturing = false;
+    this.phase = "cancelling";
+    this.backdrop = null;
+    this.text = "";
+    this.cachedLayout = null;
+    this.motionContent = null;
+    if (this.finalizeTimer !== null) clearTimeout(this.finalizeTimer);
+    this.finalizeTimer = null;
+    this.refinement?.cancel();
+    this.refinement = null;
+    this.operation++;
+    this.options.actions.requestRender();
+    try {
+      void Promise.resolve(this.options.capture!.cancel!()).then(() => {
+        if (!this.removed && this.phase === "cancelling") this.options.dismiss();
+      }, () => {
+        if (this.removed || this.phase !== "cancelling") return;
+        this.cancellationRequested = false;
+        this.phase = "error";
+        this.error = "Could not cancel dictation. Tap or double tap to retry.";
+        this.options.actions.requestRender();
+      });
+    } catch {
+      this.cancellationRequested = false;
+      this.phase = "error";
+      this.error = "Could not cancel dictation. Tap or double tap to retry.";
+      this.options.actions.requestRender();
+    }
+  }
+
+  private closeLocalCapture(): void {
+    this.phase = "closing";
+    this.closedAt = presentationNow();
+    this.backdrop = null;
+    this.text = "";
+    this.cachedLayout = null;
+    this.motionContent = null;
+    if (this.capturing) {
+      this.capturing = false;
+      this.stopCapture();
+    }
+    this.options.actions.requestRender();
   }
 
   private sendDraft(): void {
@@ -219,8 +291,9 @@ export class T3DictationLayer implements Layer {
     this.reviewPage = 0;
     this.phase = "continuing";
     this.capturing = true;
+    this.bindCaptureEvents();
     try {
-      void Promise.resolve(this.options.actions.startVoiceCapture(false)).catch(() => this.fail("Could not start refinement. Nothing sent."));
+      void Promise.resolve(this.captureTransport().start("edit")).catch(() => this.fail("Could not start refinement. Nothing sent."));
     } catch {
       this.fail("Could not start refinement. Nothing sent.");
     }
@@ -380,9 +453,10 @@ export class T3DictationLayer implements Layer {
     const left = viewport.x, top = viewport.y;
     const font = getDefaultSmallFont();
     const lineHeight = cardLineStep(font);
-    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "continuing" ? "REFINEMENT INPUT" : this.phase === "finalizing-refinement" ? "FINISHING EDIT" : this.phase === "refining" ? "REFINING" : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : this.phase === "review" ? "REVIEW DRAFT" : "DICTATION";
+    const title = this.phase === "closing" ? "CANCELLED" : this.phase === "cancelling" ? "CANCELLING" : this.phase === "capturing" ? `LISTENING | ${Math.floor((Date.now() - this.startedAt) / 1000)}s` : this.phase === "continuing" ? "REFINEMENT INPUT" : this.phase === "finalizing-refinement" ? "FINISHING EDIT" : this.phase === "refining" ? "REFINING" : this.phase === "finalizing" ? "FINISHING TRANSCRIPT" : this.phase === "review" ? "REVIEW DRAFT" : "DICTATION";
     image.drawText(font, left + 16, top + 14, title, 190);
-    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "error" ? `${this.error}\n\nTap to go back.` : this.text || (this.phase === "capturing" ? "Speak your message..." : this.phase === "continuing" ? "Say an edit or follow-up..." : this.phase === "finalizing-refinement" ? "Waiting for final edit..." : this.phase === "refining" ? "Luna is refining..." : "Nothing sent.");
+    if (this.options.destinationLabel) image.drawText(font, left + 16, top + 39, this.options.destinationLabel.slice(0, 48), 150);
+    const body = this.phase === "closing" ? "Nothing sent." : this.phase === "cancelling" ? "Waiting for the host to close this dictation..." : this.phase === "error" ? `${this.error}\n\nTap to retry.` : this.text || (this.phase === "capturing" ? "Speak your message..." : this.phase === "continuing" ? "Say an edit or follow-up..." : this.phase === "finalizing-refinement" ? "Waiting for final edit..." : this.phase === "refining" ? "Luna is refining..." : "Nothing sent.");
     const textWidth = viewport.width - 37;
     const textHeight = viewport.height - 65 - font.lineHeight - 28;
     let layout = this.cachedLayout;
@@ -405,7 +479,7 @@ export class T3DictationLayer implements Layer {
     if (this.phase === "review") {
       const pageHint = this.cachedLayout.pages.length > 1 ? ` · ${this.reviewPage + 1}/${this.cachedLayout.pages.length}` : "";
       const errorHint = this.error ? `Luna: ${this.error} · tap send · swipe down to retry` : "";
-      image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, errorHint || `Tap send · swipe down to refine${pageHint}`, errorHint ? 180 : 145);
+      image.drawText(font, left + 16, top + viewport.height - font.lineHeight - 16, errorHint || `Tap ${this.options.confirmLabel ?? "send"} · swipe down to refine${pageHint}`, errorHint ? 180 : 145);
     }
   }
 
@@ -424,9 +498,13 @@ export class T3DictationLayer implements Layer {
     this.text = "";
     this.cachedLayout = null;
     this.motionContent = null;
-    if (this.capturing) {
+    if (this.capturing && !this.cancellationRequested) {
       this.capturing = false;
-      this.stopCapture();
+      if (!this.options.capture) this.stopCapture();
+      else {
+        const capture = this.captureTransport();
+        try { void Promise.resolve(capture.cancel ? capture.cancel() : capture.finish()).catch(() => {}); } catch { /* Best effort cleanup. */ }
+      }
     }
     // Restore and submit the destination before onClosed clears the opaque
     // shell frame. Cleanup must still run if a destination callback fails.

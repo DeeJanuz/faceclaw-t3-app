@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function setup({ stop, start, refine, origin, raster = false, firstPaint = true, paintDashboard, replay = '', paginate, viewport = { x: 32, y: 96, width: 576, height: 288 } } = {}) {
+function setup({ stop, start, refine, origin, raster = false, firstPaint = true, paintDashboard, replay = '', paginate, viewport = { x: 32, y: 96, width: 576, height: 288 }, capture, initialText, destinationLabel } = {}) {
   const module = { exports: {} };
   const listeners = { transcript: null, status: null };
   const timers = new Map(); let nextTimer = 0; let now = 0;
@@ -62,6 +62,7 @@ function setup({ stop, start, refine, origin, raster = false, firstPaint = true,
   });
   const layer = new module.exports.T3DictationLayer({
     origin, paintDashboard: paintDashboard ? (w, h) => paintDashboard(w, h, Image) : undefined,
+    capture, initialText, destinationLabel,
     actions: {
       requestRender: () => result.renders++,
       startVoiceCapture: (endpointing, transcription) => { result.starts++; result.transcription = transcription; return start?.(listeners); },
@@ -90,6 +91,45 @@ test('reviewed draft can capture a follow-up and route it through Luna refinemen
   refinement.onDone('Concise draft');
   layer.handleInput({ type: 'click' });
   assert.deepEqual(result.drafts, ['Concise draft']);
+});
+
+test('shared composer opens a prefilled draft directly in the same review UI', () => {
+  const transport = { onTranscript: () => () => {}, onStatus: () => () => {}, start: () => assert.fail('prefilled review must not open the microphone'), finish() {}, cancel() {} };
+  const { layer, result, advance } = setup({ capture: transport, initialText: 'Saved Signal draft', destinationLabel: 'Signal message' });
+  assert.equal(layer.phase, 'review'); advance(400);
+  const image = layer.paint({}, () => assert.fail('shared composer must remain opaque'));
+  assert.ok(image.labels.includes('Signal message'));assert.ok(image.labels.includes('Saved Signal draft'));
+  layer.handleInput({ type: 'click' });assert.deepEqual(result.drafts, ['Saved Signal draft']);
+});
+
+test('shared composer cancellation uses one acknowledged cancel and never finishes first', async () => {
+  let resolveCancel; const calls = [];
+  const transport = {
+    onTranscript: () => () => {}, onStatus: () => () => {}, start: () => {},
+    finish: () => calls.push('finish'),
+    cancel: () => { calls.push('cancel'); return new Promise(resolve => { resolveCancel = resolve; }); },
+  };
+  const { layer, result } = setup({ capture: transport });
+  layer.handleInput({ type: 'double-click' });
+  assert.equal(layer.phase, 'cancelling'); assert.deepEqual(calls, ['cancel']);
+  assert.equal(result.closed, 0); assert.equal(result.cancellations, 0);
+  resolveCancel(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['cancel']); assert.equal(result.closed, 1); assert.equal(result.cancellations, 1);
+});
+
+test('rejected shared composer cancellation remains visible and can use a fresh gesture', async () => {
+  let attempts = 0;
+  const transport = {
+    onTranscript: () => () => {}, onStatus: () => () => {}, start: () => {}, finish: () => assert.fail('cancel must not finish capture'),
+    cancel: () => { attempts++; return Promise.reject(new Error('gesture expired')); },
+  };
+  const { layer, result, advance } = setup({ capture: transport });
+  layer.handleInput({ type: 'double-click' }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(layer.phase, 'error'); assert.equal(result.closed, 0); assert.equal(attempts, 1);
+  advance(400); const image = layer.paint({}, () => assert.fail('shared composer must remain opaque'));
+  assert.ok(image.labels.some(label => /retry/i.test(label)));
+  layer.handleInput({ type: 'click' }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attempts, 2); assert.equal(result.closed, 0);
 });
 
 test('refinement waits for the authoritative edit final and ignores late transcripts', () => {

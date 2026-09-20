@@ -9,6 +9,7 @@ import { startT3PowerMonitor } from '../../native/power-monitor';
 
 export const t3Workspace = new T3Workspace(t3Client);
 const NETWORK_UNAVAILABLE_RETRY_MS = 30_000;
+const TOKEN_ACCOUNTING_KEY = 'token-accounting-v1';
 let started = false;
 let demoApi: T3DemoApi | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -66,6 +67,11 @@ export function initializeT3(): void {
     loadApproval: key => loadT3PlanDraft(key),
     saveApproval: key => saveT3PlanDraft(key, { locked: true }),
     removeApproval: key => deleteT3PlanDraft(key),
+  });
+  t3Workspace.setTokenAccountingStorage({
+    scope: () => pairingScope(getT3Config()),
+    load: () => loadT3PlanDraft(JSON.stringify([TOKEN_ACCOUNTING_KEY, pairingScope(getT3Config())])),
+    save: value => saveT3PlanDraft(JSON.stringify([TOKEN_ACCOUNTING_KEY, pairingScope(getT3Config())]), value),
   });
   onT3ConfigChanged(() => { if (!t3Workspace.demo) void connectT3(); });
   startT3PowerMonitor(hint => {

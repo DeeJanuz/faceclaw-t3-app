@@ -31,6 +31,8 @@ let lastFrame:GrayImage|null=null;
 const frames=new Set<(frame:GrayImage)=>void>();
 type RuntimeSurface={width:number;height:number;visible:boolean;generation:number;stack?:LayerStack};
 const surfaces=new Map<string,RuntimeSurface>();
+type SharedComposerRuntime={sessionId:string;purpose:'generic'|'message';label:string;initialText:string;maxText:number;revision:number;layer?:T3DictationLayer;transcripts:Set<(event:{text:string;isFinal:boolean})=>void>;statuses:Set<(event:{status:string})=>void>};
+let sharedComposer:SharedComposerRuntime|null=null;
 let preview:any=null;let previewLayer:TimedNotificationLayer|null=null;let notificationHostPresentationId:string|undefined;let notificationMode:'preview'|'reader'|'inbox'|undefined;
 let lastProtected:boolean|undefined,previewTimer:ReturnType<typeof setTimeout>|null=null,previewPending:GrayImage|null=null,lastPreviewAt=0;
 const rejectedSceneSurfaces=new Set<string>();
@@ -149,7 +151,38 @@ function renderSurface(feature:string):void{
   }
   else if(notificationMode){notificationSurface=true;getApp().resize(surface.width,surface.height);setAppViewport(surface.width,surface.height);getApp().requestRender();}return;
  }
- if(surface.stack){const frame=paintStack(surface.stack,surface.width,surface.height);submitGray(nativeService(),frame.image,feature,surface.stack.needsAnimation(),frame.draws);}
+ if(surface.stack){if(feature==='ui.composer')setAppViewport(surface.width,surface.height);const frame=paintStack(surface.stack,surface.width,surface.height);submitGray(nativeService(),frame.image,feature,surface.stack.needsAnimation(),frame.draws);}
+}
+function clearSharedComposer():void{
+ const current=sharedComposer;sharedComposer=null;
+ if(!current)return;
+ const surface=surfaces.get('ui.composer');
+ if(surface?.stack)surface.stack.clearToBase();else current.layer?.onRemoved?.();
+ current.transcripts.clear();current.statuses.clear();
+}
+function installSharedComposer():void{
+ const current=sharedComposer,surface=surfaces.get('ui.composer');
+ if(!current||!surface||current.layer)return;
+ const actions={...noopLayerActions,requestRender:()=>renderSurface('ui.composer')};
+ const base={paint:()=>new GrayImage(surface.width,surface.height,1),handleInput:()=>{}};
+ const capture={
+  onTranscript:(listener:(event:{text:string;isFinal:boolean})=>void)=>{current.transcripts.add(listener);return()=>current.transcripts.delete(listener);},
+  onStatus:(listener:(event:{status:string})=>void)=>{current.statuses.add(listener);return()=>current.statuses.delete(listener);},
+  start:(mode:'message'|'edit')=>requestHostAction('ui.composer','composer-start-capture',{sessionId:current.sessionId,mode}),
+  finish:()=>requestHostAction('ui.composer','composer-finish-capture',{sessionId:current.sessionId}),
+  cancel:()=>requestHostAction('ui.composer','composer-cancel',{sessionId:current.sessionId}),
+ };
+ let layer:T3DictationLayer;
+ const stack=new LayerStack(base,actions,{width:surface.width,height:surface.height});
+ layer=new T3DictationLayer({actions,capture,initialText:current.initialText,destinationLabel:current.label,
+  confirmLabel:current.purpose==='message'?'send':'use text',dismiss:()=>{stack.removeLayer(layer);renderSurface('ui.composer');},onClosed:()=>{},
+  onDraft:text=>{void requestHostAction('ui.composer','composer-confirm',{sessionId:current.sessionId,text,revision:current.revision}).catch(()=>{});},
+  // capture.cancel owns shared-composer cancellation. onRemoved must not send
+  // a second action with the already-consumed physical gesture.
+  onCancelled:()=>{},
+  refine:options=>{let cancelled=false;void requestHostAction('ui.composer','composer-refine',{sessionId:current.sessionId,original:options.original,followup:options.followup,revision:current.revision},120000).then(value=>{if(cancelled)return;if(typeof value?.revision==='number')current.revision=value.revision;if(typeof value?.text==='string')options.onDone(value.text);else options.onError('refinement_invalid');},()=>{if(!cancelled)options.onError('refinement_unavailable');});return{cancel(){cancelled=true;}};},
+ });
+ current.layer=layer;stack.push(layer);surface.stack=stack;layer.startCapture();renderSurface('ui.composer');
 }
 export function initializeAppRuntime():void{
  if(runtimeInitialized)return;runtimeInitialized=true;
@@ -241,7 +274,7 @@ export function initializeAppRuntime():void{
   }
   if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
   if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;updateT3HostVisible(hostVisible);if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
-  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;acceptedTranslations.clear();prefetchedTranslations.clear();updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
+  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;acceptedTranslations.clear();prefetchedTranslations.clear();updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();clearSharedComposer();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
   if(type==='render'){
    setPresentationTime(data.targetPresentationTimeMs);
    const feature=typeof data.surfaceId==='string'&&data.surfaceId.startsWith('extension:')?data.surfaceId.slice(10):'';
@@ -263,16 +296,21 @@ export function initializeAppRuntime():void{
        (!data.presentationId||data.presentationId===notificationHostPresentationId)){
      surfaces.delete(feature);notificationSurface=false;return;
     }
+    if(feature==='ui.composer')clearSharedComposer();
     surfaces.delete(feature);if(feature==='ui.notifications'){notificationSurface=false;notificationHostPresentationId=undefined;notificationMode=undefined;preview=null;previewLayer?.onRemoved();previewLayer=null;getApp().resize(width,height);setAppViewport(width,height);}return;
    }
    if(data.type==='open'||data.type==='resize'){
-    const surface={width:data.width,height:data.height,generation:data.generation,visible:true,stack:undefined as LayerStack|undefined};
-    if(feature==='ui.launcher'){
+    const prior=surfaces.get(feature),sameGeneration=prior?.generation===data.generation;
+    if(prior&&!sameGeneration){if(feature==='ui.composer')clearSharedComposer();else prior.stack?.clearToBase();}
+    const surface={width:data.width,height:data.height,generation:data.generation,visible:true,stack:sameGeneration?prior?.stack:undefined as LayerStack|undefined};
+    surface.stack?.setBaseSize({width:data.width,height:data.height});
+    if(feature==='ui.launcher'&&!surface.stack){
      const actions={...noopLayerActions,requestRender:()=>renderSurface(feature)};
      const layer=new LauncherListLayer({actions,apps:()=>((hostState as any).apps??hostState.windows).map((item:any)=>({appId:item.appId,label:item.title??item.label??item.appId,icon:item.icon??'package',uninstallable:item.uninstallable===true})),launchApp:async appId=>{await requestHostAction(feature,'open-app',{appId});},uninstallApp:async appId=>{await requestHostAction(feature,'uninstall-app',{appId});},submitFrame:async()=>{},setSurfaceVisible:()=>{}});
      surface.stack=new LayerStack(layer,actions,{width:data.width,height:data.height});
     }
     surfaces.set(feature,surface);
+    if(feature==='ui.composer')installSharedComposer();
    }
    const surface=surfaces.get(feature);if(surface && data.type==='visibility'){
     surface.visible=Boolean(data.visible&&data.screenOn!==false);
@@ -321,6 +359,16 @@ export function initializeAppRuntime():void{
      if(safeIndex>=0)menu.selectItem(safeIndex);
      surface.stack=new LayerStack(menu,actions,{width:surface.width,height:surface.height});renderSurface(feature);
     }
+   }
+   if(feature==='ui.composer'&&content.event==='composer-open'&&typeof content.sessionId==='string'){
+    clearSharedComposer();sharedComposer={sessionId:content.sessionId,purpose:content.purpose==='generic'?'generic':'message',label:typeof content.label==='string'?content.label:'Message',initialText:typeof content.initialText==='string'?content.initialText:'',maxText:Number(content.maxText)||8000,revision:Number(content.revision)||0,transcripts:new Set(),statuses:new Set()};installSharedComposer();
+   }
+   if(feature==='ui.composer'&&sharedComposer&&content.sessionId===sharedComposer.sessionId&&content.event==='composer-transcript'&&typeof content.text==='string'){
+    if(content.isFinal===true&&typeof content.revision==='number')sharedComposer.revision=content.revision;
+    for(const listener of sharedComposer.transcripts)listener({text:content.text,isFinal:content.isFinal===true});renderSurface('ui.composer');
+   }
+   if(feature==='ui.composer'&&sharedComposer&&content.sessionId===sharedComposer.sessionId&&content.event==='composer-capture-status'){
+    for(const listener of sharedComposer.statuses)listener({status:String(content.status??'')});renderSurface('ui.composer');
    }
    if(content.event==='notification-inbox'){preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode='inbox';notificationSurface=true;openT3Inbox();renderSurface('ui.notifications');}
   }

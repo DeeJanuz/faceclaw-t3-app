@@ -20,6 +20,7 @@ export function extensionDeclarations(){
   {feature:'notification-content',enabled:true,configuration:{label:'T3 own notification inbox'}},
   ...customizationGroups.map(group=>({feature:`ui.${group.id}`,enabled:enabled&&customizationEnabled(group.id),configuration:configurations[group.id]})),
   {feature:'ui.notifications',enabled:config.notificationOverride,configuration:{label:'T3 notification inbox and previews',...(previewTimingSupported?{previewSeconds:String(readT3NotificationPreviewSeconds())}: {})}},
+  {feature:'ui.composer',enabled:config.composerOverride,configuration:{label:'T3 message composer'}},
   {feature:'assistant',enabled:config.enabled&&config.preferAssistant,configuration:{label:'T3 assistant',invocation:'app'}},
   {feature:'transcription',enabled:config.enabled&&config.bridgeDictation,configuration:{label:'T3 bridge Whisper'}},
   {feature:'refinement',enabled:config.enabled&&config.refinementProvider==='t3',configuration:{label:'T3 Luna refinement'}},

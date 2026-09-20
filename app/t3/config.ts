@@ -8,12 +8,12 @@ export interface T3Config {
   enabled: boolean; pairingFingerprint: string; bridgeUrl: string; token: string; allowInsecureLocal: boolean;
   preferAssistant: boolean; assistantProjectId: string; assistantEnvironmentId?: string; assistantProvider: string;
   assistantModel: string; assistantReasoning: string; bridgeDictation: boolean;
-  notificationOverride: boolean;
+  notificationOverride: boolean; composerOverride: boolean;
   notificationExcludedApps: string[];
   activityIndicatorMode: T3ActivityIndicatorMode;
   refinementProvider: 'anthropic' | 't3'; allowTools: boolean; deviceId: string;
 }
-const defaults: T3Config = { enabled: false, pairingFingerprint: '', bridgeUrl: 'ws://10.0.2.2:8787', token: '', allowInsecureLocal: false, preferAssistant: false, assistantProjectId: '', assistantEnvironmentId: '', assistantProvider: '', assistantModel: '', assistantReasoning: '', bridgeDictation: false, notificationOverride: false, notificationExcludedApps: [], activityIndicatorMode: 'fluid', refinementProvider: 't3', allowTools: false, deviceId: 'faceclaw-t3' };
+const defaults: T3Config = { enabled: false, pairingFingerprint: '', bridgeUrl: 'ws://10.0.2.2:8787', token: '', allowInsecureLocal: false, preferAssistant: false, assistantProjectId: '', assistantEnvironmentId: '', assistantProvider: '', assistantModel: '', assistantReasoning: '', bridgeDictation: false, notificationOverride: false, composerOverride: true, notificationExcludedApps: [], activityIndicatorMode: 'fluid', refinementProvider: 't3', allowTools: false, deviceId: 'faceclaw-t3' };
 const key = 't3.config';
 function secrets(): any { return com.faceclaw.app.FaceclawT3Secrets; }
 export function getT3Config(): T3Config {

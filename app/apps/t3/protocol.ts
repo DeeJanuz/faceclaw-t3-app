@@ -118,6 +118,7 @@ export interface SessionTokenUsage {
   contextTokens: number | null
   contextWindowTokens: number | null
   totalTokens: number | null
+  latestTotalTokens?: number | null
   updatedAt: string | null
 }
 

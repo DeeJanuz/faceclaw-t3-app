@@ -65,6 +65,9 @@ export class T3Layer implements Layer {
   private draftMode: 'default' | 'plan' | undefined;
   private reasoningModel: NewSessionModelSelection | null = null;
   private reasoningThreadId = '';
+  private reasoningEnvironmentId = '';
+  private sessionControlPending = false;
+  private sessionControlError = '';
   private reviewedPlan: { threadId: string; plan: ProposedPlan } | null = null;
   private creation: { projectId: string; environmentId?: string; modelSelection?: NewSessionModelSelection; assistant?: boolean } | null = null;
   private pickedModel: ModelSummary | null = null;
@@ -329,7 +332,7 @@ export class T3Layer implements Layer {
   private back(animateTransition = true, acknowledgeBack = true): void {
     // A notification visit is a temporary interruption. It must always be
     // possible to leave it, even while the opened T3 session is still busy.
-    if (state.busy && this.screen !== 'notification' && !this.returnWindowId && !this.notificationVisitId) return;
+    if (state.busy && !['notification', 'session-model', 'session-reasoning'].includes(this.screen) && !this.returnWindowId && !this.notificationVisitId) return;
     if (!animateTransition) this.motion = null;
     const returnToSleep = this.screen === 'notification' && this.notificationReturnToSleep;
     this.notificationReturnToSleep = false;
@@ -340,6 +343,13 @@ export class T3Layer implements Layer {
       return;
     }
     if (acknowledgeBack) shell.respondToBack(false);
+    if (['session-model', 'session-reasoning'].includes(this.screen)) {
+      this.sessionControlPending = false;
+      this.sessionControlError = '';
+      this.reasoningModel = null;
+      this.reasoningThreadId = '';
+      this.reasoningEnvironmentId = '';
+    }
     const draftCreation = this.creation;
     if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftIsDictated = false; this.draftLocked = false; this.dictatingAnswer = false; this.reviewedReplyDestination = null; this.creation = null; }
     if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) {
@@ -493,9 +503,15 @@ export class T3Layer implements Layer {
   private sessionDraft(): boolean { return this.screen === 'draft' && !this.creation && !this.dictatingAnswer && !this.draftLocked; }
 
   private openModel(): void {
-    if (!this.canChangeSession() || !state.transcript?.session.modelSelection) return;
+    const session = state.transcript?.session;
+    if (!this.canChangeSession() || !session?.modelSelection) return;
+    this.reasoningModel = { ...session.modelSelection };
+    this.reasoningThreadId = session.id;
+    this.reasoningEnvironmentId = session.environmentId ?? state.selectedEnvironmentId ?? '';
+    this.sessionControlPending = false;
+    this.sessionControlError = '';
     this.go('session-model');
-    this.selected = `${state.transcript.session.modelSelection.instanceId}/${state.transcript.session.modelSelection.model}`;
+    this.selected = `${session.modelSelection.instanceId}/${session.modelSelection.model}`;
     void state.refresh();
   }
 
@@ -503,9 +519,29 @@ export class T3Layer implements Layer {
     if (!this.canChangeSession() || !state.transcript?.session.modelSelection) return;
     this.reasoningModel = { ...state.transcript.session.modelSelection };
     this.reasoningThreadId = state.transcript.session.id;
+    this.reasoningEnvironmentId = state.transcript.session.environmentId ?? state.selectedEnvironmentId ?? '';
+    this.sessionControlPending = false;
+    this.sessionControlError = '';
     this.go('session-reasoning');
     this.selected = this.reasoningModel.reasoningId || '';
     void state.refresh();
+  }
+
+  private async applySessionControl(screen: 'session-model' | 'session-reasoning', threadId: string, operation: () => Promise<boolean>): Promise<void> {
+    if (this.screen !== screen || this.sessionControlPending) return;
+    this.sessionControlPending = true;
+    this.sessionControlError = '';
+    this.repaint();
+    const applied = await operation();
+    if (this.screen !== screen || this.reasoningThreadId !== threadId) return;
+    this.sessionControlPending = false;
+    if (applied) {
+      this.sessionControlError = '';
+      this.back();
+      return;
+    }
+    this.sessionControlError = state.error || 'The change was not applied. Return to the conversation and try again.';
+    this.repaint();
   }
 
   private openProposedPlan(): void {
@@ -529,21 +565,25 @@ export class T3Layer implements Layer {
     if (this.screen === 'session-reasoning') {
       const model = this.reasoningModel;
       const threadId = this.reasoningThreadId;
-      const choices = state.modelsFor(state.selectedEnvironmentId).find(item => item.instanceId === model?.instanceId && item.model === model.model)?.reasoningChoices ?? [];
+      const environmentId = this.reasoningEnvironmentId || undefined;
+      const choices = state.modelsFor(environmentId).find(item => item.instanceId === model?.instanceId && item.model === model.model)?.reasoningChoices ?? [];
       return choices.map(choice => ({ id: choice.id, title: `${choice.label}${choice.id === state.transcript?.session.modelSelection?.reasoningId ? ' (current)' : ''}`,
-        disabled: state.busy, action: async () => {
-          if (model && await state.setReasoning(threadId, choice.id, model) && this.screen === 'session-reasoning') this.back();
+        disabled: state.busy || this.sessionControlPending, action: async () => {
+          if (model) await this.applySessionControl('session-reasoning', threadId,
+            () => state.setReasoning(threadId, choice.id, model, environmentId));
         } }));
     }
     if (this.screen === 'session-model') {
-      const session = state.transcript?.session;
-      const expected = session?.modelSelection;
-      return state.modelsFor(state.selectedEnvironmentId).map(model => ({
+      const expected = this.reasoningModel;
+      const threadId = this.reasoningThreadId;
+      const environmentId = this.reasoningEnvironmentId || undefined;
+      return state.modelsFor(environmentId).map(model => ({
         id: `${model.instanceId}/${model.model}`,
         title: `${model.name}${model.instanceId === expected?.instanceId && model.model === expected.model ? ' (current)' : ''}`,
         detail: model.providerName,
+        disabled: state.busy || this.sessionControlPending,
         action: async () => {
-          if (!session || !expected || !this.canChangeSession()) return;
+          if (!expected) return;
           const sameModel = model.instanceId === expected.instanceId && model.model === expected.model;
           const reasoningId = sameModel
             ? expected.reasoningId
@@ -553,7 +593,8 @@ export class T3Layer implements Layer {
             model: model.model,
             ...(reasoningId ? { reasoningId } : {}),
           };
-          if (await state.setModel(session.id, selection, expected) && this.screen === 'session-model') this.back();
+          await this.applySessionControl('session-model', threadId,
+            () => state.setModel(threadId, selection, expected, environmentId));
         },
       }));
     }
@@ -877,7 +918,10 @@ export class T3Layer implements Layer {
       if (!rows.some(row => row.id === this.selected && !row.section)) this.selected = rows.find(row => !row.section)?.id || '';
       const index = Math.max(0, rows.findIndex(row => row.id === this.selected));
       const selectable = rows.filter(row => !row.section);
-      const count = Math.max(1, Math.floor(this.pageBox().height / this.rowHeight));
+      const sessionControlNotice = ['session-model', 'session-reasoning'].includes(this.screen)
+        ? this.sessionControlPending ? 'APPLYING CHANGE...' : this.sessionControlError
+        : '';
+      const count = Math.max(1, Math.floor(this.pageBox(Boolean(sessionControlNotice)).height / this.rowHeight));
       this.scroll = Math.min(Math.max(0, index - 2), Math.max(0, rows.length - count));
       const heading = this.screen === 'new-project' ? 'SELECT PROJECT' : this.screen === 'new-model' ? 'SELECT MODEL' : this.screen === 'new-reasoning' ? 'SELECT REASONING' : title;
       image.drawText(font, x + 16, y + 10, `${heading} | ${Math.max(0, selectable.findIndex(row => row.id === this.selected) + 1)}/${selectable.length}`, CARD_TEXT_BRIGHTNESS);
@@ -891,6 +935,8 @@ export class T3Layer implements Layer {
         image.drawText(font, x + 32, rowY, truncateText(font, row.title, textWidth - 16), row.section ? 130 : row.disabled ? 85 : selected ? CARD_TEXT_BRIGHTNESS : 165);
       });
       if (!rows.length) image.drawText(font, x + 16, top, truncateText(font, state.error || 'Nothing here yet.', textWidth), 170);
+      if (sessionControlNotice) image.drawText(font, x + 16, height - font.lineHeight - 16,
+        truncateText(font, sessionControlNotice, textWidth), 180);
     }
     return image;
   }
@@ -1105,7 +1151,7 @@ export function createT3AppWindow(options: InProcessAppOptions): InProcessWindow
   const clockTimer = setInterval(() => { if (layer.screen === 'dashboard' && shell.isWindowVisible(T3_WINDOW_ID)) repaint(); }, 15000);
   // The general host owns weather refresh and publishes scoped state changes.
   app = createInProcessWindow({
-    appId: 't3', windowId: T3_WINDOW_ID, title: 'T3 Assistant', iconLetter: 'T3', icon: 'terminal', closeable: true, heightMode: 'medium',
+    appId: 't3', windowId: T3_WINDOW_ID, title: 'T3 Assistant', iconLetter: 'T3', icon: 't3', closeable: true, heightMode: 'medium',
     actions: options.actions, suppressSystemMenuFallback: true, claimsNotificationDismissGesture: () => layer.claimsNotificationDismissGesture(), baseLayer: layer, menuItems: () => layer.menuItems(), receiveTextInput: text => layer.receiveText(text),
     canPaint: options.canPaint, requestPaintPermission: options.requestPaintPermission,
     retainedSceneEligible: () => layer.screen === 'dashboard' && !layer.needsAnimation(),

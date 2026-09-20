@@ -12,6 +12,7 @@
       <Button text="Window layout permissions and priority" feature="ui.window-layout" tap="{{ featureAccess }}"/>
       <Button text="Typography permissions and priority" feature="ui.typography" tap="{{ featureAccess }}"/>
       <Button text="Notifications permissions and priority" feature="ui.notifications" tap="{{ featureAccess }}"/>
+      <Button text="Message composer permissions and priority" feature="ui.composer" tap="{{ featureAccess }}"/>
       <Button text="Own inbox content permissions and priority" feature="notification-content" tap="{{ featureAccess }}"/>
       <Button text="Assistant permissions and priority" feature="assistant" tap="{{ featureAccess }}"/>
       <Button text="Transcription permissions and priority" feature="transcription" tap="{{ featureAccess }}"/>
@@ -72,6 +73,11 @@
       <Button text="Android notification settings" tap="{{ connectionNotificationSettings }}" />
       <Label text="Manage this APK's optional phone notifications in Android settings." textWrap="true" />
       <Label text="Dictation" class="h2 m-t-24" />
+      <GridLayout columns="*,auto">
+        <Label col="0" text="Use T3 message composer across apps" verticalAlignment="center" textWrap="true" />
+        <Switch col="1" checked="{{ composerOverride }}" checkedChange="{{ toggleComposer }}" />
+      </GridLayout>
+      <Label text="Faceclaw uses T3's capture, review, paging, and refinement UI for approved apps while each app retains its own destination and Send authority." textWrap="true" />
       <GridLayout columns="*,auto">
         <Label col="0" text="Use bridge-hosted Whisper" verticalAlignment="center" />
         <Switch col="1" checked="{{ bridgeDictation }}" checkedChange="{{ toggleDictation }}" />

@@ -127,7 +127,7 @@ export class T3DemoApi implements T3Api {
     const added = (this.extraMessages.get(id)?.length || 0) * 1800;
     return { snapshotId: 'demo', session,
       tokenUsage: { contextTokens: (luna ? 22_000 : 48_000) + added, contextWindowTokens: luna ? 128_000 : 272_000,
-        totalTokens: 312_000 + added, updatedAt: ago(0) },
+        totalTokens: 312_000 + added, latestTotalTokens: 312_000 + added, updatedAt: ago(0) },
       turns: [{ id: `${id}-turn`, startedAt: ago(4), endedAt: session.status === 'running' ? null : ago(0), durationSeconds: 12, separatorLabel: 'Latest turn', messages }],
       liveActivity: session.status === 'running' ? { phase: 'tool', label: 'Checking the conversation layout', updatedAt: ago(0) } : null,
       liveActivities: [], pendingPlanInput: id === 'plan' && !this.answered ? plan : null,

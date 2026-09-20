@@ -61,6 +61,18 @@ export const shell={
   if(capture)return;
   const id=`capture-${Date.now()}`;capture={id,done,cancel,current};
   if(t3Workspace.demo){capture=null;done('Please summarize the latest project changes.');return;}
+  const controls=typeof sdkControls==='function'?sdkControls():null;
+  if(controls?.supports('composer.session')){
+   let handle:any;
+   handle=(controls as any).composer('message','t3-assistant','T3 Assistant','',8000,(event:any)=>{
+    if(!capture||capture.id!==id)return;
+    if(event.status==='confirmed'&&typeof event.text==='string'&&capture.current()){const pending=capture;capture=null;pending.done(event.text);}
+    else if(['cancelled','rejected','expired','unknown'].includes(String(event.status))){const pending=capture;capture=null;pending.cancel();}
+   });
+   const pending=capture;
+   if(pending&&pending.id===id)pending.cancel=()=>{handle?.cancel();cancel();};
+   return;
+  }
   local('capture',{origin:_rect,onDraft:(text:string)=>{const pending=capture;capture=null;if(pending?.current())pending.done(text);},onCancelled:()=>{const pending=capture;capture=null;pending?.cancel();}});
  },
  showNotificationPreview(id:string,title:string,text:string,open:(woke:boolean,presentationId?:string,hostPresentationId?:string)=>Promise<boolean>,dismiss:()=>Promise<boolean>|boolean,protectedFlow=false,hostPresentationId?:string,durationMs=nextPreviewDurationMs){

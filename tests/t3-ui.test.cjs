@@ -10,7 +10,7 @@ function load(path, imports = {}, globals = {}) {
     code = ts.transpileModule(fs.readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
     transpiled.set(path, code);
   }
-  const localRequire = name => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; };
+  const localRequire = name => { if (name === './resource') return load('app/apps/t3/resource.ts'); if (name === './token-accounting') return load('app/apps/t3/token-accounting.ts'); if (name === '@faceclaw/motion') return require(name); if (!(name in imports)) throw Error(name); return imports[name]; };
   const names = Object.keys(globals);
   Function('module', 'exports', 'require', ...names, code)(module, module.exports, localRequire, ...names.map(name => globals[name]));
   return module.exports;
@@ -816,6 +816,22 @@ test('reasoning selection never retargets a different thread opened in the meant
   await h.state.openThread('day');
   await h.layer.rows().find(row => row.id === 'medium').action();
   assert.equal(h.api.calls.includes('thread.reasoning.set'), false);
+});
+
+test('session model picker shows pending and rejected outcomes without losing its context', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('voice');
+  h.layer.screen = 'reader'; await h.layer.handleInput({ type: 'click' });
+  await h.layer.menuItems().find(item => item.label === 'Change model').onSelect({ stack: { pop() {} } });
+  await Promise.resolve(); await Promise.resolve();
+  let reject;
+  h.state.setModel = () => new Promise(resolve => { reject = () => { h.state.error = 'invalid_request: Strict payload rejected'; resolve(false); }; });
+  const pending = h.layer.rows().find(row => row.id === 'demo/preview-luna').action();
+  h.drawn.length = 0; h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } });
+  assert.ok(h.drawn.includes('APPLYING CHANGE...'));
+  reject(); await pending;
+  assert.equal(h.layer.screen, 'session-model');
+  h.drawn.length = 0; h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } });
+  assert.ok(h.drawn.includes('invalid_request: Strict payload rejected'));
 });
 
 test('completed-plan approval needs its own confirmation tap and starts implementation once', async () => {

@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",
-    "@faceclaw/motion": "file:../output/sdk-independence/npm/faceclaw-motion-1.1.0-rc.1.9dc05298f50a.tgz",
+    "@faceclaw/motion": "file:../output/sdk-independence/npm/faceclaw-motion-1.1.0-rc.1.9544fd1852be.tgz",
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0"
   },

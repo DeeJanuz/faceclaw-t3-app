@@ -1,4 +1,5 @@
 import { resourceKey, resourceRef } from './resource';
+import { parseTokenAccountingState, reconcileTokenTotal, type TokenAccountingState } from './token-accounting';
 import { isDefiniteBridgeRejection, parseProposedPlan, sanitizeSessionControls } from "../../t3/security";
 import type {
   ModelSummary, NewSessionModelSelection, PendingPlanInput, PlanAnswer,
@@ -39,6 +40,12 @@ export interface PlanDraftStorage {
   removeApproval?(key: string): void;
 }
 
+export interface TokenAccountingStorage {
+  scope(): string;
+  load(): unknown;
+  save(value: unknown): void;
+}
+
 export interface ReviewedReplyDestination {
   threadId: string;
   environmentId?: string;
@@ -58,6 +65,8 @@ function sanitizeTokenUsage(value: unknown): SessionTokenUsage | undefined {
     contextTokens: safeTokenCount(usage.contextTokens),
     contextWindowTokens: safeTokenCount(usage.contextWindowTokens, true),
     totalTokens: safeTokenCount(usage.totalTokens),
+    ...(Object.prototype.hasOwnProperty.call(usage, 'latestTotalTokens')
+      ? { latestTotalTokens: safeTokenCount(usage.latestTotalTokens) } : {}),
     updatedAt,
   };
 }
@@ -100,10 +109,17 @@ export class T3Workspace {
   private draftStorage: PlanDraftStorage | null = null;
   private tokenContexts = new Map<string, SessionTokenUsage>();
   private tokenSnapshots = new Map<string, { fingerprint: string; model: string }>();
-  private sessionTokenTotals = new Map<string, number>();
+  private tokenAccountingStorage: TokenAccountingStorage | null = null;
+  private tokenAccountingScope = '';
+  private tokenAccounting = new Map<string, { state: TokenAccountingState; touchedAt: number }>();
 
   constructor(private api: T3Api) {}
   setDraftStorage(storage: PlanDraftStorage): void { this.draftStorage = storage; }
+  setTokenAccountingStorage(storage: TokenAccountingStorage): void {
+    this.tokenAccountingStorage = storage;
+    this.tokenAccountingScope = '';
+    this.tokenAccounting.clear();
+  }
   private get storage(): PlanDraftStorage | null { return this.demo ? null : this.draftStorage; }
   private draftKey(threadId: string, request: PendingPlanInput): string {
     return JSON.stringify([this.storage?.scope() || '', resourceKey(threadId, this.selectedEnvironmentId), request.requestId, request.revision]);
@@ -131,7 +147,8 @@ export class T3Workspace {
     this.projects = []; this.sessions = []; this.models = [];
     this.transcript = null; this.selectedThreadId = ''; this.selectedEnvironmentId = undefined; this.environments = []; this.alerts = [];
     this.completions.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
-    this.tokenContexts.clear(); this.tokenSnapshots.clear(); this.sessionTokenTotals.clear();
+    this.tokenContexts.clear(); this.tokenSnapshots.clear();
+    this.tokenAccountingScope = ''; this.tokenAccounting.clear();
     this.refreshPending = null; this.busy = false; this.error = ''; this.canRetryLastSend = true;
     this.sessionsRefreshPending = null;
     this.transcriptRefreshPending = null; this.transcriptRefreshPendingThread = ''; this.transcriptRefreshQueued = false;
@@ -272,21 +289,25 @@ export class T3Workspace {
   /**
    * T3 usage events do not carry model identity. Associate each new snapshot
    * with the active model, and keep its last context reading when models are
-   * switched. Session totals remain monotonic across every model.
+   * switched. A confirmed provider/model transition starts a new TOTAL interval.
    */
   private reconcileTokenUsage(transcript: TranscriptResult): void {
     const usage = sanitizeTokenUsage(transcript.tokenUsage);
     if (!usage) { delete transcript.tokenUsage; return; }
     const sessionKey = resourceKey(transcript.session.id, transcript.session.environmentId);
-    const previousTotal = this.sessionTokenTotals.get(sessionKey);
-    if (usage.totalTokens !== null && (previousTotal === undefined || usage.totalTokens > previousTotal)) {
-      this.sessionTokenTotals.set(sessionKey, usage.totalTokens);
-    }
-    const totalTokens = this.sessionTokenTotals.get(sessionKey) ?? usage.totalTokens;
     const selection = transcript.session.modelSelection;
-    if (!selection) { transcript.tokenUsage = { ...usage, totalTokens }; return; }
+    if (!selection) { transcript.tokenUsage = usage; return; }
     const model = JSON.stringify([selection.instanceId, selection.model]);
-    const fingerprint = JSON.stringify([usage.contextTokens, usage.contextWindowTokens, usage.totalTokens, usage.updatedAt]);
+    this.loadTokenAccounting();
+    const previousAccounting = this.tokenAccounting.get(sessionKey);
+    const accounting = reconcileTokenTotal(previousAccounting?.state ?? null, model, usage);
+    if (!previousAccounting || JSON.stringify(previousAccounting.state) !== JSON.stringify(accounting.state)) {
+      this.tokenAccounting.set(sessionKey, { state: accounting.state, touchedAt: Date.now() });
+      this.persistTokenAccounting();
+    }
+    const totalTokens = accounting.totalTokens;
+    const fingerprint = JSON.stringify([usage.contextTokens, usage.contextWindowTokens,
+      usage.totalTokens, usage.latestTotalTokens, usage.updatedAt]);
     const owner = this.tokenSnapshots.get(sessionKey);
     const contextKey = JSON.stringify([sessionKey, selection.instanceId, selection.model]);
     if (!owner || owner.fingerprint !== fingerprint) {
@@ -304,10 +325,46 @@ export class T3Workspace {
         contextTokens: cached?.contextTokens ?? null,
         contextWindowTokens: cached?.contextWindowTokens ?? null,
         totalTokens,
+        ...(Object.prototype.hasOwnProperty.call(usage, 'latestTotalTokens')
+          ? { latestTotalTokens: usage.latestTotalTokens } : {}),
         updatedAt: cached?.updatedAt ?? null,
       };
     }
     if (this.tokenContexts.size > 512) this.tokenContexts.delete(this.tokenContexts.keys().next().value as string);
+  }
+
+  private loadTokenAccounting(): void {
+    const storage = this.demo ? null : this.tokenAccountingStorage;
+    const scope = storage?.scope() || '';
+    if (scope === this.tokenAccountingScope) return;
+    this.tokenAccountingScope = scope;
+    this.tokenAccounting.clear();
+    if (!storage || !scope) return;
+    let saved: unknown;
+    try { saved = storage.load(); } catch { return; }
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
+    if ((saved as Record<string, unknown>).version !== 1) return;
+    const records = (saved as Record<string, unknown>).records;
+    if (!Array.isArray(records) || records.length > 512) return;
+    for (const value of records) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      const state = parseTokenAccountingState(record.state);
+      if (typeof record.key !== 'string' || record.key.length > 600 || !state ||
+          typeof record.touchedAt !== 'number' || !Number.isSafeInteger(record.touchedAt) || record.touchedAt < 0) continue;
+      this.tokenAccounting.set(record.key, { state, touchedAt: record.touchedAt });
+    }
+  }
+
+  private persistTokenAccounting(): void {
+    const storage = this.demo ? null : this.tokenAccountingStorage;
+    if (!storage || !this.tokenAccountingScope) return;
+    const records = [...this.tokenAccounting.entries()]
+      .sort((left, right) => right[1].touchedAt - left[1].touchedAt).slice(0, 512);
+    let serialized = records.map(([key, value]) => ({ key, ...value }));
+    while (serialized.length > 1 && JSON.stringify({ version: 1, records: serialized }).length > 60_000) serialized.pop();
+    this.tokenAccounting = new Map(records.slice(0, serialized.length));
+    try { storage.save({ version: 1, records: serialized }); } catch { /* Usage display remains available in memory. */ }
   }
 
   async refreshTranscript(): Promise<void> {
@@ -408,15 +465,22 @@ export class T3Workspace {
     finally { if (generation === this.generation) { this.busy = false; this.changed(); } }
   }
 
-  async setReasoning(threadId: string, reasoningId: string, expectedModel: { instanceId: string; model: string }): Promise<boolean> {
+  private rejectSessionControl(): false {
+    this.error = 'session_control_unavailable: This conversation changed or is busy. Return to it and try again.';
+    this.changed();
+    return false;
+  }
+
+  async setReasoning(threadId: string, reasoningId: string, expectedModel: { instanceId: string; model: string }, environmentId = this.selectedEnvironmentId): Promise<boolean> {
     const session = this.transcript?.session;
     if (this.busy || !session || session.id !== threadId || !session.interactionMode ||
         !['idle', 'ready', 'interrupted', 'stopped', 'error'].includes(session.status) || !session.modelSelection ||
-        session.modelSelection.instanceId !== expectedModel.instanceId || session.modelSelection.model !== expectedModel.model) return false;
+        (environmentId && session.environmentId && session.environmentId !== environmentId) ||
+        session.modelSelection.instanceId !== expectedModel.instanceId || session.modelSelection.model !== expectedModel.model) return this.rejectSessionControl();
     const generation = this.generation; const api = this.api;
     this.busy = true; this.error = ''; this.changed();
     try {
-      await api.rpc('thread.reasoning.set', { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId, reasoningId, expectedModel: { instanceId: expectedModel.instanceId, model: expectedModel.model } });
+      await api.rpc('thread.reasoning.set', { ...(environmentId ? { environmentId } : {}), threadId, reasoningId, expectedModel: { instanceId: expectedModel.instanceId, model: expectedModel.model } });
       if (generation !== this.generation) return false;
       if (threadId === this.selectedThreadId) await this.refreshTranscript();
       return generation === this.generation;
@@ -424,15 +488,17 @@ export class T3Workspace {
     finally { if (generation === this.generation) { this.busy = false; this.changed(); } }
   }
 
-  async setModel(threadId: string, selection: NewSessionModelSelection, expectedModel: { instanceId: string; model: string }): Promise<boolean> {
+  async setModel(threadId: string, selection: NewSessionModelSelection, expectedModel: { instanceId: string; model: string }, environmentId = this.selectedEnvironmentId): Promise<boolean> {
     const session = this.transcript?.session;
     if (this.busy || !session || session.id !== threadId || !session.interactionMode ||
         !['idle', 'ready', 'interrupted', 'stopped', 'error'].includes(session.status) || !session.modelSelection ||
-        session.modelSelection.instanceId !== expectedModel.instanceId || session.modelSelection.model !== expectedModel.model) return false;
+        (environmentId && session.environmentId && session.environmentId !== environmentId) ||
+        session.modelSelection.instanceId !== expectedModel.instanceId || session.modelSelection.model !== expectedModel.model) return this.rejectSessionControl();
     const generation = this.generation; const api = this.api;
     this.busy = true; this.error = ''; this.changed();
     try {
-      await api.rpc('thread.model.set', { ...(this.selectedEnvironmentId ? { environmentId: this.selectedEnvironmentId } : {}), threadId, selection, expectedModel });
+      await api.rpc('thread.model.set', { ...(environmentId ? { environmentId } : {}), threadId, selection,
+        expectedModel: { instanceId: expectedModel.instanceId, model: expectedModel.model } });
       if (generation !== this.generation) return false;
       if (threadId === this.selectedThreadId) await this.refreshTranscript();
       return generation === this.generation;

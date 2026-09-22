@@ -106,12 +106,54 @@ export class T3Workspace {
   private transcriptRefreshQueued = false;
   private refreshPending: Promise<void> | null = null;
   private sessionsRefreshPending: Promise<void> | null = null;
+  private sessionsRefreshQueued = false;
+  private sessionsRequest = 0;
   private draftStorage: PlanDraftStorage | null = null;
   private tokenContexts = new Map<string, SessionTokenUsage>();
   private tokenSnapshots = new Map<string, { fingerprint: string; model: string }>();
   private tokenAccountingStorage: TokenAccountingStorage | null = null;
   private tokenAccountingScope = '';
   private tokenAccounting = new Map<string, { state: TokenAccountingState; touchedAt: number }>();
+
+  private viewedTurns = new Map<string, string>();
+  private viewedStorage: TokenAccountingStorage | null = null;
+  private viewedScope: string | null = null;
+  setViewedTurnStorage(storage: TokenAccountingStorage): void {
+    this.viewedStorage = storage; this.viewedScope = null; this.viewedTurns.clear();
+  }
+  private loadViewedTurns(): void {
+    const storage = this.demo ? null : this.viewedStorage;
+    const scope = this.demo ? 'demo' : storage?.scope() || '';
+    if (scope === this.viewedScope) return;
+    this.viewedScope = scope; this.viewedTurns.clear();
+    try {
+      const saved = storage?.load();
+      if (!Array.isArray(saved) || saved.length > 512) return;
+      for (const pair of saved) if (Array.isArray(pair) && pair.length === 2 &&
+        pair.every(value => typeof value === 'string' && value.length <= 1000)) this.viewedTurns.set(pair[0], pair[1]);
+    } catch { /* Keep the dashboard usable if local storage is unavailable. */ }
+  }
+  get awaitingSessions(): SessionSummary[] {
+    this.loadViewedTurns();
+    return this.sessions.filter(session => !session.settled && session.completedTurn &&
+      !['running', 'starting'].includes(session.status) &&
+      this.viewedTurns.get(resourceKey(session.id, session.environmentId)) !== session.completedTurn.id)
+      .sort((a, b) => (Date.parse(b.completedTurn!.completedAt) || 0) - (Date.parse(a.completedTurn!.completedAt) || 0));
+  }
+  /** Acknowledge only the completed turn actually displayed or replied to. */
+  markSessionViewed(session: SessionSummary): void {
+    const turn = session.completedTurn?.id;
+    if (!turn) return;
+    this.loadViewedTurns();
+    const key = resourceKey(session.id, session.environmentId);
+    if (this.viewedTurns.get(key) === turn) return;
+    this.viewedTurns.delete(key); this.viewedTurns.set(key, turn);
+    while (this.viewedTurns.size > 512 || JSON.stringify([...this.viewedTurns]).length > 60_000) {
+      this.viewedTurns.delete(this.viewedTurns.keys().next().value!);
+    }
+    try { if (!this.demo) this.viewedStorage?.save([...this.viewedTurns]); } catch { /* Retain the acknowledgement in memory. */ }
+    this.changed();
+  }
 
   constructor(private api: T3Api) {}
   setDraftStorage(storage: PlanDraftStorage): void { this.draftStorage = storage; }
@@ -146,11 +188,12 @@ export class T3Workspace {
     this.demo = demo;
     this.projects = []; this.sessions = []; this.models = [];
     this.transcript = null; this.selectedThreadId = ''; this.selectedEnvironmentId = undefined; this.environments = []; this.alerts = [];
+    this.viewedScope = null; this.viewedTurns.clear();
     this.completions.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
     this.tokenContexts.clear(); this.tokenSnapshots.clear();
     this.tokenAccountingScope = ''; this.tokenAccounting.clear();
     this.refreshPending = null; this.busy = false; this.error = ''; this.canRetryLastSend = true;
-    this.sessionsRefreshPending = null;
+    this.sessionsRefreshPending = null; this.sessionsRefreshQueued = false;
     this.transcriptRefreshPending = null; this.transcriptRefreshPendingThread = ''; this.transcriptRefreshQueued = false;
     this.status = demo ? 'Sample data · no live actions' : 'Connecting…';
     this.changed();
@@ -164,7 +207,7 @@ export class T3Workspace {
     this.generation++;
     this.transcriptRequest++;
     this.refreshPending = null;
-    this.sessionsRefreshPending = null;
+    this.sessionsRefreshPending = null; this.sessionsRefreshQueued = false;
     this.transcriptRefreshPending = null;
     this.transcriptRefreshPendingThread = '';
     this.transcriptRefreshQueued = false;
@@ -179,6 +222,7 @@ export class T3Workspace {
 
   refresh(): Promise<void> {
     if (this.refreshPending) return this.refreshPending;
+    const sessionRequest = ++this.sessionsRequest;
     const generation = this.generation;
     const api = this.api;
     const pending = (async () => {
@@ -192,7 +236,7 @@ export class T3Workspace {
         this.projects = projects.projects;
         this.models = models.models;
         this.environments = sessions.environments ?? [];
-        this.applySessions([...sessions.unsettled, ...sessions.settled]);
+        if (sessionRequest === this.sessionsRequest) this.applySessions([...sessions.unsettled, ...sessions.settled]);
         this.error = '';
         this.status = this.demo ? 'Sample data · no live actions' : sessions.partial ? `Connected · unavailable: ${this.environments.filter(e => e.status !== 'connected').map(e => e.label).join(', ')}` : 'Connected to T3';
         this.changed();
@@ -201,28 +245,34 @@ export class T3Workspace {
       }
     })();
     this.refreshPending = pending;
-    void pending.finally(() => { if (this.refreshPending === pending) this.refreshPending = null; });
+    void pending.finally(() => {
+      if (this.refreshPending !== pending) return;
+      this.refreshPending = null; this.drainSessionsRefresh();
+    });
     return pending;
   }
 
   refreshSessions(): Promise<void> {
     // `sessions.changed` is emitted from the bridge's live poll. Keep it off
     // the full refresh path: models.list opens a separate upstream WebSocket.
-    if (this.refreshPending) return this.refreshPending;
-    if (this.sessionsRefreshPending) return this.sessionsRefreshPending;
+    if (this.refreshPending || this.sessionsRefreshPending) {
+      this.sessionsRefreshQueued = true;
+      return this.refreshPending || this.sessionsRefreshPending!;
+    }
+    const sessionRequest = ++this.sessionsRequest;
     const generation = this.generation;
     const api = this.api;
     const pending = (async () => {
       try {
         const sessions = await api.rpc<SessionsListResult>('sessions.list');
-        if (generation !== this.generation) return;
+        if (generation !== this.generation || sessionRequest !== this.sessionsRequest) return;
         const environmentsChanged = JSON.stringify(this.environments) !== JSON.stringify(sessions.environments ?? []);
         this.environments = sessions.environments ?? [];
         if (environmentsChanged) {
           const [projects, models] = await Promise.all([
             api.rpc<{ projects: ProjectSummary[] }>('projects.list'), api.rpc<{ models: ModelSummary[] }>('models.list'),
           ]);
-          if (generation !== this.generation) return;
+          if (generation !== this.generation || sessionRequest !== this.sessionsRequest) return;
           this.projects = projects.projects; this.models = models.models;
         }
         this.applySessions([...sessions.unsettled, ...sessions.settled]);
@@ -230,12 +280,21 @@ export class T3Workspace {
         this.status = this.demo ? 'Sample data · no live actions' : sessions.partial ? `Connected · unavailable: ${this.environments.filter(e => e.status !== 'connected').map(e => e.label).join(', ')}` : 'Connected to T3';
         this.changed();
       } catch (error) {
-        if (generation === this.generation) this.fail(error);
+        if (generation === this.generation && sessionRequest === this.sessionsRequest) this.fail(error);
       }
     })();
     this.sessionsRefreshPending = pending;
-    void pending.finally(() => { if (this.sessionsRefreshPending === pending) this.sessionsRefreshPending = null; });
+    void pending.finally(() => {
+      if (this.sessionsRefreshPending !== pending) return;
+      this.sessionsRefreshPending = null; this.drainSessionsRefresh();
+    });
     return pending;
+  }
+
+  private drainSessionsRefresh(): void {
+    if (!this.sessionsRefreshQueued || this.refreshPending || this.sessionsRefreshPending) return;
+    this.sessionsRefreshQueued = false;
+    void this.refreshSessions();
   }
 
   applySessions(sessions: SessionSummary[]): void {
@@ -450,6 +509,7 @@ export class T3Workspace {
       if (typeof result?.threadId !== 'string' || !result.threadId ||
           (!options && result.threadId !== this.selectedThreadId) ||
           (targetEnvironmentId && result.environmentId !== targetEnvironmentId)) throw new Error('T3_INVALID_RESPONSE');
+      if (!options && selected) this.markSessionViewed(selected);
       await this.openThread(result.threadId, result.environmentId ?? targetEnvironmentId);
       if (generation !== this.generation) return false;
       await this.refresh();

@@ -1,14 +1,17 @@
-import {appControls} from '@faceclaw/motion';
+import {appControls, type HostMedia} from '@faceclaw/motion';
+export type {HostMedia} from '@faceclaw/motion';
 import {NotificationSnapshotAssembler} from './notification-snapshot';
 /** Only the SDK's mutually approved, certificate-pinned host can reach this boundary. */
 import type { WeatherState } from '../native/weather';
 import type { AndroidNotification } from '../native/notification-types';
 declare const com: any, org: any;
-export type HostState = {battery:{headset:number|null;headsetCharging:boolean|null};weather?:WeatherState;windows:any[];focusedWindowId?:string;screenOn:boolean;notifications:AndroidNotification[];notificationApps?:{packageName:string;name:string}[];tools?:any[]};
+export type HostState = {media?:HostMedia|null;battery:{headset:number|null;headsetCharging:boolean|null};weather?:WeatherState;windows:any[];focusedWindowId?:string;screenOn:boolean;notifications:AndroidNotification[];notificationApps?:{packageName:string;name:string}[];tools?:any[]};
 export const hostState:HostState={battery:{headset:null,headsetCharging:null},windows:[],screenOn:true,notifications:[]};
 export type FeatureState={feature:string;component:string;generation:number;available:boolean;configuration:Record<string,unknown>;contenders?:any[]};
 let featureStates:FeatureState[]=[];
 let service:any=null;
+let glanceboardSupported=false;
+export function supportsGlanceboard():boolean{return glanceboardSupported;}
 let ownCaptureId="";
 let ownVisible=false,extensionGeneration=0;
 const ownSnapshotAssembler=new NotificationSnapshotAssembler();
@@ -27,6 +30,7 @@ export function onHostEvent(listener:(type:string,data:any)=>void):()=>void {eve
 export function onHostState(listener:(change?:HostStateChange)=>void):()=>void {stateListeners.add(listener);return ()=>stateListeners.delete(listener);}
 function applyAmbientState(value:any,includeWindows=false,includeScreen=false):void {
  const next:Record<string,unknown>={};
+ if(Object.prototype.hasOwnProperty.call(value,'media'))next.media=value.media;
  if(Array.isArray(value.notificationApps))next.notificationApps=value.notificationApps.slice(0,4096);
  if(value.battery!=null)next.battery=value.battery;
  if(value.weather!=null)next.weather=value.weather;
@@ -47,6 +51,9 @@ export function ownsFeature(feature:string):boolean {const state=effectiveFeatur
 function clearPending():void {for(const item of pending.values()){clearTimeout(item.timer);item.reject(new Error('HOST_CONNECTION_LOST'));}pending.clear();}
 export function receiveHostEvent(source:any,type:string,data:any):void {
  service=source;
+ if(type==='host-snapshot')glanceboardSupported=data.capabilities?.glanceboard===1;
+ if(type==='capabilities')glanceboardSupported=data.glanceboard===1;
+ if(type==='disconnected'||type==='destroyed')glanceboardSupported=false;
  if(type==='visibility'){ownVisible=Boolean(data.visible&&data.screenOn!==false);if(!ownVisible){clearOwnNotifications();for(const listener of stateListeners)listener();}else service?.requestOwnNotifications();}
  if(type==='close'){ownVisible=false;clearOwnNotifications();for(const listener of stateListeners)listener();}
  if(type==='own-notification-snapshot-fragment'){
@@ -55,7 +62,7 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
  }
  if(type==='own-notification-action-result'){const item=ownPending.get(data.callId);if(item){ownPending.delete(data.callId);clearTimeout(item.timer);data.ok===true?item.resolve(data):item.reject(new Error('HOST_ACTION_FAILED'));}}
 
- if(type==='disconnected'||type==='destroyed') {ownVisible=false;clearOwnNotifications();clearPending();ownRequests.clear();ownCaptureId="";snapshotAssembler.reset();featureStates=[];hostState.notificationApps=[];hostState.notifications=[];hostState.tools=[];service=null;for(const listener of stateListeners)listener();}
+ if(type==='disconnected'||type==='destroyed') {ownVisible=false;clearOwnNotifications();clearPending();ownRequests.clear();ownCaptureId="";snapshotAssembler.reset();featureStates=[];hostState.notificationApps=[];hostState.notifications=[];hostState.tools=[];service=null;hostState.media=null;for(const listener of stateListeners)listener();}
  if(type==='host-state')applyAmbientState(data);
  if(type==='extensions') {
   const next:FeatureState[]=Array.isArray(data.features)?data.features:[];
@@ -83,7 +90,7 @@ export function receiveHostEvent(source:any,type:string,data:any):void {
  }
  for(const listener of events)listener(type,data);
 }
-export function publishExtensions(descriptors:unknown[]):void {service?.publishCompatibleExtensions(new org.json.JSONArray(JSON.stringify(descriptors)));}
+export function publishExtensions(descriptors:unknown[]):boolean {return Boolean(service?.publishCompatibleExtensions(new org.json.JSONArray(JSON.stringify(descriptors))));}
 export function sendHostAction(feature:string,action:string,data:Record<string,unknown>={}):boolean {
  const state=effectiveFeature(feature);if(!service||!state||!ownsFeature(feature))return false;
  return Boolean(service.invokeExtensionAction(feature,state.generation,action,new org.json.JSONObject(JSON.stringify({...data,callId:typeof data.callId==='string'?data.callId:`t3-${Date.now()}-${++sequence}`}))));

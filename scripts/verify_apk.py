@@ -100,6 +100,9 @@ def tool_output(args):
 
 def verify(apk, tools, require_non_debuggable=False, expected_package=None, expected_cert=None):
     results = verify_native(apk)
+    sdk_verifier = Path(__file__).resolve().parents[1] / "node_modules/@faceclaw/motion/verify_apk.py"
+    tool_output([sys.executable, sdk_verifier, apk])
+    print("PASS SDK NativeScript bridge metadata")
     tool_output([tools / "zipalign", "-c", "-P", "16", "4", apk])
     signing = tool_output([tools / "apksigner", "verify", "--print-certs", apk])
     certs = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})", signing)

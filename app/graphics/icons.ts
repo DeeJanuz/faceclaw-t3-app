@@ -18,6 +18,11 @@ const ICON_STROKE_WIDTH = 2;
 // Lucide icons (MIT/ISC licensed). Kept verbatim so they can be diffed
 // against upstream if an icon needs updating.
 export const ICON_SVGS = {
+  "media-previous": '<svg viewBox="0 0 24 24" fill="none"><path d="M19 4 7 12l12 8Z"/><line x1="4" y1="4" x2="4" y2="20"/></svg>',
+  "media-next": '<svg viewBox="0 0 24 24" fill="none"><path d="m5 4 12 8-12 8Z"/><line x1="20" y1="4" x2="20" y2="20"/></svg>',
+  "media-play": '<svg viewBox="0 0 24 24" fill="none"><path d="m7 3 14 9-14 9Z"/></svg>',
+  "media-pause": '<svg viewBox="0 0 24 24" fill="none"><rect x="5" y="4" width="4" height="16"/><rect x="15" y="4" width="4" height="16"/></svg>',
+
   "layout-grid":
     '<svg viewBox="0 0 24 24" fill="none"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',
   timer:

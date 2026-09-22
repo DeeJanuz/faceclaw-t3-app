@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",
-    "@faceclaw/motion": "file:../output/sdk-independence/npm/faceclaw-motion-1.1.0-rc.1.9544fd1852be.tgz",
+    "@faceclaw/motion": "file:../faceclaw-app-platform/android-sdk/javascript",
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0"
   },

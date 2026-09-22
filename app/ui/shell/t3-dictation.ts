@@ -7,11 +7,10 @@ import type { AnthropicStreamHandle } from "../../native/anthropic";
 import { type InputEvent } from "../gestures";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 import { appViewportRect } from "./geometry";
-import { cardRect, paintCardFace, paintCardContents, CARD_MOTION_MS, type CardRect } from "../../apps/t3/card-motion";
+import { paintCardFace, type CardRect } from "../../apps/t3/card-motion";
 import { presentationNow } from "../presentation-clock";
 
 const FINAL_TIMEOUT_MS = 95000;
-const EXPANSION_MS = CARD_MOTION_MS;
 
 type T3DictationOptions = {
   actions: LayerActions;
@@ -92,18 +91,9 @@ export class T3DictationLayer implements Layer {
     subscribing = false;
   }
 
-  isAnimatingCard(): boolean {
-    return !this.removed && (this.phase === "closing" ? presentationNow() - this.closedAt < CARD_MOTION_MS
-      : this.expansionStartedAt === null || presentationNow() - this.expansionStartedAt < CARD_MOTION_MS);
-  }
+  isAnimatingCard(): boolean { return false; }
 
-  needsAnimation(): boolean {
-    if (this.phase === "closing" && presentationNow() - this.closedAt >= EXPANSION_MS) {
-      if (!this.removed) this.options.dismiss();
-      return false;
-    }
-    return this.isAnimatingCard();
-  }
+  needsAnimation(): boolean { return false; }
 
   invalidateBackdrop(): void { this.backdrop = null; }
 
@@ -273,6 +263,7 @@ export class T3DictationLayer implements Layer {
       this.stopCapture();
     }
     this.options.actions.requestRender();
+    this.options.dismiss();
   }
 
   private sendDraft(): void {
@@ -405,47 +396,11 @@ export class T3DictationLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, _paintBelow: () => GrayImage): GrayImage {
-    // Do not request lower planes. Only the explicit dashboard can be revealed.
-    // Value 1 also occludes the shell's color-key surface.
+    // Capture opens fully opaque and full-size; no underlying private pixels.
     const viewport = appViewportRect("medium");
     const image = new GrayImage(viewport.width, viewport.height, 1);
-    const left = viewport.x;
-    const top = viewport.y;
-    const elapsed = this.phase === "closing" ? presentationNow() - this.closedAt
-      : this.expansionStartedAt === null ? 0 : presentationNow() - this.expansionStartedAt;
-    const from = this.options.origin ?? { x: 0, y: 0, width: viewport.width - 5, height: viewport.height - 5 };
-    const full = { x: 0, y: 0, width: viewport.width - 5, height: viewport.height - 5 };
-    const rect = this.phase === "closing"
-      ? cardRect(full, from, elapsed / EXPANSION_MS)
-      : cardRect(from, full, elapsed / EXPANSION_MS);
-    const moving = elapsed < EXPANSION_MS || this.phase === "closing";
-    if (moving && this.options.paintDashboard) {
-      if (!this.backdrop || this.backdrop.width !== image.width || this.backdrop.height !== image.height) {
-        const dashboard = this.options.paintDashboard(image.width, image.height);
-        this.backdrop = this.phase === "closing" ? dashboard : dashboard.dimmed(.5);
-        this.backdrop.bakeDeferredDrawsInPlace();
-        // Keep the shell opaque even where the dashboard has transparent pixels.
-        const pixels = this.backdrop.pixels;
-        for (let i = 0; i < pixels.length; i++) if (pixels[i] === 0) pixels[i] = 1;
-      }
-      image.pixels.set(this.backdrop.pixels);
-    }
-    const face = { ...rect, x: left + rect.x, y: top + rect.y };
-    paintCardFace(image, face);
-    if (moving) {
-      if (!this.motionContent || this.motionContent.width !== image.width || this.motionContent.height !== image.height) {
-        this.motionContent = new GrayImage(image.width, image.height, 1);
-        this.paintText(this.motionContent, viewport);
-        this.motionContent.bakeDeferredDrawsInPlace();
-      }
-      paintCardContents(image, this.motionContent, { ...full, x: left, y: top }, face);
-      // Font and dashboard rasterization must not consume the first visible frames.
-      if (this.phase !== "closing" && this.expansionStartedAt === null) this.expansionStartedAt = presentationNow();
-    } else {
-      this.motionContent = null;
-      this.backdrop = null;
-      this.paintText(image, viewport);
-    }
+    paintCardFace(image, { x: viewport.x, y: viewport.y, width: viewport.width - 5, height: viewport.height - 5 });
+    this.paintText(image, viewport);
     return image;
   }
 

@@ -345,46 +345,12 @@ test('dictation reflows display-only line breaks and retains its exact authorita
   assert.deepEqual(result.drafts, [raw]); assert.equal(layer.cachedLayout, null); assert.equal(layer.text, '');
 });
 
-test('Ask Assistant capture uses the same card motion and source control as session navigation', () => {
-  const origin = { x: 291, y: 95, width: 288, height: 44 };
-  const h = setup({ origin, viewport: { x: 0, y: 28, width: 640, height: 452 } }); h.advance(180);
-  assert.equal(h.layer.isAnimatingCard(), true);
-  const outlines = h.layer.paint({}, () => assert.fail()).rects;
-  assert.equal(outlines.length, 1);
-  const actual = outlines[0];
-  const expected = h.cardRect(origin, { x: 0, y: 0, width: 635, height: 447 }, .5);
-  assert.deepEqual(actual.slice(0, 4), [expected.x, expected.y + 28, expected.width, expected.height]);
-  assert.equal(actual[6], 2);
-  h.advance(400); assert.equal(h.layer.isAnimatingCard(), false);
-  h.layer.handleInput({ type: 'double-click' }); assert.equal(h.layer.isAnimatingCard(), true);
-  h.advance(800); assert.equal(h.layer.isAnimatingCard(), false); h.layer.onRemoved();
-});
-
-test('completed cancel shrink restores app content before removing its opaque shell shield', () => {
-  const { layer, result, listeners, timers, advance } = setup(); const events = [];
-  listeners.transcript({ text: 'Private partial', isFinal: false });
-  const cancelled = layer.options.onCancelled; const closed = layer.options.onClosed;
-  layer.options.onCancelled = () => { assert.equal(layer.text, ''); assert.equal(listeners.transcript, null); events.push('restore-app'); cancelled(); };
-  layer.options.onClosed = () => { events.push('clear-shell'); closed(); };
-  layer.handleInput({ type: 'double-click' });
-  advance(350); assert.equal(layer.needsAnimation(), true); assert.deepEqual(events, []);
-  advance(400); layer.needsAnimation();
-  assert.deepEqual(events, ['restore-app', 'clear-shell']);
-  assert.equal(result.stops, 1); assert.equal(result.cancellations, 1); assert.equal(result.closed, 1);
-  assert.deepEqual(result.drafts, []); assert.equal(timers.size, 0);
-});
-
 test('app cancellation callback failure cannot skip voice-owner and shell cleanup', () => {
   const { layer, result, timers } = setup();
   layer.options.onCancelled = () => { throw new Error('destination failed'); };
   assert.throws(() => layer.onRemoved(), /destination failed/);
   assert.equal(result.closed, 1); assert.equal(result.stops, 1); assert.equal(timers.size, 0);
   layer.onRemoved(); assert.equal(result.closed, 1);
-});
-
-
-test('direct capture requests animation through render credits and only times its seconds label', () => {
-  const h = setup(); assert.equal(h.layer.needsAnimation(), true); assert.equal([...h.timers.values()].find(timer => timer.interval).delay, 1000); h.layer.onRemoved();
 });
 
 const captureViewport = { x: 0, y: 0, width: 576, height: 452 };
@@ -399,90 +365,40 @@ function inkIn(image, x, y, width, height, value) {
   return ink;
 }
 
-test('dictation has real heading pixels on first and intermediate expansion frames and reveals body before completion', () => {
-  const h = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
-  for (const time of [0, 80, 180, 320]) {
-    h.advance(time);
-    const image = h.layer.paint({}, noPrivateBackdrop);
-    const rect = h.cardRect(captureOrigin, { x: 0, y: 0, width: 571, height: 447 }, time / 360);
-    assert.ok(inkIn(image, rect.x + 8, rect.y + 8, rect.width - 16, Math.min(26, rect.height - 16), 190) > 10,
-      `LISTENING heading must be visible at ${time}ms`);
-  }
-  const moving = h.layer.paint({}, noPrivateBackdrop);
-  h.advance(400); const settled = h.layer.paint({}, noPrivateBackdrop); settled.bakeDeferredDrawsInPlace();
-  assert.ok(inkIn(moving, 16, 65, 250, 24, 190) > 0, 'body ink is already visible before motion ends');
-  for (let y = 65; y < 89; y++) assert.deepEqual(moving.pixels.slice(y * 576 + 16, y * 576 + 250), settled.pixels.slice(y * 576 + 16, y * 576 + 250), 'body stays in final coordinates');
-  assert.equal(h.layer.motionContent, null); h.layer.onRemoved();
+test('dictation opens at full size immediately with no animation credits',()=>{
+ const h=setup({origin:captureOrigin,viewport:captureViewport});
+ const image=h.layer.paint({},noPrivateBackdrop);
+ assert.deepEqual(image.rects[0].slice(0,4),[0,0,571,447]);
+ assert.equal(h.layer.isAnimatingCard(),false);assert.equal(h.layer.needsAnimation(),false);
+ assert.ok(image.labels.includes('LISTENING | 0s'));
+ assert.equal([...h.timers.values()].find(x=>x.interval).delay,1000);
+ h.layer.onRemoved();
 });
-
-test('cancel replaces every cached transcript pixel with safe content throughout collapse', () => {
-  const secret = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
-  const clean = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
-  secret.listeners.transcript({ text: 'PRIVATE TRANSCRIPT MUST DISAPPEAR', isFinal: false });
-  secret.advance(180); secret.layer.paint({}, noPrivateBackdrop);
-  const secretRaster = secret.layer.motionContent;
-  assert.ok(secretRaster); assert.match(secret.layer.cachedLayout.source, /PRIVATE/);
-  for (const h of [secret, clean]) {
-    h.advance(200); h.layer.handleInput({ type: 'double-click' });
-    assert.equal(h.layer.text, ''); assert.equal(h.layer.cachedLayout, null); assert.equal(h.layer.motionContent, null);
-  }
-  secret.listeners.transcript({ text: 'LATE PRIVATE FINAL', isFinal: true });
-  for (const time of [200, 280, 380, 559]) {
-    secret.advance(time); clean.advance(time);
-    const actual = secret.layer.paint({}, noPrivateBackdrop);
-    const expected = clean.layer.paint({}, noPrivateBackdrop);
-    assert.deepEqual(Buffer.from(actual.pixels), Buffer.from(expected.pixels), `cancel frame at ${time}ms contains only safe UI`);
-    assert.notEqual(secret.layer.motionContent, secretRaster);
-    assert.equal(secret.layer.cachedLayout.source, 'Nothing sent.');
-  }
-  assert.deepEqual(secret.result.drafts, []);
-  secret.layer.onRemoved(); clean.layer.onRemoved();
-  assert.equal(secret.layer.motionContent, null); assert.equal(secret.layer.cachedLayout, null);
+test('instant capture cancellation erases content and restores app before clearing shell',()=>{
+ const h=setup(),events=[];
+ h.listeners.transcript({text:'PRIVATE TRANSCRIPT',isFinal:false});
+ const late=h.listeners.transcript;
+ const cancelled=h.layer.options.onCancelled,closed=h.layer.options.onClosed;
+ h.layer.options.onCancelled=()=>{assert.equal(h.layer.text,'');assert.equal(h.listeners.transcript,null);events.push('restore');cancelled();};
+ h.layer.options.onClosed=()=>{events.push('clear');closed();};
+ h.layer.handleInput({type:'double-click'});
+ assert.deepEqual(events,['restore','clear']);assert.equal(h.result.stops,1);assert.equal(h.result.closed,1);
+ assert.equal(h.timers.size,0);assert.equal(h.layer.cachedLayout,null);
+ late({text:'LATE PRIVATE FINAL',isFinal:true});assert.equal(h.layer.text,'');assert.deepEqual(h.result.drafts,[]);
 });
-
-test('explicit dashboard backdrop stays opaque, refreshes on invalidation and resize, and is discarded on removal', () => {
-  let calls = 0, marker = 180;
-  const viewport = { ...captureViewport };
-  const h = setup({ raster: true, origin: captureOrigin, viewport,
-    paintDashboard: (w, height, Image) => { calls++; const image = new Image(w, height, 0); image.pixels[0] = marker; return image; } });
-  const first = h.layer.paint({}, noPrivateBackdrop);
-  assert.ok(first.pixels.every(value => value > 0), 'transparent dashboard cannot punch through the privacy shield');
-  assert.ok(first.pixels[0] > 1);
-  h.advance(80); h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 1, 'reuse backdrop while moving');
-  marker = 230; h.layer.invalidateBackdrop();
-  const refreshed = h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 2); assert.notEqual(refreshed.pixels[0], first.pixels[0]);
-  viewport.width = 640; h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 3); assert.equal(h.layer.motionContent.width, 640);
-  h.layer.handleInput({ type: 'double-click' }); assert.equal(h.layer.backdrop, null);
-  h.advance(440); h.layer.paint({}, noPrivateBackdrop); assert.equal(calls, 4, 'closing uses fresh undimmed destination');
-  assert.equal(h.layer.backdrop.pixels[0], marker);
-  h.layer.onRemoved(); assert.equal(h.layer.backdrop, null); assert.equal(h.layer.motionContent, null);
+test('instant capture never paints a private lower layer or a dashboard backdrop',()=>{
+ const viewport={...captureViewport};
+ const h=setup({raster:true,viewport,origin:captureOrigin,paintDashboard:()=>assert.fail('no transition backdrop')});
+ const first=h.layer.paint({},noPrivateBackdrop);first.bakeDeferredDrawsInPlace();
+ assert.ok(first.pixels.every(x=>x>0));assert.ok(inkIn(first,16,65,250,24,190)>0);
+ viewport.width=640;const resized=h.layer.paint({},noPrivateBackdrop);assert.equal(resized.width,640);
+ h.layer.onRemoved();
 });
-
-test('speaker rejection during expansion invalidates the partial raster before painting failure', () => {
-  const h = setup({ raster: true, origin: captureOrigin, viewport: captureViewport });
-  h.listeners.transcript({ text: 'UNVERIFIED PRIVATE PARTIAL', isFinal: false }); h.advance(180);
-  h.layer.paint({}, noPrivateBackdrop); const partial = h.layer.motionContent;
-  h.listeners.status({ status: 'Ignored: speaker verification failed' });
-  assert.equal(h.layer.text, ''); assert.equal(h.layer.cachedLayout, null); assert.equal(h.layer.motionContent, null);
-  h.layer.paint({}, noPrivateBackdrop);
-  assert.notEqual(h.layer.motionContent, partial); assert.doesNotMatch(h.layer.cachedLayout.source, /PRIVATE/);
-  assert.match(h.layer.cachedLayout.source, /Nothing sent/); assert.deepEqual(h.result.drafts, []); h.layer.onRemoved();
-});
-
-test('640x452 capture begins motion after delayed first snapshot while microphone time remains accurate', () => {
-  const origin = { x: 291, y: 95, width: 288, height: 44 };
-  const h = setup({ firstPaint: false, origin, viewport: { x: 0, y: 0, width: 640, height: 452 },
-    paintDashboard: (w, height, Image) => { h.advance(1300); return new Image(w, height, 1); } });
-  h.advance(600); assert.equal(h.layer.isAnimatingCard(), true);
-  const renders = h.result.renders;
-  [...h.timers.values()].find(timer => timer.interval).callback(); assert.equal(h.result.renders, renders); assert.equal(h.layer.needsAnimation(), true);
-  const first = h.layer.paint({}, noPrivateBackdrop);
-  assert.deepEqual(first.rects[0].slice(0, 4), [291, 95, 288, 44]);
-  assert.equal(h.layer.expansionStartedAt, 1300);
-  assert.ok(h.layer.motionContent.labels.includes('LISTENING | 1s'), 'microphone elapsed time includes pre-render work');
-  h.advance(1480);
-  const half = h.layer.paint({}, noPrivateBackdrop);
-  const rect = h.cardRect(origin, { x: 0, y: 0, width: 635, height: 447 }, .5);
-  assert.deepEqual(half.rects[0].slice(0, 4), [rect.x, rect.y, rect.width, rect.height]);
-  h.advance(1660); assert.equal(h.layer.isAnimatingCard(), false); h.layer.onRemoved();
+test('speaker rejection still clears partial content without transition caches',()=>{
+ const h=setup({raster:true,viewport:captureViewport});
+ h.listeners.transcript({text:'UNVERIFIED PRIVATE PARTIAL',isFinal:false});h.layer.paint({},noPrivateBackdrop);
+ h.listeners.status({status:'Ignored: speaker verification failed'});
+ assert.equal(h.layer.text,'');assert.equal(h.layer.cachedLayout,null);
+ h.layer.paint({},noPrivateBackdrop);assert.doesNotMatch(h.layer.cachedLayout.source,/PRIVATE/);
+ assert.match(h.layer.cachedLayout.source,/Nothing sent/);assert.deepEqual(h.result.drafts,[]);h.layer.onRemoved();
 });

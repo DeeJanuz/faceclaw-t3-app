@@ -24,3 +24,46 @@ test('retained translation copies only overlap from the last accepted geometry',
  assert.equal(module.exports.retainedCopyForTranslation(prior,{key:8,offsetX:-128},576,452),null);
  assert.equal(module.exports.retainedCopyForTranslation(prior,{key:7,offsetX:-128},640,452),null);
 });
+
+test('slides warm the off-screen destination and retry a rejected prefetch without dropping raster',()=>{
+ const source=fs.readFileSync('app/runtime.ts','utf8')+'\nexport const testSubmitGray=submitGray;';
+ const module={exports:{}},encoded=[],warm=[],submitted=[];let allow=false;
+ const visible=[{name:'source'}],complete=[...visible,{name:'destination'}];
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText,
+  {module,exports:module.exports,require:name=>name==='./graphics/sdk-draw-batch'?{
+   encodeSdkDrawBatch:(_service,_image,draws)=>{encoded.push(draws);return new Uint8Array(draws.length*9);}
+  }:{},com:{}});
+ const service={prefetchGrayResources:(_buffer,_offset,length)=>{warm.push(length);return allow;},
+  submitGrayBufferWithDraws:(...args)=>{submitted.push(args);return true;}};
+ const image={width:2,height:2,pixels:new Uint8Array(4),draws:visible,bakeDeferredDrawsInPlace(){}};
+ const hint={key:1,offsetX:0,prefetchDraws:complete};
+ assert.equal(module.exports.testSubmitGray(service,image,'',true,visible,hint),true);
+ assert.equal(encoded[1],complete);assert.deepEqual(warm,[18]);
+ allow=true;module.exports.testSubmitGray(service,image,'',true,visible,hint);
+ module.exports.testSubmitGray(service,image,'',false,visible,hint);
+ assert.deepEqual(warm,[18,18]);assert.equal(submitted.length,3);
+});
+
+test('returning to an unchanged dashboard restores its scene after raster animation',()=>{
+ const source=fs.readFileSync('app/runtime.ts','utf8')+'\nexport const testSubmitGray=submitGray; export const testSubmitRetained=submitRetained;';
+ const module={exports:{}},calls=[];let acceptScene=true;
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText,
+  {module,exports:module.exports,require:name=>name==='./graphics/sdk-draw-batch'?{
+   encodeSdkDrawBatch:()=>null,
+   encodeSdkRetainedScene:()=>({patch:new Uint8Array(4),patchX:0,patchY:0,patchWidth:2,patchHeight:2,draws:null})
+  }:{},com:{}});
+ const api=module.exports;
+ const service={isRetainedSceneCurrent:()=>true,
+  submitUnchangedRetainedScene:()=>{calls.push('unchanged');return true;},
+  submitRetainedScene:()=>{calls.push('restore');return acceptScene;},
+  submitGrayBuffer:()=>{calls.push('raster');return true;}};
+ const image={width:2,height:2,pixels:new Uint8Array(4),draws:[],fingerprint:()=> 'same-homepage',bakeDeferredDrawsInPlace(){}};
+ assert.equal(api.testSubmitRetained(service,image),true);
+ assert.equal(api.testSubmitGray(service,image,'',true),true);
+ // Other surfaces retain their independent scene state.
+ api.testSubmitRetained(service,image,'ui.notifications');
+ acceptScene=false;assert.equal(api.testSubmitRetained(service,image),false);
+ acceptScene=true;assert.equal(api.testSubmitRetained(service,image),true);
+ api.testSubmitRetained(service,image);
+ assert.deepEqual(calls,['unchanged','raster','unchanged','restore','restore','unchanged']);
+});

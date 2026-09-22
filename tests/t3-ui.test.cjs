@@ -54,7 +54,7 @@ function setup(animationClock, raster = false, t3Config = {}) {
   const alerts = () => visible || state.alerts;
   // Layout-only tests do not inspect raster bytes. Avoid retaining hundreds of
   // full viewport buffers now that a slide deliberately caches both pages.
-  class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(0); } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} bitBlt() {} dimmed() { return this; } }
+  class Image { constructor(width = 576, height = 452) { this.width = width; this.height = height; this.pixels = new Uint8Array(0); this.draws = []; } fillRect() {} bakeDeferredDrawsInPlace() {} fillRoundedRect() {} drawRoundedRect(...args) { borders.push(args); } drawText(_font, x, y, text) { drawn.push(text); placements.push({ x, y, text }); } drawImage() {} bitBlt() {} dimmed() { return this; } }
   const RasterImage = raster ? load('app/graphics/image.ts', { './textwrap': {} }).GrayImage : Image;
   const font = raster ? load('app/graphics/bdffont.ts', { '@nativescript/core': {} }).BdfFont.parse(fs.readFileSync('app/fonts/terminus/ter-u18n.bdf', 'utf8')) : { lineHeight: 17, measureText: value => Array.from(value).length * 7, getGlyph: () => ({ dwidthX: 7 }) };
   const targets = raster ? [{ id: 'sessions', x: 259, y: 149, width: 288, height: 44 }, { id: 'inbox', x: 447, y: 14, width: 100, height: 40 }] : [];
@@ -80,6 +80,7 @@ function setup(animationClock, raster = false, t3Config = {}) {
       return image;
     } }, '../../native/weather': { weatherBridge: { snapshot: () => ({}) } }, '../../ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, '../../graphics/image': { GrayImage: RasterImage }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => font }, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] },
     '../../ui/presentation-clock': { presentationNow: () => animationClock?.now ?? Date.now() },
+    '../../native/media-controls': { isMediaPlaying: () => false, sendMediaCommand: command => { navigation.events.push('media:' + command); return true; } },
     '../../extensions/host': { onHostEvent: () => () => {}, onHostState: () => () => {} },
     '../../ui/shell/shell': { shell }, '../../ui/shell/in-process-window': {},
     '../../t3/config': { getT3Config: () => t3Config },
@@ -91,7 +92,7 @@ function setup(animationClock, raster = false, t3Config = {}) {
 }
 test('assistant draft requires review tap and preserves assistant.start intent', async () => {
   const { api, state, layer } = setup(); await state.refresh();
-  await layer.rows().find(row => row.id === 'assistant').action();
+  layer.askAssistant();
   assert.equal(layer.screen, 'draft');
   assert.equal(api.calls.filter(m => m.endsWith('.start')).length, 0);
   await layer.handleInput({ type: 'click' });
@@ -292,9 +293,9 @@ test('ring inbox navigation exposes dismissal in the context menu without a hori
   assert.equal(layer.screen, 'dashboard');
 });
 
-test('T3 homepage has Notifications, Ask Assistant and Sessions with Settings in App actions', () => {
+test('T3 homepage has Notifications, Audio controls and Sessions with Settings in App actions', () => {
   const { layer } = setup();
-  assert.deepEqual(Array.from(layer.rows(), row => row.id), ['inbox', 'assistant', 'sessions']);
+  assert.deepEqual(Array.from(layer.rows(), row => row.id), ['inbox', 'audio', 'sessions']);
 });
 test('only dashboard-root back sleeps the display, including after direct nested entry', async () => {
   const { layer, navigation } = setup();
@@ -346,6 +347,7 @@ test('Settings opens phone configuration and leaves a check-phone screen with da
 test('Sessions uses Hub section rows and opens project selection only through new session', async () => {
   const { layer, state } = setup(); await state.refresh();
   await layer.rows().find(row => row.id === 'sessions').action();
+  await layer.rows().find(row => row.id === 'sessions-all').action();
   assert.equal(layer.screen, 'sessions'); assert.equal(layer.rows().some(row => row.id === 'projects'), false); assert.equal(layer.rows()[0].title, 'START NEW SESSION'); assert.ok(layer.rows().some(row => row.title === 'UNSETTLED' && row.section));
   await layer.rows().find(row => row.id === 'new').action(); assert.equal(layer.screen, 'new-project');
 });
@@ -621,14 +623,14 @@ test('capture cancellation with no prior navigation publishes one static dashboa
   assert.deepEqual(renders, [{ screen: 'dashboard', motion: null }]);
 });
 
-test('capture cancellation retains its reader position while ordinary session navigation keeps slide motion', () => {
+test('capture cancellation retains its reader position and ordinary navigation is immediate', () => {
   const { layer } = setup(); layer.screen = 'reader'; layer.scroll = 7;
   layer.go('compose'); const renders = [];
   layer.repaint = () => renders.push({ screen: layer.screen, scroll: layer.scroll, motion: layer.motion });
   layer.cancelCompose();
   assert.deepEqual(renders, [{ screen: 'reader', scroll: 7, motion: null }]);
   layer.screen = 'dashboard'; layer.go('sessions'); layer.back();
-  assert.equal(layer.screen, 'dashboard'); assert.ok(layer.slide, 'ordinary dashboard return still animates');
+  assert.equal(layer.screen, 'dashboard'); assert.equal(layer.slide, null, 'ordinary dashboard return is immediate');
 });
 
 test('phone taps use the same full-size menu geometry as rendered rows', async () => {
@@ -976,61 +978,9 @@ test('dashboard inbox stays top aligned in both viewport heights', () => {
 });
 function finishSlide(layer, ctx, clock) {
   clock.now += 1000;
-  for (let frame = 0; frame < 16 && layer.slide; frame++) layer.paint(ctx);
+  for (let frame = 0; frame < 32 && layer.slide; frame++) layer.paint(ctx);
   assert.equal(layer.slide, null, 'paced slide reaches its final offset');
 }
-test('dashboard and sessions use a forward horizontal shuffle and reverse on Back', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true);
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.drawn.length = 0; h.layer.go('sessions');
-  let frame = h.layer.paint(ctx);
-  assert.equal(h.layer.motion, null); assert.equal(h.layer.slide.fromScreen, 'dashboard');
-  assert.equal(h.layer.slide.toScreen, 'sessions'); assert.equal(h.layer.slide.direction, 1);
-  assert.ok(h.layer.slide.from.hasDeferredDraws(), 'source snapshot retains cached glyph identity');
-  assert.ok(h.layer.slide.to.hasDeferredDraws(), 'destination snapshot retains cached glyph identity');
-  assert.ok(frame.hasDeferredDraws(), 'moving frame exposes deferred draws to the SDK');
-  frame.bakeDeferredDrawsInPlace();
-  clock.now = 1180; const halfway = h.layer.paint(ctx);
-  assert.ok(halfway.hasDeferredDraws(), 'mid-shuffle text stays eligible for cached glyph draws');
-  halfway.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide.progress, 0.5);
-  const forwardDistance = 1 - (1 - h.layer.slide.progress) ** 3;
-  await h.layer.handleInput({ type: 'double-click' });
-  assert.equal(h.layer.screen, 'dashboard'); assert.equal(h.layer.slide.direction, -1);
-  frame = h.layer.paint(ctx); frame.bakeDeferredDrawsInPlace();
-  const reverseDistance = 1 - (1 - h.layer.slide.progress) ** 3;
-  assert.ok(Math.abs(reverseDistance - (1 - forwardDistance)) < 0.000001,
-    'reversing preserves geometry while swapping the lightweight pages');
-  finishSlide(h.layer, ctx, clock);
-  assert.equal(h.layer.slide, null); assert.equal(h.layer.selected, 'sessions');
-});
-
-test('session slides unload dense content during motion and reload it at rest', async () => {
-  const clock = { now: 1000 }, h = setup(clock);
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.drawn.length = 0; h.layer.go('sessions'); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('UNLOADING DATA...'));
-  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
-  assert.equal(h.drawn.includes('START NEW SESSION'), false);
-  finishSlide(h.layer, ctx, clock);
-  assert.ok(h.drawn.includes('START NEW SESSION'), 'the full session list loads after motion');
-
-  h.drawn.length = 0;
-  h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('UNLOADING SESSIONS...'));
-  assert.ok(h.drawn.includes('LOADING SESSION...'));
-  assert.equal(h.drawn.includes('START NEW SESSION'), false, 'the outgoing list is absent during motion');
-  finishSlide(h.layer, ctx, clock);
-  assert.ok(h.drawn.some(text => text && !/LOADING|UNLOADING/.test(text)), 'the complete reader loads after motion');
-
-  h.drawn.length = 0;
-  h.layer.back(); h.layer.paint(ctx);
-  assert.ok(h.drawn.includes('UNLOADING SESSION...'));
-  assert.ok(h.drawn.includes('LOADING SESSIONS...'));
-  assert.equal(h.drawn.includes('START NEW SESSION'), false, 'the destination list waits until motion completes');
-  finishSlide(h.layer, ctx, clock);
-  assert.ok(h.drawn.includes('START NEW SESSION'), 'the destination list reloads after motion');
-});
 
 test('APK reader reports handoff then bounded app result without claiming early delivery', async () => {
  const h = setup(); let result;
@@ -1060,47 +1010,6 @@ function saveMotionFrame(name, image) {
   fs.mkdirSync(process.env.T3_TRANSITION_ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(`${process.env.T3_TRANSITION_ARTIFACT_DIR}/${name}.pgm`, Buffer.concat([Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.pixels)]));
 }
-test('sessions and transcript use the same forward shuffle', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true);
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  finishSlide(h.layer, ctx, clock);
-  h.layer.openThread('voice'); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.layer.screen, 'reader'); assert.ok(h.layer.slide);
-  assert.equal(h.layer.slide.fromScreen, 'sessions'); assert.equal(h.layer.slide.toScreen, 'reader');
-  assert.equal(h.layer.slide.direction, 1);
-  h.layer.paint(ctx);
-  clock.now += 180; const middle = h.layer.paint(ctx); middle.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide.progress, 0.5);
-  assert.ok(contentPixels(middle, { x: 0, y: 0, width: 576, height: 452 }) > 20);
-  finishSlide(h.layer, ctx, clock); const final = h.layer.paint(ctx); final.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide, null); assert.equal(h.layer.screen, 'reader');
-  assert.ok(contentPixels(final, h.layer.fullRect()) > 20);
-});
-
-test('shuffle snapshots are reused, refresh their destination, and cancel on geometry changes', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true); let width = 576, height = 452;
-  const ctx = { stack: { getBaseSize: () => ({ width, height }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  const source = h.layer.slide.from, destination = h.layer.slide.to;
-  clock.now = 1100; h.layer.paint(ctx);
-  assert.equal(h.layer.slide.from, source); assert.equal(h.layer.slide.to, destination);
-  h.state.changed(); assert.equal(h.layer.slide.from, source); assert.equal(h.layer.slide.to, undefined);
-  h.layer.paint(ctx); assert.notEqual(h.layer.slide.to, destination);
-  width = 640; height = 288; const resized = h.layer.paint(ctx); resized.bakeDeferredDrawsInPlace();
-  assert.equal(h.layer.slide, null); assert.equal(resized.width, 640); assert.equal(resized.height, 288);
-});
-
-test('real input and overlays cancel a session shuffle while synthetic releases preserve it', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true), ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.selected = 'sessions'; h.layer.go('sessions'); h.layer.paint(ctx);
-  const slide = h.layer.slide;
-  await h.layer.handleInput({ type: 'long-press-release' }); await h.layer.handleInput({ type: 'system-menu-opened' });
-  assert.equal(h.layer.slide, slide);
-  await h.layer.handleInput({ type: 'scroll-down' }); assert.equal(h.layer.slide, null);
-  h.layer.back(); h.layer.paint(ctx); assert.ok(h.layer.slide);
-  h.visibility.overlay = true; h.layer.paint(ctx); assert.equal(h.layer.slide, null);
-});
 
 test('arrival dropdown rests at the top in both band and full-height viewports', () => {
  for (const height of [288,452]) {
@@ -1151,24 +1060,6 @@ test('a failed visit acknowledgement still leaves a removed notification reader'
  assert.equal(h.layer.screen,'sessions');assert.equal(h.layer.notificationNotice,'');assert.deepEqual(h.navigation.returned,['lease-1']);
 });
 
-
-test('leaving a transcript clears its outgoing shuffle snapshot when private content changes', async () => {
-  const clock = { now: 1000 }, h = setup(clock, true);
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 452 }) } };
-  await h.state.refresh(); h.layer.screen = 'sessions'; h.layer.openThread('voice');
-  await new Promise(resolve => setImmediate(resolve)); h.layer.paint(ctx);
-  finishSlide(h.layer, ctx, clock);
-  h.layer.back(); assert.equal(h.layer.screen, 'sessions'); assert.equal(h.layer.slide.fromScreen, 'reader');
-  const outgoing = Buffer.from(h.layer.slide.from.pixels);
-  assert.equal(!outgoing.equals(Buffer.alloc(outgoing.length)) || h.layer.slide.from.hasDeferredDraws(), true);
-  h.layer.paint(ctx);
-  h.layer.hostStateChanged('content');
-  const cleared = Buffer.from(h.layer.slide.from.pixels);
-  assert.equal(cleared.equals(Buffer.alloc(cleared.length)), true);
-  assert.equal(h.layer.slide.from.hasDeferredDraws(), false);
-  finishSlide(h.layer, ctx, clock);
-});
-
 test('arrival animation gates body, reverses dismissal without a jump and cancels on removal', () => {
  let now=0, painted, tick, dismissed=0, expired=0;
  const {TimedNotificationLayer}=load('app/ui/shell/timed-notification.ts',{
@@ -1211,12 +1102,12 @@ test('expanded notification starts at the preview rectangle and defers its body'
 });
 
 
-test('assistant invocation and dashboard button start the same fresh T3 compose flow', () => {
+test('assistant remains available through invocation, with no dashboard button', () => {
   const h = setup(); let captures = 0;
   h.layer.record = () => { captures++; };
   h.layer.screen = 'dashboard';
-  const assistant = h.layer.rows().find(row => row.id === 'assistant');
-  assistant.action();
+  assert.equal(h.layer.rows().find(row => row.id === 'assistant'), undefined);
+  h.layer.askAssistant();
   const expected = JSON.stringify(h.layer.creation);
   assert.equal(h.layer.screen, 'compose');
   assert.equal(h.layer.creation.assistant, true);
@@ -1262,4 +1153,236 @@ test('popup over the dashboard preserves its selection on reply or dismissal', a
   assert.equal(h.layer.screen,'dashboard');assert.equal(h.layer.selected,'sessions');
   assert.deepEqual(h.navigation.returned,['host-visit']);assert.equal(h.navigation.yielded,0,'host visit owns power restoration');
  }
+});
+
+test('ordinary T3 navigation paints the destination immediately while notifications keep motion', async () => {
+ const h=setup(),ctx={stack:{getBaseSize:()=>({width:576,height:452})}};
+ await h.state.refresh();
+ for(const screen of ['sessions','new-project','new-model','actions','dashboard']){
+  h.layer.go(screen);h.layer.paint(ctx);
+  assert.equal(h.layer.motion,null,screen);assert.equal(h.layer.slide,null,screen);assert.equal(h.layer.needsAnimation(),false,screen);
+ }
+ h.layer.go('sessions');h.layer.openThread('voice');await new Promise(resolve=>setImmediate(resolve));h.layer.paint(ctx);
+ assert.equal(h.layer.screen,'reader');assert.equal(h.layer.needsAnimation(),false);
+ h.layer.back();assert.equal(h.layer.screen,'sessions');assert.equal(h.layer.needsAnimation(),false);
+ h.layer.back();assert.equal(h.layer.screen,'dashboard');assert.equal(h.layer.needsAnimation(),false);
+ h.layer.go('inbox');assert.ok(h.layer.motion,'notification inbox still opens with motion');
+ h.layer.back();assert.ok(h.layer.motion,'notification inbox still closes with motion');
+});
+
+test('dashboard audio expands in place, dispatches media commands, and consumes back', async () => {
+  const h = setup();
+  assert.deepEqual(h.layer.rows().map(row => row.id), ['inbox', 'audio', 'sessions']);
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'dashboard');
+  assert.equal(h.layer.audioExpanded, true);
+  assert.equal(h.layer.selected, 'audio-toggle');
+  assert.deepEqual(h.layer.rows().map(row => row.id), ['audio-previous', 'audio-toggle', 'audio-next']);
+  for (const command of ['previous', 'toggle', 'next']) {
+    h.layer.selected = `audio-${command}`;
+    await h.layer.handleInput({ type: 'click' });
+  }
+  assert.deepEqual(h.navigation.events, ['media:previous', 'media:toggle', 'media:next']);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.audioExpanded, false);
+  assert.equal(h.layer.selected, 'audio');
+  assert.equal(h.navigation.yielded, 0);
+  assert.equal(h.layer.needsAnimation(), false);
+});
+
+const completedSession = (id, turn, minute = 1, environmentId = 'computer-a') => ({
+  id, environmentId, title: id, projectId: 'p', projectTitle: 'Project', status: 'ready', settled: false,
+  completedTurn: { id: turn, completedAt: `2026-09-21T10:${String(minute).padStart(2, '0')}:00Z` }, lastActivityAt: '',
+});
+
+test('dashboard sessions require entering the card, then opening a session or the full list', async () => {
+  const h = setup();
+  h.state.applySessions([completedSession('older', 'one'), completedSession('newer', 'two', 2)]);
+  h.layer.selected = 'sessions';
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'dashboard');
+  assert.deepEqual(h.layer.rows().map(row => row.title), ['newer', 'older', 'Sessions']);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.selected, 'sessions');
+  assert.equal(h.navigation.yielded, 0);
+  await h.layer.handleInput({ type: 'click' });
+  let opened;
+  h.layer.openThread = id => { opened = id; };
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(opened, JSON.stringify(['computer-a', 'newer']));
+  h.layer.selected = 'sessions-all';
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'sessions');
+  assert.equal(h.layer.needsAnimation(), false);
+});
+
+test('empty dashboard sessions card opens the full list directly', async () => {
+  const h = setup(); h.layer.selected = 'sessions';
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'sessions');
+});
+
+test('viewed completion receipts survive restart, isolate computers and pairing, and allow new turns', () => {
+  let saved; let scope = 'first';
+  const storage = { scope: () => scope, load: () => saved, save: value => { saved = value; } };
+  const one = completedSession('same', 'one');
+  const other = completedSession('same', 'one', 2, 'computer-b');
+  let state = new T3Workspace({}); state.setViewedTurnStorage(storage);
+  state.applySessions([one, other, { ...completedSession('busy', 'old'), status: 'running' }, { ...completedSession('settled', 'old'), settled: true }]);
+  assert.deepEqual(state.awaitingSessions.map(s => s.environmentId), ['computer-b', 'computer-a']);
+  state.markSessionViewed(one);
+  assert.deepEqual(state.awaitingSessions, [other]);
+  state = new T3Workspace({}); state.setViewedTurnStorage(storage); state.applySessions([one, other]);
+  assert.deepEqual(state.awaitingSessions, [other]);
+  const next = completedSession('same', 'two', 3);
+  state.applySessions([next, other]); assert.deepEqual(state.awaitingSessions, [next, other]);
+  scope = 'second'; saved = undefined; state.applySessions([one]); assert.deepEqual(state.awaitingSessions, [one]);
+});
+
+test('only displaying a visible completed transcript clears its dashboard entry', () => {
+  const h = setup(); const session = completedSession('same', 'one');
+  h.state.applySessions([session]);
+  h.state.selectedThreadId = session.id; h.state.selectedEnvironmentId = session.environmentId;
+  h.state.transcript = { session, turns: [] };
+  h.layer.paint(previewContext);
+  assert.equal(h.state.awaitingSessions.length, 1, 'background transcript is not a view');
+  h.layer.go('reader'); h.layer.paint(previewContext);
+  assert.equal(h.state.awaitingSessions.length, 0);
+  h.state.applySessions([completedSession('same', 'two')]);
+  h.layer.paint(previewContext);
+  assert.equal(h.state.awaitingSessions.length, 1, 'stale reader does not acknowledge a newer turn');
+});
+
+test('dashboard geometry expands downwards and scrolls every pending entry into the short viewport', () => {
+  const { dashboardTargets } = load('app/apps/t3/dashboard.ts', {
+    '../../ui/card-presentation': face, '../../graphics/image': {}, '../../graphics/ui-fonts': {},
+    '../../graphics/textwrap': {}, '../../graphics/icons': {}, '../../graphics/battery': {},
+    './dashboard-clock': {}, './card-motion': {},
+  });
+  const cards = { sessions: [], audioExpanded: false, activeCard: null };
+  const compact = dashboardTargets(576, 288, cards);
+  assert.equal(compact.find(r => r.id === 'sessions').height, 44);
+  const expanded = dashboardTargets(576, 452, { ...cards, audioExpanded: true });
+  assert.equal(expanded.find(r => r.id === 'sessions').y - compact.find(r => r.id === 'sessions').y, 88);
+  cards.sessions = Array.from({ length: 30 }, (_, i) => ({ id: `pending:${i}`, title: `Session ${i}` }));
+  for (const id of [...cards.sessions.map(s => s.id), 'sessions-all']) {
+    const rows = dashboardTargets(576, 288, cards, id);
+    const row = rows.find(r => r.id === id);
+    assert.ok(row.y >= 66 && row.y + row.height <= 288, id);
+    assert.equal(rows.find(r => r.id === 'inbox').y, 14);
+  }
+});
+
+test('media controls dispatch previous, play/pause and next through Android AudioManager', () => {
+  const events = [];
+  class KeyEvent { constructor(action, code) { this.action = action; this.code = code; } }
+  Object.assign(KeyEvent, { ACTION_DOWN: 0, ACTION_UP: 1, KEYCODE_MEDIA_NEXT: 87, KEYCODE_MEDIA_PREVIOUS: 88, KEYCODE_MEDIA_PLAY_PAUSE: 85 });
+  const { sendMediaCommand } = load('app/native/media-controls.ts', {
+    '@nativescript/core': { Utils: { android: { getApplicationContext: () => ({ getSystemService: () => ({ dispatchMediaKeyEvent: event => events.push([event.action, event.code]) }) }) } } },
+  }, { global: { isAndroid: true }, android: { content: { Context: { AUDIO_SERVICE: 'audio' } }, view: { KeyEvent } } });
+  for (const command of ['previous', 'toggle', 'next']) assert.equal(sendMediaCommand(command), true);
+  assert.deepEqual(events, [[0, 88], [1, 88], [0, 85], [1, 85], [0, 87], [1, 87]]);
+});
+
+test('hidden and covered readers do not clear waiting sessions', () => {
+  for (const hidden of [true, false]) {
+    const h = setup(); const session = completedSession('same', 'one');
+    h.state.applySessions([session]); h.state.selectedThreadId = session.id; h.state.selectedEnvironmentId = session.environmentId;
+    h.state.transcript = { session, turns: [] }; h.layer.go('reader');
+    if (hidden) h.visibility.on = false; else h.visibility.overlay = true;
+    h.layer.paint(previewContext);
+    assert.equal(h.state.awaitingSessions.length, 1);
+  }
+});
+
+test('dashboard uses brackets only inside cards and audio icons share one row', () => {
+  const fills = [], icons = [], images = [];
+  class Image {
+    constructor(width, height) { this.width = width; this.height = height; this.pixels = new Uint8Array(width * height); }
+    fillRect(...args) { fills.push(args); }
+    drawRoundedRect() {} drawText() {}
+    drawImage(image, x, y) { images.push({ image, x, y }); }
+  }
+  const { paintT3Dashboard, dashboardTargets } = load('app/apps/t3/dashboard.ts', {
+    '../../ui/card-presentation': face, '../../graphics/image': { GrayImage: Image },
+    '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({ lineHeight: 18 }) },
+    '../../graphics/textwrap': { truncateText: (_font, text) => text },
+    '../../graphics/icons': { renderIcon: name => { icons.push(name); return { name }; } },
+    '../../graphics/battery': { drawBattery: () => ({}) },
+    './dashboard-clock': { renderClockPixels: () => new Uint8Array(128 * 144) },
+  });
+  const cards = { sessions: [{ id: 'pending:one', title: 'One' }], audioExpanded: true, activeCard: null };
+  const paint = selected => {
+    fills.length = 0; icons.length = 0; images.length = 0;
+    paintT3Dashboard(576, 288, selected, 0, '', {}, '24h', new Date(), undefined, cards);
+  };
+  for (const id of ['audio', 'sessions', 'inbox']) { paint(id); assert.equal(fills.length, 0, 'outer focus has no bracket or chevron'); }
+  cards.activeCard = 'audio'; paint('audio-toggle');
+  assert.equal(fills.length, 6, 'two three-sided brackets');
+  assert.deepEqual(icons.filter(name => name.startsWith('media-')), ['media-previous', 'media-play', 'media-next']);
+  const controls = images.filter(draw => draw.image.name?.startsWith('media-'));
+  assert.equal(new Set(controls.map(draw => draw.y)).size, 1);
+  assert.ok(controls[0].x < controls[1].x && controls[1].x < controls[2].x);
+  const targets = dashboardTargets(576, 288, cards, 'audio-toggle').filter(row => row.id.startsWith('audio-'));
+  assert.deepEqual(targets.map(row => row.width), [96, 96, 96]);
+  assert.equal(new Set(targets.map(row => row.y)).size, 1);
+  cards.audioPlaying = true; paint('audio-toggle'); assert.ok(icons.includes('media-pause'));
+  cards.activeCard = 'sessions'; paint('pending:one'); assert.equal(fills.length, 6);
+  cards.audioMedia = { title: 'Track', artist: 'Artist', art: { width: 2, height: 2, gray4: '05af' } };
+  paint('audio-toggle');
+  const artwork = images.find(draw => draw.image.width === 2)?.image;
+  assert.deepEqual(Array.from(artwork.pixels), [0, 85, 170, 255]);
+  paint('audio-toggle');
+  assert.equal(images.find(draw => draw.image.width === 2)?.image, artwork, 'unchanged artwork reuses decoded pixels');
+  cards.audioMedia.art = { width: 65, height: 1, gray4: '0'.repeat(65) };
+  paint('audio-toggle'); assert.ok(icons.includes('music'), 'invalid artwork uses fallback');
+  cards.audioExpanded = false; paint('audio');
+  assert.ok(!icons.includes('music'), 'collapsed card has no artwork');
+});
+
+test('playback icon follows Android music activity without changing command routing', () => {
+  let active = false;
+  const { isMediaPlaying } = load('app/native/media-controls.ts', {
+    '@nativescript/core': { Utils: { android: { getApplicationContext: () => ({ getSystemService: () => ({ isMusicActive: () => active }) }) } } },
+  }, { global: { isAndroid: true }, android: { content: { Context: { AUDIO_SERVICE: 'audio' } } } });
+  assert.equal(isMediaPlaying(), false); active = true; assert.equal(isMediaPlaying(), true);
+});
+
+test('returning from dashboard attention keeps the next waiting session one tap away', async () => {
+  const h = setup();
+  const older = completedSession('older', 'one'), newer = completedSession('newer', 'two', 2);
+  h.state.applySessions([older, newer]);
+  const opened = [];
+  h.state.openThread = async id => { opened.push(id); };
+  h.layer.selected = 'sessions';
+  await h.layer.handleInput({ type: 'click' });
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'reader');
+  h.state.markSessionViewed(newer);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'dashboard');
+  assert.equal(h.layer.dashboardCard, 'sessions');
+  assert.equal(h.layer.selected, `pending:${JSON.stringify(['computer-a', 'older'])}`);
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'reader');
+  assert.equal(opened.at(-1), JSON.stringify(['computer-a', 'older']));
+  h.state.markSessionViewed(older);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'dashboard');
+  assert.equal(h.layer.dashboardCard, null);
+  assert.equal(h.layer.selected, 'sessions');
+  assert.equal(h.navigation.yielded, 0);
+});
+
+test('returning from the full sessions list does not enter the dashboard attention card', async () => {
+  const h = setup();
+  h.state.applySessions([completedSession('waiting', 'one')]);
+  h.layer.selected = 'sessions';
+  await h.layer.handleInput({ type: 'click' });
+  h.layer.selected = 'sessions-all';
+  await h.layer.handleInput({ type: 'click' });
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'dashboard');
+  assert.equal(h.layer.dashboardCard, null);
+  assert.equal(h.layer.selected, 'sessions');
 });

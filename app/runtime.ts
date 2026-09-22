@@ -81,14 +81,17 @@ export function retainedCopyForTranslation(prior:AcceptedTranslation|undefined,c
  return {sourceX:delta<0?-delta:0,sourceY:0,width:width-Math.abs(delta),height,destinationX:delta<0?0:delta,destinationY:0};
 }
 const acceptedTranslations=new Map<string,AcceptedTranslation>();
+// A cached scene fingerprint cannot describe intervening raster animation pixels.
+const rasterSinceScene=new Set<string>();
 const prefetchedTranslations=new Map<string,number>();
+let windowGeneration: number | undefined;
 function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=false,retainedDraws:readonly DeferredDraw[]=image.draws,translation?:SlideTransportHint):boolean{
  const draws=encodeSdkDrawBatch(service,image,retainedDraws);image.bakeDeferredDrawsInPlace();const pixels=image.pixels;
  const traceId=takeRenderTrace(feature);
  const key=feature||'window',prior=acceptedTranslations.get(key);
- if(translation&&draws&&prefetchedTranslations.get(key)!==translation.key){
-  service.prefetchGrayResources?.(draws.buffer,draws.byteOffset,draws.byteLength);
-  prefetchedTranslations.set(key,translation.key);
+ if(translation&&(draws||translation.prefetchDraws?.length)&&prefetchedTranslations.get(key)!==translation.key){
+  const warm=translation.prefetchDraws?.length ? encodeSdkDrawBatch(service,image,translation.prefetchDraws) : draws;
+  if(warm&&service.prefetchGrayResources?.(warm.buffer,warm.byteOffset,warm.byteLength)===true)prefetchedTranslations.set(key,translation.key);
  }
  const copy=retainedCopyForTranslation(prior,translation,image.width,image.height);
  let accepted:boolean;
@@ -96,15 +99,19 @@ function submitGray(service:any,image:GrayImage,feature='',requestNextFrame=fals
   accepted=Boolean(service.submitGrayBufferWithDrawsAndCopy(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId,draws?.buffer??null,draws?.byteOffset??0,draws?.byteLength??0,copy.sourceX,copy.sourceY,copy.width,copy.height,copy.destinationX,copy.destinationY));
  }else if(draws)accepted=Boolean(service.submitGrayBufferWithDraws(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId,draws.buffer,draws.byteOffset,draws.byteLength));
  else accepted=Boolean(service.submitGrayBuffer(pixels.buffer,pixels.byteOffset,pixels.byteLength,image.width,image.height,feature,requestNextFrame,traceId));
- if(accepted&&translation)acceptedTranslations.set(key,{...translation,width:image.width,height:image.height});
+ if(accepted)rasterSinceScene.add(key);
+ if(accepted&&translation)acceptedTranslations.set(key,{key:translation.key,offsetX:translation.offsetX,width:image.width,height:image.height});
  else acceptedTranslations.delete(key);
  return accepted;
 }
 function submitRetained(service:any,source:GrayImage,feature=''):boolean{
  if(rejectedSceneSurfaces.has(feature||'window'))return false;
- const fingerprint=source.fingerprint();if(service.isRetainedSceneCurrent?.(feature,fingerprint)===true)return Boolean(service.submitUnchangedRetainedScene?.(feature,fingerprint));
+ const key=feature||'window';
+ const fingerprint=source.fingerprint();if(!rasterSinceScene.has(key)&&service.isRetainedSceneCurrent?.(feature,fingerprint)===true)return Boolean(service.submitUnchangedRetainedScene?.(feature,fingerprint));
  const scene=encodeSdkRetainedScene(service,source);if(!scene)return false;const draws=scene.draws;
- return Boolean(service.submitRetainedScene(scene.patch.buffer,scene.patch.byteOffset,scene.patch.byteLength,scene.patchX,scene.patchY,scene.patchWidth,scene.patchHeight,source.width,source.height,feature,draws?.buffer??null,draws?.byteOffset??0,draws?.byteLength??0,fingerprint));
+ const accepted=Boolean(service.submitRetainedScene(scene.patch.buffer,scene.patch.byteOffset,scene.patch.byteLength,scene.patchX,scene.patchY,scene.patchWidth,scene.patchHeight,source.width,source.height,feature,draws?.buffer??null,draws?.byteOffset??0,draws?.byteLength??0,fingerprint));
+ if(accepted)rasterSinceScene.delete(key);
+ return accepted;
 }
 export function onFrame(listener:(frame:GrayImage)=>void):()=>void{frames.add(listener);if(lastFrame)listener(lastFrame);return ()=>frames.delete(listener);}
 export function setPhonePreviewVisible(visible:boolean):void{phoneVisible=visible;updateT3PhonePreviewVisible(visible);if(!visible){lastFrame=null;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Preview helper unavailable in tests. */}}else getApp().requestRender();}
@@ -268,13 +275,15 @@ export function initializeAppRuntime():void{
    if(feature==='window')getApp().requestRender();else renderSurface(feature);
   }
   if(type==='host-snapshot'){
+   if(windowGeneration!==data.windowGeneration){acceptedTranslations.delete('window');prefetchedTranslations.delete('window');windowGeneration=data.windowGeneration;}
    width=Number(data.windowWidth)||width;height=Number(data.windowHeight)||height;hostVisible=Boolean(data.windowOpen&&data.windowVisible&&data.screenOn!==false);
+   for(const item of Array.isArray(data.surfaces)?data.surfaces:[]){const feature=String(item.id??'').replace(/^extension:/,'');if(surfaces.get(feature)?.generation!==item.generation){acceptedTranslations.delete(feature);prefetchedTranslations.delete(feature);}}
    const reconciled=reconcileRuntimeSurfaces(surfaces,Array.isArray(data.surfaces)?data.surfaces:[]);surfaces.clear();for(const [feature,surface] of reconciled)surfaces.set(feature,surface);
    updateT3HostVisible(hostVisible);if(data.windowOpen){setAppViewport(width,height);getApp().resize(width,height);}if(hostVisible)getApp().requestRender();for(const feature of surfaces.keys())renderSurface(feature);
   }
-  if(type==='open'||type==='resize'){if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
-  if(type==='visibility'){hostVisible=data.visible&&data.screenOn!==false;updateT3HostVisible(hostVisible);if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
-  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;acceptedTranslations.clear();prefetchedTranslations.clear();updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();clearSharedComposer();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
+  if(type==='open'||type==='resize'){acceptedTranslations.delete('window');prefetchedTranslations.delete('window');if(type==='open')nativeService()?.setWindowMenuAvailable(true);width=data.width;height=data.height;setAppViewport(width,height);getApp().resize(width,height);if(type==='open'&&typeof data.target==='string'&&data.target)openT3Thread(data.target);getApp().requestRender();}
+  if(type==='visibility'){if(!data.visible||data.screenOn===false){acceptedTranslations.delete('window');prefetchedTranslations.delete('window');}hostVisible=data.visible&&data.screenOn!==false;updateT3HostVisible(hostVisible);if(hostVisible)getApp().requestRender();else voiceControlBridge.cancelCapture();}
+  if(type==='close'||type==='disconnected'||type==='destroyed'){hostVisible=false;acceptedTranslations.clear();prefetchedTranslations.clear();rasterSinceScene.clear();updateT3HostVisible(false);voiceControlBridge.cancelCapture();if(type!=='close'){lastProtected=undefined;renderTraceIds.clear();clearSharedComposer();surfaces.clear();preview=null;previewLayer?.onRemoved();previewLayer=null;notificationMode=undefined;notificationSurface=false;previewPending=null;if(previewTimer!==null){clearTimeout(previewTimer);previewTimer=null;}if(type==='destroyed'){lastFrame=null;try{com.faceclaw.t3.T3PreviewPixels.release();}catch{/* Service teardown may already have removed the helper. */}}}}
   if(type==='render'){
    setPresentationTime(data.targetPresentationTimeMs);
    const feature=typeof data.surfaceId==='string'&&data.surfaceId.startsWith('extension:')?data.surfaceId.slice(10):'';
@@ -287,7 +296,7 @@ export function initializeAppRuntime():void{
   if(type==='app-menu')settle(deliverInput('long-press'));
   if(type==='extension-surface'){
    const feature=data.feature;
-   if(data.type==='close'){
+   if(data.type==='close'){acceptedTranslations.delete(feature);prefetchedTranslations.delete(feature);
     if(feature==='ui.notifications'&&data.presentationId&&notificationHostPresentationId&&data.presentationId!==notificationHostPresentationId)return;
     // The host emits its close before the async handoff action is acknowledged.
     // Keep the local card alive until that result decides whether to settle or

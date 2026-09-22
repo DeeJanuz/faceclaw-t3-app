@@ -6,7 +6,7 @@ The Android package is `com.faceclaw.t3`. It uses the same mutually approved Fac
 
 ## Build and checks
 
-Requires Node, JDK 21, Android SDK/build-tools 35, and the sibling `../faceclaw-app-platform/android-sdk`. Java SDK sources and shared font assets are packaged into this APK. No BLE controller, notification listener service, headset firmware flasher, host file browser, or full Faceclaw application is bundled.
+Requires Node, JDK 21, Android SDK/build-tools 35, and the sibling `../faceclaw-app-platform/android-sdk`. The Java SDK is pinned to Maven candidate `1.1.0-rc.1.7e3d0f2df31b`; shared font assets are packaged into this APK. No BLE controller, notification listener service, headset firmware flasher, host file browser, or full Faceclaw application is bundled.
 
 ```sh
 npm ci
@@ -32,7 +32,7 @@ The phone preview uses the same extracted T3 layer stack as the glasses APK surf
 
 Frame conversion uses one bulk JavaScript-to-Android buffer transfer for both the preview and host surfaces. The [emulator pixel benchmark](tests/android/README.md) checks pixel fidelity and buffer bounds and compares transfer time with the former per-pixel path.
 
-Navigation cards show their content during expansion and reveal the dashboard during collapse. Sessions keeps only its heading during the first 90% of expansion, then lays out and reveals its list; closing retains the populated card. The heading follows the card while body pixels are progressively revealed at fixed positions to reduce Bluetooth update size; the animation cadence remains 40 ms (25 requested frames per second). Content snapshots are limited to the active transition and invalidated by data changes. Render requests from the same interaction are combined into one frame using the latest state. Ask Assistant uses the same populated transition. Its return animation reveals a fresh dashboard only for dashboard-origin capture; reply capture retains its opaque background, and cancellation clears transcript pixels before animating.
+Ordinary T3 screen navigation and dictation open and close immediately. Session lists, transcripts, settings and the homepage render their destination without slide or card transitions. Notification previews, inbox expansion, notification reading and dismissal retain their animations. Render requests from one interaction still coalesce through host credits. Dictation remains opaque, clears transcripts on cancellation, and restores its destination before releasing the shell overlay.
 
 ## Boundaries
 
@@ -51,7 +51,7 @@ See [EXTRACTION.md](EXTRACTION.md) for the checkpoint source, imported test owne
 
 ## Shared window motion
 
-T3 consumes `@faceclaw/motion` from the sibling platform SDK. The [SDK motion contract](../faceclaw-app-platform/android-sdk/WINDOW_MOTION.md) defines the optional 360 ms / 40 ms card and notification behavior. Window, dropdown and expanded-reader transitions defer body rendering until 90% open, discard body rasters before closing, and reverse from the last drawn rectangle. Application data and scroll state remain separate. In-process render requests coalesce through the shared SDK helper. The cadence is a target, not a measured glasses frame rate.
+T3 consumes `@faceclaw/motion` from the sibling platform SDK. The [SDK motion contract](../faceclaw-app-platform/android-sdk/WINDOW_MOTION.md) defines the optional 360 ms card and notification behavior, sampled on host credits. Notification dropdown and expanded-reader transitions defer body rendering until 90% open, discard body rasters before closing, and reverse from the last drawn rectangle. Application data and scroll state remain separate. In-process render requests coalesce through the shared SDK helper. The cadence is a target, not a measured glasses frame rate.
 
 ## Assistant messaging
 
@@ -72,3 +72,33 @@ While viewing an idle T3 conversation, long press to open the app actions menu a
 ## Multiple T3 computers
 
 Use the [bridge federation setup](../faceclaw-t3-bridge/docs/peers.md) to pair the bridges on your computers. This APK routes sessions, projects, models, plan answers, and actions by environment ID. Lists show the owning computer and unavailable peers. Changing the phone's host clears the old workspace and subscriptions; it does not replay actions or switch hosts automatically. Legacy assistant settings still select the host's local primary project.
+
+## Current transport build
+
+The Java SDK resolves from the packaged local Maven candidate; `@faceclaw/motion`
+resolves from the active sibling `faceclaw-app-platform/android-sdk` checkout.
+Java SDK source builds require explicit `-PfaceclawSdkSource=true`. APK verification
+checks that NativeScript exposes the Glanceboard registration and publication methods. This host requires Faceclaw firmware revision 22 or newer; an APK
+install alone does not update the glasses. Follow the SDK's
+[transport contract](../faceclaw-app-platform/android-sdk/TRANSPORT_CONTRACT.md).
+
+Ordinary navigation does not schedule animation samples. Static screens retain
+cached glyph/scene rendering and Gray8 fallback. Notification animations remain
+credit-driven. A full retained-scene commit after intervening raster frames
+restores the homepage even when its fingerprint matches its earlier value.
+
+## Navigation policy
+
+Screen-to-screen animations are disabled. The earlier full-width and short-travel
+experiments are retired. Notification animations remain enabled, including the
+notification-origin return handoff. Dictation displays its full-size opaque card
+immediately and closes without a shrink animation; privacy and capture cleanup
+still run before the overlay is released.
+
+The dashboard has Audio controls and Sessions cards. Tap Audio controls to reveal a single icon row: Previous Track, Play/Pause, Next Track. Commands go through Android AudioManager media-key dispatch to the active media session. The center icon follows Android’s music-active signal; the command always toggles through Android rather than guessing which action to send. Back collapses the controls. Card focus uses the outer border; focus inside Audio controls or Sessions uses brackets on both sides of the selected item. Sessions expands inline with unviewed completed turns, newest first; select the card, tap, then select a conversation. The final “Sessions” row opens the full session list, and is the only row when nothing is waiting. Long lists scroll within the right-hand column while the clock and notification button stay fixed.
+
+A completed turn leaves the dashboard after its conversation is displayed or a reply is accepted, including conversations opened through notifications. Read markers persist on the phone per bridge pairing, computer, session, and completed turn. A later completed turn appears again. Running and settled sessions stay out of this list. Existing completed turns without a local read marker appear on first use; dismissing a notification alone does not mark a conversation read. Dashboard changes are immediate; notification animations remain enabled.
+
+## Glanceboard
+
+Glanceboard shows completed sessions that still need attention. Tap-and-hold while asleep uses the host board and existing dismissal behavior; awake tap-and-hold keeps the app switcher.

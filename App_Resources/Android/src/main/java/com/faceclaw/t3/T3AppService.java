@@ -12,6 +12,16 @@ public final class T3AppService extends FaceclawAppService {
  private static final int MAX_RESOURCE_ALIASES=8192;
  private static long nextResourceEpoch=1;
  public static T3RuntimeListener listener;
+ private HostSnapshot latestHostSnapshot;
+ public static void attachRuntimeListener(T3RuntimeListener runtime) {
+  listener=runtime;
+  T3AppService current=instance;
+  if(current!=null && current.latestHostSnapshot!=null) {
+   current.deliver("host-snapshot",current.latestHostSnapshot.toJson());
+   current.deliver("connected",new JSONObject());
+   current.deliver("glanceboard-request",Protocol.object("version",1));
+  }
+ }
  public static T3AppService instance;
  private final Map<String,ResourceHandle> resourcesByKey=new HashMap<>();
  private final Map<Integer,ResourceHandle> resourcesById=new HashMap<>();
@@ -28,7 +38,7 @@ public final class T3AppService extends FaceclawAppService {
   session.controls().onReady(()->session.controls().setWindowPolicy(new WindowPolicy(WindowPolicy.Height.MIN,true,false,false,false,false),result->{}));
   deliver("connected",new JSONObject());
  }
- @Override protected void onHostSnapshot(HostSnapshot snapshot) { deliver("host-snapshot",snapshot.toJson()); }
+ @Override protected void onHostSnapshot(HostSnapshot snapshot) { latestHostSnapshot=snapshot; deliver("host-snapshot",snapshot.toJson()); }
  @Override protected void onInput(RenderSurface surface,FaceclawInputEvent event) {
   if(surface.id().startsWith("extension:")){
    long extensionGeneration=event.extras.optLong("extensionGeneration",-1L);
@@ -40,6 +50,7 @@ public final class T3AppService extends FaceclawAppService {
  }
  @Override protected void onControlEvent(ControlEvent event) { deliver(event.type,event.data); }
  @Override protected void onSessionLost(DisconnectInfo info) {
+  latestHostSnapshot=null;
   deliver("disconnected",Protocol.object("category",info.reason.name(),"recoverable",info.recoverable,"detail",info.detail));
  }
  @Override protected void onFrameOutcome(FrameOutcome outcome) { deliver("frame-outcome",outcome.toJson()); }

@@ -299,7 +299,7 @@ function runtimeHarness(options = {}) {
   const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'identity-one', enabled: options.enabled ?? true, allowInsecureLocal: false };
   const pending = [];
   let rpcCalls = 0;
-  const rpcMethods = [];
+  const rpcMethods = [], glances = []; let hostListener;
   let stateListener = () => {};
   let eventListener = () => {};
   const client = {
@@ -318,11 +318,13 @@ function runtimeHarness(options = {}) {
     },
   };
   const api = load('app/apps/t3/runtime.ts', {
+    './glanceboard': { t3GlanceWidgets: {version:1,widgets:[]}, t3HomeWidget: () => ({}) },
+    '../../extensions/host': { sdkControls: () => ({ registerGlanceboardWidgets: () => true, publishGlanceboardWidget: value => { glances.push(value); return true; } }), onHostEvent(listener) { hostListener = listener; } },
     '../../t3/client': { t3Client: client }, '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
     '../../t3/security': security, './workspace': { T3Workspace }, './demo': load('app/apps/t3/demo.ts'),
     '../../t3/tools': { startT3ToolRelay() {} }, '../../t3/drafts': {}, '../../native/power-monitor': { startT3PowerMonitor() { return () => {}; } },
   }, { setTimeout: () => 1, clearTimeout() {} });
-  return { api, pending, config, rpcCalls: () => rpcCalls, rpcMethods, client, emitState: state => stateListener(state), emitEvent: event => eventListener(event) };
+  return { api, pending, config, glances, hostEvent: type => hostListener(type), rpcCalls: () => rpcCalls, rpcMethods, client, emitState: state => stateListener(state), emitEvent: event => eventListener(event) };
 }
 test('reconnect backoff escalates with bounded jitter and caps at thirty seconds', () => {
   const { api } = runtimeHarness();
@@ -798,4 +800,60 @@ test('popup reader waits for window readiness and rejects a superseded presentat
     resolve(ready); assert.equal(await pending, false);
     assert.deepEqual(h.opened, []); assert.deepEqual(reopened, ['preview']);
   }
+});
+
+test('session changes during a slow refresh coalesce into one trailing read', async () => {
+  const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': security });
+  const responses = [];
+  const workspace = new T3Workspace({ rpc: method => {
+    assert.equal(method, 'sessions.list');
+    return new Promise(resolve => responses.push(resolve));
+  } });
+  const first = workspace.refreshSessions();
+  for (let i = 0; i < 100; i++) workspace.refreshSessions();
+  assert.equal(responses.length, 1);
+  responses[0]({ unsettled: [{ id: 'old' }], settled: [] }); await first;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(responses.length, 2);
+  responses[1]({ unsettled: [{ id: 'new' }], settled: [] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(workspace.sessions[0].id, 'new'); assert.equal(responses.length, 2);
+});
+
+test('queued session refreshes are dropped on disconnect and preserved behind full refreshes', async () => {
+  const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': security });
+  const responses = [];
+  const api = { rpc: method => method === 'sessions.list' ? new Promise(resolve => responses.push(resolve))
+    : Promise.resolve(method === 'projects.list' ? { projects: [] } : { models: [] }) };
+  const workspace = new T3Workspace(api);
+  const full = workspace.refresh(); workspace.refreshSessions();
+  responses[0]({ unsettled: [], settled: [] }); await full;
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(responses.length, 2);
+  workspace.refreshSessions(); workspace.disconnected();
+  responses[1]({ unsettled: [{ id: 'stale' }], settled: [] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(responses.length, 2); assert.equal(workspace.sessions.length, 0);
+});
+
+test('a late session response cannot replace a newer full refresh', async () => {
+  const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': security });
+  const responses = [];
+  const workspace = new T3Workspace({ rpc: method => method === 'sessions.list'
+    ? new Promise(resolve => responses.push(resolve))
+    : Promise.resolve(method === 'projects.list' ? { projects: [] } : { models: [] }) });
+  const old = workspace.refreshSessions(); const latest = workspace.refresh();
+  responses[1]({ unsettled: [{ id: 'latest' }], settled: [] }); await latest;
+  responses[0]({ unsettled: [{ id: 'old' }], settled: [] }); await old;
+  assert.equal(workspace.sessions[0].id, 'latest');
+});
+
+test('T3 publishes only waiting turns, clears viewed sessions, and refreshes on a glance request', () => {
+  const h = runtimeHarness({ enabled: false }); h.api.initializeT3();
+  const session = { id: 'thread', title: 'Fix tests', projectTitle: 'Project', status: 'ready', settled: false,
+    completedTurn: { id: 'turn-one', completedAt: new Date().toISOString() } };
+  h.api.t3Workspace.applySessions([session, { ...session, id: 'busy', status: 'running' }]); h.api.t3Workspace.changed();
+  assert.equal(h.glances.at(-1).entries.length, 1); assert.equal(h.glances.at(-1).entries[0].title, 'Fix tests');
+  h.api.t3Workspace.markSessionViewed(session); assert.equal(h.glances.at(-1).entries.length, 0);
+  const before = h.glances.length; h.hostEvent('glanceboard-request'); assert.equal(h.glances.length, before + 1);
+  h.api.t3Workspace.changed(); assert.equal(h.glances.length, before + 1, 'unchanged snapshots do not spam the host');
 });

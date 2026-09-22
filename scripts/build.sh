@@ -6,3 +6,8 @@ if [[ -f build_paths.sh ]]; then source build_paths.sh; fi
 : "${ANDROID_HOME:?Set ANDROID_HOME to your SDK}"
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
 npm exec --package=nativescript@9.1.1 -- ns build android --no-hmr "$@"
+
+# Check the actual packaged JavaScript/native bridge, not just source types.
+if [[ ! " $* " =~ " --release " ]]; then
+  python3 scripts/verify_apk.py platforms/android/app/build/outputs/apk/debug/app-debug.apk --expected-package com.faceclaw.t3
+fi

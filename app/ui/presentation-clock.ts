@@ -1,4 +1,5 @@
 let targetPresentationMs: number | null = null;
+let lastPresentationMs = 0;
 
 /** Supplies the scheduler's next presentation sample without changing wall-clock timers. */
 export function setPresentationTime(value: unknown): void {
@@ -9,5 +10,6 @@ export function setPresentationTime(value: unknown): void {
 export function presentationNow(): number {
   // Input can start a new motion long after the last render credit. Never
   // initialize it in the past and then jump to completion on the next credit.
-  return Math.max(targetPresentationMs ?? 0, Date.now());
+  lastPresentationMs = Math.max(lastPresentationMs, targetPresentationMs ?? 0, Date.now());
+  return lastPresentationMs;
 }

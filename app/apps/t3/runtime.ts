@@ -1,3 +1,6 @@
+import { t3GlanceWidgets, t3HomeWidget } from './glanceboard';
+import { sdkControls, onHostEvent } from '../../extensions/host';
+import { resourceKey } from './resource';
 import { t3Client } from '../../t3/client';
 import { getT3Config, onT3ConfigChanged, type T3Config } from '../../t3/config';
 import { bridgeEndpoint } from '../../t3/security';
@@ -10,6 +13,17 @@ import { startT3PowerMonitor } from '../../native/power-monitor';
 export const t3Workspace = new T3Workspace(t3Client);
 const NETWORK_UNAVAILABLE_RETRY_MS = 30_000;
 const TOKEN_ACCOUNTING_KEY = 'token-accounting-v1';
+let lastGlance = '';
+function publishT3Glance(force = false): void {
+  const content = { version: 2 as const, widgetId: 'default', title: 'T3 attention', emptyText: t3Workspace.demo ? 'Sample mode' : 'No sessions waiting',
+    entries: (t3Workspace.demo ? [] : t3Workspace.awaitingSessions).slice(0, 12).map(session => ({
+      id: resourceKey(session.id, session.environmentId).slice(0, 256), title: session.title.slice(0, 160),
+      detail: [session.projectTitle, session.environmentLabel].filter(Boolean).join(' · ').slice(0, 256),
+    })) };
+  const key = JSON.stringify(content);
+  if (!force && key === lastGlance) return;
+  if (sdkControls().publishGlanceboardWidget({ ...content, expiresAt: Date.now() + 60000 })) lastGlance = key;
+}
 let started = false;
 let demoApi: T3DemoApi | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,6 +73,17 @@ function current(mode: number, attempt?: number): boolean {
 export function initializeT3(): void {
   if (started) return;
   started = true;
+  t3Workspace.onChange(() => publishT3Glance());
+  onHostEvent((type, data) => {
+    if (type === 'connected' || type === 'capabilities') {
+      sdkControls().registerGlanceboardWidgets(t3GlanceWidgets); publishT3Glance(true);
+    }
+    if (type === 'glanceboard-request') {
+      if (data?.version === 2 && data.widgetId === 'home') sdkControls().publishGlanceboardWidget(t3HomeWidget(data));
+      else if (!data?.widgetId || data.widgetId === 'default') publishT3Glance(true);
+    }
+    if (type === 'disconnected' || type === 'destroyed') lastGlance = '';
+  });
   t3Workspace.setDraftStorage({
     load: key => t3Workspace.demo ? null : loadT3PlanDraft(key),
     save: (key, value) => { if (!t3Workspace.demo) saveT3PlanDraft(key, value); },
@@ -67,6 +92,11 @@ export function initializeT3(): void {
     loadApproval: key => loadT3PlanDraft(key),
     saveApproval: key => saveT3PlanDraft(key, { locked: true }),
     removeApproval: key => deleteT3PlanDraft(key),
+  });
+  t3Workspace.setViewedTurnStorage({
+    scope: () => pairingScope(getT3Config()),
+    load: () => loadT3PlanDraft(JSON.stringify(['viewed-turns-v1', pairingScope(getT3Config())])),
+    save: value => saveT3PlanDraft(JSON.stringify(['viewed-turns-v1', pairingScope(getT3Config())]), value),
   });
   t3Workspace.setTokenAccountingStorage({
     scope: () => pairingScope(getT3Config()),

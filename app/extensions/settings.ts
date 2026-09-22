@@ -1,7 +1,7 @@
 import {getBooleanSetting,setBooleanSetting,onSettingsStoreChanged} from '../native/settings-store';
 import {getT3Config,onT3ConfigChanged} from '../t3/config';
 import {onT3NotificationPreviewSecondsChanged,readT3NotificationPreviewSeconds} from '../t3/notification-preferences';
-import {publishExtensions,onHostEvent,sdkControls} from './host';
+import {publishExtensions,onHostEvent,sdkControls,supportsGlanceboard} from './host';
 export const customizationGroups=[{id:'launcher',label:'Launcher and folders'},{id:'navigation',label:'T3 gestures'},{id:'app-menu',label:'App actions menus'},{id:'window-layout',label:'Window layout'},{id:'typography',label:'Typography'}] as const;
 export function customizationsEnabled():boolean{return getBooleanSetting('t3.customizations.enabled',false);}
 export function customizationEnabled(id:string):boolean{return getBooleanSetting(`t3.customizations.${id}`,true);}
@@ -11,7 +11,7 @@ export function extensionDeclarations(){
  const config=getT3Config(),enabled=customizationsEnabled();
  const previewTimingSupported=Boolean(sdkControls?.()?.supports('notifications.preview-timing'));
  const configurations:Record<string,Record<string,unknown>>={
-  launcher:{label:'T3 vertical launcher',filesDefaultView:'list'},navigation:{doubleTap:'back',rootBack:'sleep',tapHold:'switcher',hold:'app-menu',wakeFocus:'window'},
+  launcher:{label:'T3 vertical launcher',filesDefaultView:'list'},navigation:{doubleTap:'back',rootBack:'sleep',tapHold:supportsGlanceboard?.()?'glanceboard':'switcher',hold:'app-menu',wakeFocus:'window'},
   'app-menu':{title:'App actions',displayOffFirst:true,systemActionsLast:true,systemTitle:'System actions'},
   'window-layout':{centered:true,sidebarMode:'overlay',switcherHeight:'display',dividerWidth:2,ownTopBar:false,ownHeightMode:'medium',inputDialogs:'viewport'},
   typography:{font:'Inter_18pt-Regular.ttf',size:17,raster:'crisp',borderWidth:2,selectionBorderWidth:3,cardRadius:8},
@@ -28,8 +28,21 @@ export function extensionDeclarations(){
  ];
 }
 export function initializeExtensionSettings():void{
- const publish=()=>publishExtensions(extensionDeclarations());
- onHostEvent(type=>{if(type==='connected'||type==='contract-result')publish();});onT3ConfigChanged(publish);
+ let lastPublished = '';
+ const publish=()=>{
+  const declarations=extensionDeclarations();
+  const key=JSON.stringify([declarations, Boolean(sdkControls?.()?.supports('invocation.lifecycle'))]);
+  if(key===lastPublished)return;
+  // Set before sending to prevent a synchronous callback from publishing again.
+  lastPublished=key;
+  if(publishExtensions(declarations)===false && lastPublished===key)lastPublished='';
+ };
+ onHostEvent(type=>{
+  if(type==='disconnected'||type==='destroyed'){lastPublished='';return;}
+  // A host snapshot may invalidate negotiation. Publishing a compatibility
+  // downgrade here changes the declarations and invalidates negotiation again.
+  if(type==='connected'||type==='contract-result'||type==='capabilities')publish();
+ });onT3ConfigChanged(publish);
  onT3NotificationPreviewSecondsChanged(publish);
  onSettingsStoreChanged(key=>{if(key.startsWith('t3.customizations.'))publish();});
 }

@@ -1,4 +1,4 @@
-repositories { maven { url uri(project.findProperty('faceclawSdkRepository') ?: new File(rootDir, '../../../output/sdk-independence/maven')); content { includeGroup 'com.faceclaw' } } }
+repositories { maven { url uri(project.findProperty('faceclawSdkRepository') ?: new File(rootDir, '../../vendor/maven')); content { includeGroup 'com.faceclaw' } } }
 dependencies {
  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
  implementation(rootProject.findProject(':faceclaw-sdk') != null ? project(':faceclaw-sdk') : 'com.faceclaw:sdk:1.1.0-rc.1.7e3d0f2df31b')

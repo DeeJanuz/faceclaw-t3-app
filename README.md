@@ -1,12 +1,12 @@
 # T3 for Faceclaw
 
-A standalone Android APK for the general Faceclaw host. It contains the T3 client, reviewed conversation/plan workflows, bridge pairing settings, and optional customizations extracted from the personal T3 fork. The existing computer service in `../faceclaw-t3-bridge` remains the backend.
+A standalone Android APK for the general Faceclaw host. It contains the T3 client, reviewed conversation/plan workflows, bridge pairing settings, and optional customizations extracted from the personal T3 fork. The [T3 computer bridge](https://github.com/DeeJanuz/t3-code-assistant-bridge) remains the backend. The host and SDK live in the [Faceclaw fork](https://github.com/DeeJanuz/faceclaw).
 
 The Android package is `com.faceclaw.t3`. It uses the same mutually approved Faceclaw SDK service boundary as Signal. Installing the APK does not grant it control of Faceclaw. Approve its host and individual customization features in Faceclaw, then choose per-feature priority there. APK-authored settings can enable bundles or individual features; different features can have different winners.
 
 ## Build and checks
 
-Requires Node, JDK 21, Android SDK/build-tools 35, and the sibling `../faceclaw-app-platform/android-sdk`. The Java SDK is pinned to Maven candidate `1.1.0-rc.1.7e3d0f2df31b`; shared font assets are packaged into this APK. No BLE controller, notification listener service, headset firmware flasher, host file browser, or full Faceclaw application is bundled.
+Requires Node, JDK 21 and Android SDK/build-tools 35. The Faceclaw SDK is pinned to `1.1.0-rc.1.7e3d0f2df31b` and vendored under `vendor/` (Java AAR and `@faceclaw/motion` npm package), so a fresh clone builds without the host checkout; see [Updating the SDK](#updating-the-sdk). Shared font assets are packaged into this APK. No BLE controller, notification listener service, headset firmware flasher, host file browser, or full Faceclaw application is bundled.
 
 ```sh
 npm ci
@@ -28,7 +28,7 @@ The debug APK is for isolated testing. Use your own stable signing identity for 
 
 Dashboard weather refreshes automatically while T3 is visible on the glasses, using Faceclaw's location permission. The host fetches weather on first display and every 30 minutes, with a one-minute retry delay after failures. Opening the host Weather app is not required. Hidden dashboards do not start new weather requests; they refresh when visible again if the cached result is due. This requires a host build with dashboard weather refresh support.
 
-The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. `../faceclaw-t3-bridge/scripts/faceclaw-dev-server.mjs` provides the existing isolated integration fixture.
+The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. The bridge's [`scripts/faceclaw-dev-server.mjs`](https://github.com/DeeJanuz/t3-code-assistant-bridge/blob/main/scripts/faceclaw-dev-server.mjs) provides an isolated integration fixture.
 
 Frame conversion uses one bulk JavaScript-to-Android buffer transfer for both the preview and host surfaces. The [emulator pixel benchmark](tests/android/README.md) checks pixel fidelity and buffer bounds and compares transfer time with the former per-pixel path.
 
@@ -38,7 +38,7 @@ Ordinary T3 screen navigation and dictation open and close immediately. Session 
 
 The host retains the glasses connection, input delivery, Android permissions, conflict order, and all native/APK notification action authority. The APK supplies launcher/folder rendering, app menus, T3 screens, notification previews/inbox/readers, and configuration tokens for shared navigation, layout and typography. Host configuration persists across APK process restarts; live service loss falls back to host behavior.
 
-Feature authority uses each feature's epoch, separately from the complete settings snapshot revision. Unrelated provider updates preserve T3's partial notification snapshots, launcher replay ledger and ongoing UI transitions. Rebuild this APK against the matching platform SDK when testing the host's priority lifecycle fixes. The SDK's [Demo A/B checklist](../faceclaw-app-platform/android-sdk/priority-demo/DEVICE-CHECKLIST.md) covers T3-above-demo priority and on-device fallback acceptance.
+Feature authority uses each feature's epoch, separately from the complete settings snapshot revision. Unrelated provider updates preserve T3's partial notification snapshots, launcher replay ledger and ongoing UI transitions. Rebuild this APK against the matching platform SDK when testing the host's priority lifecycle fixes. The SDK's [Demo A/B checklist](https://github.com/DeeJanuz/faceclaw/blob/main/android-sdk/priority-demo/DEVICE-CHECKLIST.md) covers T3-above-demo priority and on-device fallback acceptance.
 
 Pairing credentials and pending plan/approval locks retain the fork's Android Keystore-backed encryption. Android backup is disabled. IPC actions are scoped to the selected host, winning feature, current generation, and request identity. In-flight actions are never queued for reconnection or automatically retried after an unknown outcome. The original project/replay guard and six-proactive-calls-per-minute limit remain on the desktop tool relay.
 
@@ -46,12 +46,12 @@ Notification UI snapshots are bounded, assembled only when complete, and purged 
 
 ## Source and regression ownership
 
-See [EXTRACTION.md](EXTRACTION.md) for the checkpoint source, imported test ownership, and validation record. The personal fork is deprecated and retained at `../archive/faceclaw-t3` for reference and rollback. Active development uses this SDK APK and the general host. End-to-end physical-glasses regression validation remains required; archiving does not establish parity.
+See [EXTRACTION.md](EXTRACTION.md) for the checkpoint source, imported test ownership, and validation record. The earlier personal fork is deprecated and retained privately for reference and rollback. Active development uses this SDK APK and the general host. End-to-end physical-glasses regression validation remains required; archiving does not establish parity.
 
 
 ## Shared window motion
 
-T3 consumes `@faceclaw/motion` from the sibling platform SDK. The [SDK motion contract](../faceclaw-app-platform/android-sdk/WINDOW_MOTION.md) defines the optional 360 ms card and notification behavior, sampled on host credits. Notification dropdown and expanded-reader transitions defer body rendering until 90% open, discard body rasters before closing, and reverse from the last drawn rectangle. Application data and scroll state remain separate. In-process render requests coalesce through the shared SDK helper. The cadence is a target, not a measured glasses frame rate.
+T3 consumes the vendored `@faceclaw/motion` SDK package. The [SDK motion contract](https://github.com/DeeJanuz/faceclaw/blob/main/android-sdk/WINDOW_MOTION.md) defines the optional 360 ms card and notification behavior, sampled on host credits. Notification dropdown and expanded-reader transitions defer body rendering until 90% open, discard body rasters before closing, and reverse from the last drawn rectangle. Application data and scroll state remain separate. In-process render requests coalesce through the shared SDK helper. The cadence is a target, not a measured glasses frame rate.
 
 ## Assistant messaging
 
@@ -59,7 +59,7 @@ Matching host and SDK builds add text-only Signal and SMS tools through the exis
 
 History needs explicit glasses consent for each conversation. Saved drafts are encrypted and partitioned by project, pairing identity and the approved APK signer. To revoke history directly, use the host's **Settings > Messaging > Revoke assistant history access**. Phone setup is required once for SMS permissions and native Signal linking/host approval; routine messaging stays on the glasses.
 
-See the host's [setup, behavior and verification notes](../faceclaw-app-platform/docs/ASSISTANT-MESSAGING.md). Physical Signal/SMS sends and phone-screen-off glasses acceptance remain unverified; debug builds and emulator checks are not release certification.
+See the host's [setup, behavior and verification notes](https://github.com/DeeJanuz/faceclaw/blob/main/docs/ASSISTANT-MESSAGING.md). Physical Signal/SMS sends and phone-screen-off glasses acceptance remain unverified; debug builds and emulator checks are not release certification.
 
 ## Default dictation
 
@@ -71,16 +71,17 @@ While viewing an idle T3 conversation, long press to open the app actions menu a
 
 ## Multiple T3 computers
 
-Use the [bridge federation setup](../faceclaw-t3-bridge/docs/peers.md) to pair the bridges on your computers. This APK routes sessions, projects, models, plan answers, and actions by environment ID. Lists show the owning computer and unavailable peers. Changing the phone's host clears the old workspace and subscriptions; it does not replay actions or switch hosts automatically. Legacy assistant settings still select the host's local primary project.
+Use the [bridge federation setup](https://github.com/DeeJanuz/t3-code-assistant-bridge/blob/main/docs/peers.md) to pair the bridges on your computers. This APK routes sessions, projects, models, plan answers, and actions by environment ID. Lists show the owning computer and unavailable peers. Changing the phone's host clears the old workspace and subscriptions; it does not replay actions or switch hosts automatically. Legacy assistant settings still select the host's local primary project.
 
 ## Current transport build
 
-The Java SDK resolves from the packaged local Maven candidate; `@faceclaw/motion`
-resolves from the active sibling `faceclaw-app-platform/android-sdk` checkout.
-Java SDK source builds require explicit `-PfaceclawSdkSource=true`. APK verification
+The Java SDK resolves from `vendor/maven` and `@faceclaw/motion` from
+`vendor/npm`. To build against a sibling `faceclaw-app-platform` checkout
+instead, pass `-PfaceclawSdkSource=true` (Java source) or
+`-PfaceclawSdkRepository=<maven dir>` (another packaged candidate). APK verification
 checks that NativeScript exposes the Glanceboard registration and publication methods. This host requires Faceclaw firmware revision 22 or newer; an APK
 install alone does not update the glasses. Follow the SDK's
-[transport contract](../faceclaw-app-platform/android-sdk/TRANSPORT_CONTRACT.md).
+[transport contract](https://github.com/DeeJanuz/faceclaw/blob/main/android-sdk/TRANSPORT_CONTRACT.md).
 
 Ordinary navigation does not schedule animation samples. Static screens retain
 cached glyph/scene rendering and Gray8 fallback. Notification animations remain
@@ -102,3 +103,17 @@ A completed turn leaves the dashboard after its conversation is displayed or a r
 ## Glanceboard
 
 Glanceboard shows completed sessions that still need attention. Tap-and-hold while asleep uses the host board and existing dismissal behavior; awake tap-and-hold keeps the app switcher.
+
+## Updating the SDK
+
+Package a candidate in the Faceclaw fork with
+`python3 android-sdk/scripts/package-candidate.py`, then copy it in:
+
+```sh
+scripts/update-sdk.sh 1.1.0-rc.1.<digest> [path/to/output/sdk-independence]
+npm install
+npm run check
+```
+
+The script verifies the recorded SHA-256 sums, replaces `vendor/`, and updates
+the version pinned in `package.json` and `App_Resources/Android/app.gradle`.

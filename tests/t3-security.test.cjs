@@ -385,21 +385,23 @@ test('re-pairing the same endpoint clears selected thread, plans, and alerts bef
 });
 function notificationHarness(sources = [], requestReply = () => Promise.resolve({status: 'sent'}), options = {}) {
   const config = { bridgeUrl: 'wss://bridge.example', pairingFingerprint: 'pair-one', notificationOverride: options.notificationOverride === true };
-  const state = { alerts: [], demo: false, onArrival() {}, onChange() {}, removeAlert() {}, fail() {} };
+  const listeners = { arrival: [], change: [] };
+  const state = { alerts: [], demo: false, onArrival(listener) { listeners.arrival.push(listener); }, onChange(listener) { listeners.change.push(listener); }, removeAlert() {}, fail() {} };
+  const posted = []; const closed = []; const previews = [];
   const opened = []; const dismissed = []; const focused = []; let nativeClick;
   const api = load('app/apps/t3/notifications-ui.ts', {
     '../../extensions/host': { ownsFeature: () => true },
     '../../native/external-notifications': { invokeExternalNotification: () => false },
     '../../t3/config': { getT3Config: () => config, onT3ConfigChanged() {} },
-    '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {} } }),
+    '../../t3/notification-preferences': load('app/t3/notification-preferences.ts', { '../native/settings-store': { onSettingsStoreChanged: () => () => {}, getStringSetting: () => null, setStringSetting() {} } }),
     '../../ui/notification-routing': { setNotificationOpenRoute() {} },
-    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview() {}, getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), reopenNotificationPreview: options.reopen || (async () => true), abandonNotificationVisit: options.abandon || (async () => true), isNotificationPreviewCurrent: options.previewCurrent || (() => true), ensureWindowOpen: options.ensureWindowOpen || (async () => true), wake() {}, openNotificationModal() {} } },
+    '../../ui/shell/shell': { shell: { foregroundWindow: () => options.foregroundWindowId ? { windowId: options.foregroundWindowId } : undefined, closeNotificationPreview: id => closed.push(id), showNotificationPreview: id => previews.push(id), getWindows: () => [], isWindowFocused: () => options.focused === true, focusWindow: id => focused.push(id), handoffNotificationPreview: options.handoff || (async () => true), reopenNotificationPreview: options.reopen || (async () => true), abandonNotificationVisit: options.abandon || (async () => true), isNotificationPreviewCurrent: options.previewCurrent || (() => true), ensureWindowOpen: options.ensureWindowOpen || (async () => true), wake() {}, openNotificationModal() {} } },
     '../../native/notification-icons': { requestNotificationReply: requestReply, readActiveNotifications: () => sources, dismissNotification: (key) => { dismissed.push(key); return true; }, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
-    '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification() {}, dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
+    '../../t3/notifications': { initializeT3PhoneNotifications() {}, postT3Notification: notification => posted.push(notification.id), dismissT3Notification: (id) => dismissed.push(id), onT3NotificationRemoved() {}, onT3ThreadOpenRequested: (listener) => { nativeClick = listener; } },
     './runtime': { t3Workspace: state, connectT3: async () => { state.demo = false; } },
-    './t3-app': { isT3FlowProtected: () => false, openT3Thread: (...args) => opened.push(args), openT3Notification: (...args) => opened.push(args) },
+    './t3-app': { showT3AlertInCurrentConversation: () => false, isT3FlowProtected: () => false, openT3Thread: (...args) => opened.push(args), openT3Notification: (...args) => opened.push(args) },
   });
-  return { api, config, state, opened, dismissed, focused, nativeClick: () => nativeClick };
+  return { api, config, state, opened, dismissed, focused, listeners, posted, closed, previews, nativeClick: () => nativeClick };
 }
 test('stale notification overlay cannot open or dismiss after mode switch', async () => {
   const h = notificationHarness(); let resolve;
@@ -857,3 +859,19 @@ test('T3 publishes only waiting turns, clears viewed sessions, and refreshes on 
   const before = h.glances.length; h.hostEvent('glanceboard-request'); assert.equal(h.glances.length, before + 1);
   h.api.t3Workspace.changed(); assert.equal(h.glances.length, before + 1, 'unchanged snapshots do not spam the host');
 });
+
+test('question alerts stay off the phone but their glasses preview closes once resolved', () => {
+  const h = notificationHarness();
+  h.api.initializeT3Notifications(async () => {});
+  const question = { id: 't3:thread:input:1', kind: 't3', threadId: 'thread', title: 'Question · Project', body: 'Session', createdAt: 1, question: true };
+  const completion = { id: 't3:other:turn', kind: 't3', threadId: 'other', title: 'Project', body: 'Done', createdAt: 2 };
+  h.state.alerts = [question, completion];
+  for (const alert of [question, completion]) for (const listener of h.listeners.arrival) listener(alert);
+  assert.deepEqual(h.previews, [question.id, completion.id]);
+  assert.deepEqual(h.posted, [completion.id], 'only completions reach the phone');
+  h.state.alerts = [completion];
+  for (const listener of h.listeners.change) listener();
+  assert.ok(h.closed.includes(question.id), 'an answered question retires its preview');
+  assert.ok(!h.closed.includes(completion.id));
+});
+

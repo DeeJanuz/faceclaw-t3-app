@@ -219,9 +219,13 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
     // Keep inbox/history bookkeeping. A matching current reader supplies the
     // update directly, waking in place if asleep, without a duplicate alert.
     if (showT3AlertInCurrentConversation(alert)) return;
-    if (alert.kind === 't3' && !alert.question && !state.demo) {
-      try { postT3Notification({ id: alert.id, threadId: alert.threadId, title: alert.title, text: alert.body }); }
-      catch { state.fail(new Error('T3_PHONE_NOTIFICATION_UNAVAILABLE')); }
+    if (alert.kind === 't3' && !state.demo) {
+      // Questions stay on the glasses, but every T3 alert is tracked so its
+      // preview closes once the alert is answered, replaced or dismissed.
+      if (!alert.question) {
+        try { postT3Notification({ id: alert.id, threadId: alert.threadId, title: alert.title, text: alert.body }); }
+        catch { state.fail(new Error('T3_PHONE_NOTIFICATION_UNAVAILABLE')); }
+      }
       trackedT3Alerts.add(alert.id);
     }
     shell.showNotificationPreview(alert.id, alert.title, alert.previewBody || alert.body,

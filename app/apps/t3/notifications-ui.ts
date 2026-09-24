@@ -219,7 +219,7 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
     // Keep inbox/history bookkeeping. A matching current reader supplies the
     // update directly, waking in place if asleep, without a duplicate alert.
     if (showT3AlertInCurrentConversation(alert)) return;
-    if (alert.kind === 't3' && !state.demo) {
+    if (alert.kind === 't3' && !alert.question && !state.demo) {
       try { postT3Notification({ id: alert.id, threadId: alert.threadId, title: alert.title, text: alert.body }); }
       catch { state.fail(new Error('T3_PHONE_NOTIFICATION_UNAVAILABLE')); }
       trackedT3Alerts.add(alert.id);

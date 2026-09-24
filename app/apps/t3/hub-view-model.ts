@@ -641,7 +641,7 @@ function transcriptRoleLabel(role: TranscriptTurn['messages'][number]['role']): 
 }
 
 function sessionRow(session: SessionSummary, now: number, abbreviation: string): MenuRow {
-  const status = ['running', 'starting'].includes(session.status)
+  const status = session.hasPendingUserInput ? 'QUESTION' : ['running', 'starting'].includes(session.status)
     ? 'WORKING'
     : formatRelativeTime(session.lastActivityAt, now)
   return {

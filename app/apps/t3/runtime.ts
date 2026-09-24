@@ -18,7 +18,7 @@ function publishT3Glance(force = false): void {
   const content = { version: 2 as const, widgetId: 'default', title: 'T3 attention', emptyText: t3Workspace.demo ? 'Sample mode' : 'No sessions waiting',
     entries: (t3Workspace.demo ? [] : t3Workspace.awaitingSessions).slice(0, 12).map(session => ({
       id: resourceKey(session.id, session.environmentId).slice(0, 256), title: session.title.slice(0, 160),
-      detail: [session.projectTitle, session.environmentLabel].filter(Boolean).join(' · ').slice(0, 256),
+      detail: [session.hasPendingUserInput ? 'Question waiting' : '', session.projectTitle, session.environmentLabel].filter(Boolean).join(' · ').slice(0, 256),
     })) };
   const key = JSON.stringify(content);
   if (!force && key === lastGlance) return;

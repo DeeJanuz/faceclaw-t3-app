@@ -1,6 +1,6 @@
 import type { GrayImage } from '../../graphics/image';
 import type { CardRect } from '../../ui/card-presentation';
-export { paintCardFace, type CardRect } from '../../ui/card-presentation';
+export { paintCardFace, paintFocusBrackets, type CardRect } from '../../ui/card-presentation';
 
 export { WindowMotion, DURATION_MS as CARD_MOTION_MS, interpolateRect as cardRect } from '@faceclaw/motion';
 
@@ -26,13 +26,4 @@ export function paintCardContents(image: GrayImage, content: GrayImage, source: 
   const right = Math.min(source.x + source.width - inset, target.x + target.width - inset);
   const bottom = Math.min(source.y + source.height - inset, target.y + target.height - inset);
   copy(left, top, left, top, Math.max(0, right - left), Math.max(0, bottom - top));
-}
-
-/** A two-pixel chevron marks the single ring-selected control. */
-export function paintSelectionChevron(image: GrayImage, x: number, centerY: number, value = 245): void {
-  const y = Math.round(centerY);
-  for (let offset = 0; offset < 2; offset++) {
-    image.drawLine(x + offset, y - 4, x + 4 + offset, y, value);
-    image.drawLine(x + 4 + offset, y, x + offset, y + 4, value);
-  }
 }

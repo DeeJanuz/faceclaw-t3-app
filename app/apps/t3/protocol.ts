@@ -18,6 +18,8 @@ export interface SessionSummary {
   lastActivityAt: string
   status: string
   completedTurn?: { id: string; completedAt: string } | null
+  /** A running turn is blocked on a structured question for the user. */
+  hasPendingUserInput?: boolean
 }
 
 export interface WeatherLocation {

@@ -50,7 +50,7 @@ const { T3Workspace } = load('app/apps/t3/workspace.ts', { '../../t3/security': 
 const { T3DemoApi } = load('app/apps/t3/demo.ts');
 function setup(animationClock, raster = false, t3Config = {}) {
   const api = new T3DemoApi(); const state = new T3Workspace(api); state.demo = true; const dismissed = []; const navigation = { yielded: 0, phone: 0, focused: [], events: [], wakes: 0, returned: [], backAcks: 0 }; let permitDismiss = true, deferDismiss = false, resolveDismiss;
-  const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; let returnResult = true, deferReturn = false, resolveReturn; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const chevrons = []; const borders = [];
+  const visibility = { on: true, foreground: 't3', overlay: false, preview: null, appBase: true }; let visible; let reply; let focused = true; let returnResult = true, deferReturn = false, resolveReturn; const reviews = []; const counts = []; const drawn = []; const placements = []; const cards = []; const brackets = []; const borders = [];
   const alerts = () => visible || state.alerts;
   // Layout-only tests do not inspect raster bytes. Avoid retaining hundreds of
   // full viewport buffers now that a slide deliberately caches both pages.
@@ -73,12 +73,12 @@ function setup(animationClock, raster = false, t3Config = {}) {
       return {...selected,review:current=>new Promise(resolve=>{let used=false;reviews.push([{label:'Send reply',onSend:text=>{if(used||!current())return;used=true;const accepted=selected.send(text,status=>resolve(status));if(!accepted)resolve('rejected');else if(!selected.successMessage)resolve('sent');}},current,()=>resolve('rejected')]);})};
     }, dismissT3Alert(alert) { dismissed.push(alert.id); if (!permitDismiss) return false; if (deferDismiss) return new Promise(resolve => { resolveDismiss = () => { state.removeAlert(alert.id); resolve(true); }; }); state.removeAlert(alert.id); return true; } }, '@nativescript/core': { Frame: { topmost: () => ({ navigate: () => navigation.phone++ }) } },
     '../../ui/shell/notification-card': { ...notificationCard, paintNotificationCard(image, rect, font, content) { cards.push(rect); notificationCard.paintNotificationCard(image, rect, font, content); } },
-    './hub-view-model': hub, './card-motion': { ...load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }), paintCardFace(image, rect) { cards.push(rect); if (raster) face.paintCardFace(image, rect); }, paintSelectionChevron(_image, x, y) { chevrons.push({ x, y }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
+    './hub-view-model': hub, './card-motion': { ...load('app/apps/t3/card-motion.ts', { '../../ui/card-presentation': face }), paintCardFace(image, rect) { cards.push(rect); if (raster) face.paintCardFace(image, rect); }, paintFocusBrackets(_image, left, right, top, height) { brackets.push({ left, right, top, height }); }, HUB_CARD: {x:0,y:0,width:576,height:288}, HUB_DROPDOWN: {x:16,y:12,width:544,height:104} },
     './dashboard': { dashboardTargets: () => targets, paintT3Dashboard: (_w, _h, _selected, count) => {
       counts.push(count); const image = new RasterImage(_w, _h);
       if (raster) { image.drawText(font, 22, 20, 'DASHBOARD', 190); image.drawText(font, 22, 75, 'Synthetic home content', 190); for (const target of targets) { image.drawRoundedRect(target.x, target.y, target.width, target.height, 235, 8, 2); image.drawText(font, target.x + 16, target.y + 10, target.id.toUpperCase(), 190); } }
       return image;
-    } }, '../../native/weather': { weatherBridge: { snapshot: () => ({}) } }, '../../ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, '../../graphics/image': { GrayImage: RasterImage }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => font }, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] },
+    } }, '../../native/weather': { weatherBridge: { snapshot: () => ({}) } }, '../../ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, '../../graphics/image': { GrayImage: RasterImage }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => font }, '../../graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => String(text).split('\n') }, '../../graphics/icons': { renderIcon: () => null },
     '../../ui/presentation-clock': { presentationNow: () => animationClock?.now ?? Date.now() },
     '../../native/media-controls': { isMediaPlaying: () => false, sendMediaCommand: command => { navigation.events.push('media:' + command); return true; } },
     '../../extensions/host': { onHostEvent: () => () => {}, onHostState: () => () => {} },
@@ -88,7 +88,7 @@ function setup(animationClock, raster = false, t3Config = {}) {
   }, animationClock ? { Date: class extends Date { static now() { return animationClock.now; } } } : {});
   const layer = new T3Layer(() => {}, () => visibility.appBase);
   state.onChange(() => layer.contentChanged());
-  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, chevrons, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, setReturnResult: value => { returnResult = value; }, deferDismiss: () => { deferDismiss = true; }, resolveDismiss: () => { deferDismiss = false; const done = resolveDismiss; resolveDismiss = undefined; done?.(); }, deferReturn: () => { deferReturn = true; }, resolveReturn: () => { deferReturn = false; const done = resolveReturn; resolveReturn = undefined; done?.(); }, denyDismiss: () => { permitDismiss = false; }, layer };
+  return { api, state, visibility, dismissed, navigation, reviews, counts, drawn, placements, cards, brackets, borders, setVisible: value => { visible = value; }, setReply: value => { reply = value; }, setFocused: value => { focused = value; }, setReturnResult: value => { returnResult = value; }, deferDismiss: () => { deferDismiss = true; }, resolveDismiss: () => { deferDismiss = false; const done = resolveDismiss; resolveDismiss = undefined; done?.(); }, deferReturn: () => { deferReturn = true; }, resolveReturn: () => { deferReturn = false; const done = resolveReturn; resolveReturn = undefined; done?.(); }, denyDismiss: () => { permitDismiss = false; }, layer };
 }
 test('assistant draft requires review tap and preserves assistant.start intent', async () => {
   const { api, state, layer } = setup(); await state.refresh();
@@ -100,12 +100,20 @@ test('assistant draft requires review tap and preserves assistant.start intent',
   assert.equal(api.calls.filter(m => m === 'thread.start').length, 0);
   assert.equal(layer.screen, 'reader');
 });
-test('plan review cannot submit before reader reaches the end, and cannot submit twice', async () => {
+test('plan review submits only from its submit row, and cannot submit twice', async () => {
   const { api, state, layer } = setup(); await state.refresh(); await state.openThread('plan');
-  for (const q of state.plans.get('plan').request.questions) state.setAnswer('plan', { questionId: q.id, optionIndexes: [0], text: '' });
-  layer.go('plan-review'); await layer.handleInput({ type: 'click' });
+  state.setAnswer('plan', { questionId: 'layout', optionIndexes: [0], text: '' });
+  layer.openPlanReview();
+  assert.equal(layer.selected, 'review-1', 'incomplete review focuses the first unanswered question');
+  assert.equal(layer.rows().find(row => row.id === 'submit').disabled, true);
+  await layer.handleInput({ type: 'click' });
+  assert.equal(layer.screen, 'question'); assert.equal(layer.questionIndex, 1, 'a review row edits its question');
   assert.equal(api.calls.includes('plan.submit'), false);
-  layer.atReaderEnd = true; await layer.handleInput({ type: 'click' }); await layer.handleInput({ type: 'click' });
+  for (const q of state.plans.get('plan').request.questions) state.setAnswer('plan', { questionId: q.id, optionIndexes: [0], text: '' });
+  layer.openPlanReview(); assert.equal(layer.selected, 'submit');
+  await layer.handleInput({ type: 'scroll-up' }); await layer.handleInput({ type: 'click' });
+  assert.equal(layer.screen, 'question'); assert.equal(api.calls.includes('plan.submit'), false);
+  layer.openPlanReview(); await layer.handleInput({ type: 'click' }); await layer.handleInput({ type: 'click' });
   assert.equal(api.calls.filter(m => m === 'plan.submit').length, 1);
 });
 test('notification back leaves a retained T3 reader for the dashboard', async () => {
@@ -591,19 +599,137 @@ test('session selection floats while question/review cards fill the viewport and
   const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
   const paint = () => { h.cards.length = 0; h.layer.motion = null; h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } }); };
   h.layer.screen = 'sessions'; paint(); assert.equal(h.cards.length, 0, 'the session selector has no outer card');
-  for (const screen of ['new-project', 'new-model', 'new-reasoning', 'question-text', 'choices', 'plan-review', 'draft']) {
+  for (const screen of ['new-project', 'new-model', 'new-reasoning', 'question', 'plan-review', 'draft']) {
     h.layer.screen = screen; paint(); assert.equal(h.cards[0].width, 635, screen); assert.equal(h.cards[0].height, 447, screen);
   }
   h.layer.screen = 'inbox'; paint(); assert.equal(h.cards[0].width, 544); assert.equal(h.cards[0].height, 104);
 });
 
-test('session selection moves one chevron with its three-pixel outline', async () => {
-  const h = setup(); await h.state.refresh(); h.layer.screen = 'sessions';
-  const paint = () => { h.chevrons.length = 0; h.borders.length = 0; h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } }); };
-  paint(); assert.equal(h.chevrons.length, 1); assert.equal(h.borders.filter(border => border[6] === 3).length, 1);
-  const firstY = h.chevrons[0].y;
-  await h.layer.handleInput({ type: 'scroll-down' }); paint();
-  assert.equal(h.chevrons.length, 1); assert.ok(h.chevrons[0].y > firstY); assert.equal(h.borders.filter(border => border[6] === 3).length, 1);
+test('session and new-session lists mark focus with brackets instead of a bounded row box', async () => {
+  const h = setup(); await h.state.refresh();
+  const paint = () => { h.brackets.length = 0; h.borders.length = 0; h.layer.paint({ stack: { getBaseSize: () => ({ width: 640, height: 452 }) } }); };
+  for (const screen of ['sessions', 'new-project']) {
+    h.layer.screen = screen; h.layer.selected = '';
+    paint(); assert.equal(h.brackets.length, 1, screen); assert.equal(h.borders.length, 0, `${screen} draws no focus box`);
+    const firstY = h.brackets[0].top;
+    await h.layer.handleInput({ type: 'scroll-down' }); paint();
+    assert.equal(h.brackets.length, 1, screen); assert.ok(h.brackets[0].top > firstY, screen);
+  }
+});
+
+const questionPaint = h => { h.brackets.length = 0; h.placements.length = 0; h.layer.motion = null; h.layer.paint({ stack: { getBaseSize: () => ({ width: 576, height: 452 }) } }); };
+
+test('a plan question shows its text above bracket-focused answers and a dictation row', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
+  h.layer.screen = 'reader'; questionPaint(h);
+  assert.equal(h.layer.screen, 'question'); assert.equal(h.layer.questionIndex, 0);
+  assert.deepEqual(h.layer.rows().map(row => row.id), ['option-0', 'option-1', 'dictate']);
+  questionPaint(h);
+  const text = h.placements.map(p => p.text);
+  assert.ok(text.includes('QUESTION 1/3 | LAYOUT'));
+  const question = h.placements.find(p => p.text === 'Which conversation layout should we test first?');
+  const option = h.placements.find(p => p.text === 'Full-height reader');
+  assert.ok(question && option && question.y < option.y, 'question text sits above its answers');
+  assert.ok(text.includes('Dictate answer'));
+  assert.ok(text.includes('Use the taller Faceclaw viewport.'), 'the focused answer explains itself in the footer');
+  assert.equal(h.brackets.length, 1);
+  const firstTop = h.brackets[0].top;
+  await h.layer.handleInput({ type: 'scroll-down' }); questionPaint(h);
+  assert.equal(h.layer.selected, 'option-1'); assert.ok(h.brackets[0].top > firstTop);
+  await h.layer.handleInput({ type: 'click' });
+  assert.deepEqual(h.state.getPlan('plan').answers[0].optionIndexes, [1]);
+  assert.equal(h.layer.screen, 'question'); assert.equal(h.layer.questionIndex, 1);
+});
+
+test('double tap walks back through questions and review before leaving to the conversation', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
+  h.layer.go('sessions'); h.layer.openThread('plan'); await new Promise(resolve => setImmediate(resolve));
+  questionPaint(h);
+  assert.equal(h.layer.screen, 'question');
+  await h.layer.handleInput({ type: 'scroll-down' }); await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.questionIndex, 1);
+  await h.layer.handleInput({ type: 'click' });
+  for (let i = 0; i < 3; i++) await h.layer.handleInput({ type: 'scroll-down' });
+  assert.equal(h.layer.selected, 'accept');
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.questionIndex, 2);
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'plan-review');
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'question'); assert.equal(h.layer.questionIndex, 2);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.questionIndex, 1); assert.deepEqual(h.layer.checked, [0], 'multi-select answers are restored');
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.questionIndex, 0); assert.equal(h.layer.selected, 'option-1', 'the saved answer takes focus');
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'reader'); assert.equal(h.navigation.yielded, 0);
+  questionPaint(h); assert.equal(h.layer.screen, 'reader', 'the reader does not bounce back into the questions');
+  assert.ok(h.layer.menuItems().some(item => item.label === 'Answer questions'));
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.layer.screen, 'plan-review', 'a reader tap resumes the answer set');
+  h.layer.go('reader', false); await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'sessions');
+});
+
+test('multi-select answers toggle checks and require Done', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
+  h.layer.openPlanQuestion(1);
+  assert.equal(h.layer.rows().find(row => row.id === 'accept').disabled, true);
+  await h.layer.handleInput({ type: 'scroll-down' }); await h.layer.handleInput({ type: 'scroll-down' });
+  await h.layer.handleInput({ type: 'click' });
+  await h.layer.handleInput({ type: 'scroll-up' }); await h.layer.handleInput({ type: 'scroll-up' });
+  await h.layer.handleInput({ type: 'click' });
+  assert.deepEqual(h.layer.rows().filter(row => row.checked).map(row => row.id), ['option-0', 'option-2']);
+  assert.equal(h.layer.screen, 'question'); assert.equal(h.state.getPlan('plan').answers.length, 0, 'toggling saves nothing');
+  const done = h.layer.rows().find(row => row.id === 'accept');
+  assert.equal(done.title, 'Done · 2 selected'); await done.action();
+  assert.deepEqual(h.state.getPlan('plan').answers[0].optionIndexes, [0, 2]);
+});
+
+test('dictated or typed answers replace the options for that question', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
+  h.layer.openPlanQuestion(0);
+  await h.layer.rows().find(row => row.id === 'dictate').action();
+  assert.equal(h.layer.screen, 'draft'); assert.equal(h.layer.dictatingAnswer, true);
+  await h.layer.handleInput({ type: 'double-click' });
+  assert.equal(h.layer.screen, 'question', 'cancelling a dictated answer returns to its question');
+  await h.layer.rows().find(row => row.id === 'dictate').action();
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.state.getPlan('plan').answers[0].text, 'Check the reconnect flow and preserve the reading position.');
+  assert.equal(h.layer.questionIndex, 1);
+  h.layer.openPlanQuestion(0);
+  assert.equal(h.layer.selected, 'dictate');
+  assert.match(h.layer.rows().find(row => row.id === 'dictate').title, /^Dictated: Check the reconnect/);
+  assert.equal(h.layer.rows().some(row => row.checked), false);
+  h.layer.receiveText('Typed on the phone');
+  assert.equal(h.layer.screen, 'draft'); await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.state.getPlan('plan').answers.find(answer => answer.questionId === 'layout').text, 'Typed on the phone');
+  assert.equal(h.api.calls.includes('turn.send'), false, 'question answers never send as conversation messages');
+});
+
+test('long question text scrolls into view before its answers', async () => {
+  const h = setup(); await h.state.refresh(); await h.state.openThread('plan');
+  const question = h.state.getPlan('plan').request.questions[0];
+  // The harness wraps one line per explicit break.
+  question.question = Array.from({ length: 16 }, (_, i) => `Line ${i + 1}`).join('\n');
+  h.layer.openPlanQuestion(0);
+  assert.equal(h.layer.selected, 'question-body', 'overflowing text is read before choosing');
+  questionPaint(h);
+  assert.ok(h.placements.some(p => p.text === 'Line 1')); assert.equal(h.brackets.length, 0);
+  assert.ok(h.placements.some(p => p.text === 'Scroll down for the answers.'));
+  let guard = 0;
+  while (h.layer.selected === 'question-body' && guard++ < 10) await h.layer.handleInput({ type: 'scroll-down' });
+  assert.equal(h.layer.selected, 'option-0');
+  questionPaint(h);
+  assert.ok(h.placements.some(p => p.text === 'Line 16')); assert.ok(!h.placements.some(p => p.text === 'Line 1'));
+  assert.ok(h.placements.some(p => p.text === 'Full-height reader')); assert.equal(h.brackets.length, 1);
+  await h.layer.handleInput({ type: 'scroll-up' });
+  assert.equal(h.layer.selected, 'question-body');
+  guard = 0;
+  while (h.layer.scroll > 0 && guard++ < 10) await h.layer.handleInput({ type: 'scroll-up' });
+  questionPaint(h); assert.ok(h.placements.some(p => p.text === 'Line 1'));
+  await h.layer.handleInput({ type: 'click' });
+  assert.equal(h.state.getPlan('plan').answers.length, 0, 'a tap while reading never picks an answer');
 });
 
 test('dictated draft review reflows Whisper segment boundaries while keeping authoritative send text', () => {
@@ -1386,3 +1512,44 @@ test('returning from the full sessions list does not enter the dashboard attenti
   assert.equal(h.layer.dashboardCard, null);
   assert.equal(h.layer.selected, 'sessions');
 });
+
+test('pending questions alert once, lead the dashboard sessions card, and clear when answered', async () => {
+  const { state, layer } = setup();
+  const session = { id: 'q', projectId: 'p', projectTitle: 'Faceclaw', title: 'Pick a layout', status: 'running', settled: false,
+    lastActivityAt: new Date().toISOString(), completedTurn: null };
+  const done = { id: 'd', projectId: 'p', projectTitle: 'Faceclaw', title: 'Finished work', status: 'idle', settled: false,
+    lastActivityAt: new Date().toISOString(), completedTurn: { id: 'turn', completedAt: new Date().toISOString() } };
+  const arrivals = []; state.onArrival(alert => arrivals.push(alert));
+  state.applySessions([{ ...session, hasPendingUserInput: true }, done]);
+  assert.equal(arrivals.length, 0, 'questions already waiting at startup join the inbox silently');
+  assert.equal(state.alerts.filter(alert => alert.id.includes(':input:')).length, 1);
+  state.applySessions([session, done]);
+  assert.equal(state.alerts.some(alert => alert.id.includes(':input:')), false, 'an answered question clears its alert');
+  state.applySessions([{ ...session, hasPendingUserInput: true }, done]);
+  state.applySessions([{ ...session, hasPendingUserInput: true }, done]);
+  assert.equal(arrivals.length, 1, 'a new question alerts once while it stays pending');
+  assert.equal(arrivals[0].title, 'Question · Faceclaw'); assert.equal(arrivals[0].threadId, 'q');
+  assert.equal(arrivals[0].question, true, 'question alerts are marked glasses-only');
+  assert.deepEqual(state.awaitingSessions.map(item => item.id), ['q', 'd'], 'a running session waiting on a question leads the card');
+  assert.equal(layer.dashboardCards().sessions[0].title, '? Pick a layout');
+  layer.selected = 'sessions'; await layer.rows().find(row => row.id === 'sessions').action();
+  assert.equal(layer.rows()[0].title, '? Pick a layout');
+});
+
+test('opening a pending-question session lands on its first question', async () => {
+  const h = setup(); await h.state.refresh();
+  assert.equal(h.state.awaitingSessions[0].id, 'plan');
+  h.layer.selected = 'sessions'; await h.layer.rows().find(row => row.id === 'sessions').action();
+  await h.layer.rows()[0].action(); await new Promise(resolve => setImmediate(resolve));
+  h.layer.motion = null; h.layer.slide = null; h.layer.paint({ stack: { getBaseSize: () => ({ width: 576, height: 452 }) } });
+  assert.equal(h.layer.screen, 'question'); assert.equal(h.layer.questionIndex, 0);
+});
+
+test('full sessions list labels a session waiting on a question as QUESTION', () => {
+  const at = new Date().toISOString();
+  const base = { projectId: 'p', projectTitle: 'Faceclaw', settled: false, lastActivityAt: at, completedTurn: null };
+  const rows = hub.buildSessionRows({ unsettled: [{ ...base, id: 'q', title: 'Pick', status: 'running', hasPendingUserInput: true }, { ...base, id: 'w', title: 'Busy', status: 'running' }], settled: [] });
+  assert.match(rows.find(row => row.value === 'q').text, /QUESTION$/);
+  assert.match(rows.find(row => row.value === 'w').text, /WORKING$/);
+});
+

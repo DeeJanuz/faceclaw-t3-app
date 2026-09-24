@@ -1,5 +1,5 @@
 import { decodeMediaArtwork } from '@faceclaw/motion';
-import { CARD_TEXT_BRIGHTNESS } from '../../ui/card-presentation';
+import { CARD_TEXT_BRIGHTNESS, paintFocusBrackets } from '../../ui/card-presentation';
 import { GrayImage } from '../../graphics/image';
 import { getDefaultSmallFont } from '../../graphics/ui-fonts';
 import { truncateText } from '../../graphics/textwrap';
@@ -99,14 +99,7 @@ export function paintT3Dashboard(width: number, height: number, selected: string
     const localX = rect.x - (x + 259);
     if (focused && !rect.card && cards.activeCard) {
       // Square brackets distinguish focus inside a card from its outer border.
-      const bracketY = top + Math.round((rowHeight - 24) / 2);
-      const left = localX + 8, right = localX + rect.width - 10;
-      column.fillRect(left, bracketY, 2, 24, 245);
-      column.fillRect(right, bracketY, 2, 24, 245);
-      for (const y of [bracketY, bracketY + 22]) {
-        column.fillRect(left, y, 8, 2, 245);
-        column.fillRect(right - 6, y, 8, 2, 245);
-      }
+      paintFocusBrackets(column, localX + 8, localX + rect.width - 10, top + Math.round((rowHeight - 24) / 2));
     }
     if (rect.id.startsWith('audio-')) {
       const name = rect.id === 'audio-toggle' ? (cards.audioPlaying ? 'media-pause' : 'media-play')

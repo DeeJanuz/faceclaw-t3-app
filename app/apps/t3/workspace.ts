@@ -21,6 +21,8 @@ export interface T3Alert {
   groupId?: string;
   arrivalFingerprint?: string;
   previewBody?: string;
+  /** Pending structured question; shown on the glasses only, never posted to the phone. */
+  question?: boolean;
 }
 
 export interface PlanDraft {
@@ -98,6 +100,7 @@ export class T3Workspace {
   private listeners = new Set<() => void>();
   private arrivals = new Set<(alert: T3Alert) => void>();
   private completions = new Map<string, string>();
+  private pendingInputs = new Set<string>();
   private initialized = false;
   private generation = 0;
   private transcriptRequest = 0;
@@ -133,12 +136,15 @@ export class T3Workspace {
         pair.every(value => typeof value === 'string' && value.length <= 1000)) this.viewedTurns.set(pair[0], pair[1]);
     } catch { /* Keep the dashboard usable if local storage is unavailable. */ }
   }
+  /** Sessions blocked on a question come first; they stay until answered. */
   get awaitingSessions(): SessionSummary[] {
     this.loadViewedTurns();
-    return this.sessions.filter(session => !session.settled && session.completedTurn &&
+    const completed = (session: SessionSummary) => Date.parse(session.completedTurn?.completedAt || '') || 0;
+    return this.sessions.filter(session => !session.settled && (session.hasPendingUserInput === true || (session.completedTurn &&
       !['running', 'starting'].includes(session.status) &&
-      this.viewedTurns.get(resourceKey(session.id, session.environmentId)) !== session.completedTurn.id)
-      .sort((a, b) => (Date.parse(b.completedTurn!.completedAt) || 0) - (Date.parse(a.completedTurn!.completedAt) || 0));
+      this.viewedTurns.get(resourceKey(session.id, session.environmentId)) !== session.completedTurn.id)))
+      .sort((a, b) => Number(b.hasPendingUserInput === true) - Number(a.hasPendingUserInput === true) ||
+        (a.hasPendingUserInput ? (Date.parse(b.lastActivityAt) || 0) - (Date.parse(a.lastActivityAt) || 0) : completed(b) - completed(a)));
   }
   /** Acknowledge only the completed turn actually displayed or replied to. */
   markSessionViewed(session: SessionSummary): void {
@@ -189,7 +195,7 @@ export class T3Workspace {
     this.projects = []; this.sessions = []; this.models = [];
     this.transcript = null; this.selectedThreadId = ''; this.selectedEnvironmentId = undefined; this.environments = []; this.alerts = [];
     this.viewedScope = null; this.viewedTurns.clear();
-    this.completions.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
+    this.completions.clear(); this.pendingInputs.clear(); this.plans.clear(); this.approvalLocks.clear(); this.initialized = false;
     this.tokenContexts.clear(); this.tokenSnapshots.clear();
     this.tokenAccountingScope = ''; this.tokenAccounting.clear();
     this.refreshPending = null; this.busy = false; this.error = ''; this.canRetryLastSend = true;
@@ -313,6 +319,23 @@ export class T3Workspace {
       }
     }
     this.completions = next;
+    const pendingInputs = new Set<string>();
+    for (const session of sessions) {
+      if (session.settled || session.hasPendingUserInput !== true) continue;
+      const key = resourceKey(session.id, session.environmentId);
+      pendingInputs.add(key);
+      if (this.pendingInputs.has(key)) continue;
+      // Questions block the agent, so they alert regardless of age. Ones already
+      // waiting at startup join the inbox without a popup.
+      this.addAlert({
+        id: `t3:${key}:input:${session.lastActivityAt}`, environmentId: session.environmentId, kind: 't3', threadId: session.id,
+        title: `Question · ${session.projectTitle}`, body: session.title, createdAt: Date.parse(session.lastActivityAt) || Date.now(), question: true,
+      }, this.initialized);
+    }
+    const resolved = [...this.pendingInputs].filter(key => !pendingInputs.has(key));
+    this.pendingInputs = pendingInputs;
+    if (resolved.length) this.alerts = this.alerts.filter(alert => alert.kind !== 't3' ||
+      !resolved.some(key => alert.id.startsWith(`t3:${key}:input:`)));
     this.initialized = true;
     this.sessions = sessions;
     const allowed = new Set(sessions.filter(s => !s.settled).map(s => resourceKey(s.id, s.environmentId)));

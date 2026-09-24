@@ -25,7 +25,7 @@ export class T3DemoApi implements T3Api {
   ];
   private sessions: SessionSummary[] = [
     { id: 'ui', projectId: 'faceclaw', projectTitle: 'Faceclaw T3', title: 'Build the conversation reader', status: 'running', settled: false, lastActivityAt: ago(0), completedTurn: null },
-    { id: 'plan', projectId: 'faceclaw', projectTitle: 'Faceclaw T3', title: 'Choose the notification interactions', status: 'waiting', settled: false, lastActivityAt: ago(2), completedTurn: null },
+    { id: 'plan', projectId: 'faceclaw', projectTitle: 'Faceclaw T3', title: 'Choose the notification interactions', status: 'waiting', settled: false, lastActivityAt: ago(2), completedTurn: null, hasPendingUserInput: true },
     { id: 'voice', projectId: 'bridge', projectTitle: 'T3 bridge', title: 'Whisper fallback is ready to test', status: 'idle', settled: false, lastActivityAt: ago(6), completedTurn: { id: 'voice-done', completedAt: ago(6) } },
     { id: 'completed-plan', projectId: 'faceclaw', projectTitle: 'Faceclaw T3', title: 'Review the completed dashboard plan', status: 'ready', settled: false, lastActivityAt: ago(8), completedTurn: { id: 'completed-plan-turn', completedAt: ago(8) } },
     { id: 'day', projectId: 'assistant', projectTitle: 'Personal assistant', title: 'Help me plan the afternoon', status: 'idle', settled: true, lastActivityAt: ago(40), completedTurn: { id: 'day-done', completedAt: ago(40) } },
@@ -100,6 +100,8 @@ export class T3DemoApi implements T3Api {
       result = { threadId: id, text: params.text, sequence: this.sequence };
     } else if (method === 'plan.submit') {
       this.answered = true;
+      const waiting = this.sessions.find(s => s.id === 'plan');
+      if (waiting) { waiting.hasPendingUserInput = false; waiting.status = 'running'; }
       result = { threadId: params.threadId, requestId: params.requestId, sequence: ++this.sequence };
     } else throw new Error(`Sample data does not implement ${method}`);
     // Snapshots have the same ownership as a decoded transport response.
@@ -113,7 +115,7 @@ export class T3DemoApi implements T3Api {
       ? 'The full-height reader is ready for review.\n\nProject and conversation navigation keep your place when a notification arrives. A tap opens the new conversation; double tap returns to what you were reading.\n\nNext I will check long replies, the plan-question flow, and the draft review screen.'
       : id === 'voice'
       ? 'Dictation uses Faceclaw\'s selected transcription engine.\n\nThe default on-device Moonshine engine works without a network connection once its voice model is downloaded. The reviewed transcript stays on screen until you tap to send.'
-      : id === 'plan' ? 'I have three questions about the next UI test. Select Answer questions to review them. Nothing is submitted until the complete answer set is confirmed.'
+      : id === 'plan' ? 'I have three questions about the next UI test. Tap to answer them. Nothing is submitted until the complete answer set is confirmed.'
       : 'This is a sample assistant conversation. The live version uses the project and model selected in T3 settings.';
     const messages = [
       { id: `${id}-user`, role: 'user' as const, text: 'Show me the current status and what to test next.', streaming: false, createdAt: ago(4), updatedAt: ago(4) },

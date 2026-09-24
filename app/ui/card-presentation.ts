@@ -15,3 +15,14 @@ export function paintCardFace(image: GrayImage, rect: CardRect): void {
   image.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 8);
   image.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 235, 8, 2);
 }
+
+/** Square brackets mark focus inside a card without competing with its outline.
+ * `right` is the x of the right bracket's two-pixel bar. */
+export function paintFocusBrackets(image: GrayImage, left: number, right: number, top: number, height = 24, value = 245): void {
+  image.fillRect(left, top, 2, height, value);
+  image.fillRect(right, top, 2, height, value);
+  for (const y of [top, top + height - 2]) {
+    image.fillRect(left, y, 8, 2, value);
+    image.fillRect(right - 6, y, 8, 2, value);
+  }
+}

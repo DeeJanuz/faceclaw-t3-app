@@ -5,7 +5,7 @@ import { paintActivityIndicator } from './activity-indicator';
 import { RenderingComparisonLayer } from "../developer/rendering-comparison";
 import { notificationCardRect, paintNotificationCard } from '../../ui/shell/notification-card';
 import { buildSessionRows, reflowDictationText, paginateMessageText, paginateText, paginateTranscriptWithLiveTurn, retainTranscriptPage, selectResponsePage, transcriptPageHeader, activeActivityMarker, extractActiveActivityLine, type TranscriptPage, type PageBox } from './hub-view-model';
-import { WindowMotion, cardRect, paintCardFace, paintCardContents, paintSelectionChevron, CARD_MOTION_MS, type CardRect } from './card-motion';
+import { WindowMotion, cardRect, paintCardFace, paintCardContents, paintFocusBrackets, CARD_MOTION_MS, type CardRect } from './card-motion';
 import { openT3Alert, dismissT3Alert, visibleT3Alerts, findT3Alert, getT3NotificationReply, openT3NotificationApp } from "./notifications-ui";
 import { Frame } from '@nativescript/core';
 import { sendMediaCommand, isMediaPlaying, type MediaCommand } from '../../native/media-controls';
@@ -15,6 +15,7 @@ import { timeFormatSetting } from '../../ui/dashboard-settings';
 import { GrayImage, type DeferredDraw } from '../../graphics/image';
 import { getDefaultSmallFont } from '../../graphics/ui-fonts';
 import { truncateText, wrapText } from '../../graphics/textwrap';
+import { renderIcon } from '../../graphics/icons';
 import { type Layer, type LayerContext } from '../../ui/layers';
 import { type InputEvent } from '../../ui/gestures';
 import { presentationNow } from '../../ui/presentation-clock';
@@ -24,7 +25,7 @@ import { getT3Config, onT3ConfigChanged } from '../../t3/config';
 import { normalizeT3ActivityIndicatorMode, t3ActivityIndicatorCadenceMs, t3ActivityIndicatorFrame, type T3ActivityIndicatorMode } from '../../t3/activity-indicator-mode';
 import { hostState, onHostEvent, onHostState } from '../../extensions/host';
 import { t3Workspace as state, initializeT3, connectT3, setT3ReaderVisible } from './runtime';
-import type { ReviewedReplyDestination } from './workspace';
+import type { PlanDraft, ReviewedReplyDestination } from './workspace';
 import type { ModelSummary, NewSessionModelSelection, PlanQuestion, ProposedPlan } from './protocol';
 import type { T3Alert } from './workspace';
 
@@ -36,9 +37,11 @@ function updateReaderVisibility(visible: boolean): void {
 
 export const T3_WINDOW_ID = 't3';
 export const T3_SURFACE_ID = 'window:t3';
-type Screen = 'dashboard' | 'phone-settings' | 'projects' | 'sessions' | 'reader' | 'actions' | 'new-project' | 'new-model' | 'new-reasoning' | 'new-summary' | 'compose' | 'draft' | 'inbox' | 'notification' | 'questions' | 'question-text' | 'choices' | 'plan-review' | 'session-reasoning' | 'session-model' | 'proposed-plan' | 'plan-approve';
+type Screen = 'dashboard' | 'phone-settings' | 'projects' | 'sessions' | 'reader' | 'actions' | 'new-project' | 'new-model' | 'new-reasoning' | 'new-summary' | 'compose' | 'draft' | 'inbox' | 'notification' | 'questions' | 'question' | 'plan-review' | 'session-reasoning' | 'session-model' | 'proposed-plan' | 'plan-approve';
 type Navigation = { screen: Screen; selected: string; scroll: number; projectId: string; threadId: string; resumeAttention?: boolean };
-type Row = { id: string; title: string; detail?: string; disabled?: boolean; section?: boolean; action: () => void | Promise<void> };
+type Row = { id: string; title: string; detail?: string; disabled?: boolean; section?: boolean; mark?: 'radio' | 'check' | 'mic'; checked?: boolean; action: () => void | Promise<void> };
+/** Focus target for question text that does not fit above its answers. */
+const QUESTION_BODY = 'question-body';
 export type SlideTransportHint = { key: number; offsetX: number; prefetchDraws?: readonly DeferredDraw[] };
 type SlideMotion = { id: number; fromScreen: Screen; toScreen: Screen; from: GrayImage; to?: GrayImage; direction: 1 | -1; started: number | null; progress: number; distance: number };
 const SLIDE_TRAVEL_PX = 540;
@@ -50,7 +53,7 @@ let activeLayer: T3Layer | null = null;
 
 export function openT3Assistant(): void { if (!isT3FlowProtected()) activeLayer?.askAssistant(); }
 export function openT3Thread(threadId: string, returnWindowId?: string, notificationVisitId?: string): void { activeLayer?.openThread(threadId, returnWindowId, true, notificationVisitId); }
-export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question-text", "choices", "plan-review", "proposed-plan", "plan-approve", "session-reasoning", "session-model"].includes(activeLayer.screen)); }
+export function isT3FlowProtected(): boolean { return Boolean(activeLayer && shell.isWindowFocused(T3_WINDOW_ID) && ["compose", "draft", "questions", "question", "plan-review", "proposed-plan", "plan-approve", "session-reasoning", "session-model"].includes(activeLayer.screen)); }
 export function showT3AlertInCurrentConversation(alert: T3Alert): boolean { return activeLayer?.showAlertInCurrentConversation(alert) ?? false; }
 export function openT3Inbox(): void { activeLayer?.go('inbox'); }
 export function setT3NotificationOrigin(rect: CardRect): void { activeLayer?.setNotificationOrigin(rect); }
@@ -117,7 +120,6 @@ export class T3Layer implements Layer {
   private returnFocus = 'audio';
   private pageCount = 1;
   private planIdentity = '';
-  private optionPage = 0;
   private visibleActivity = false;
   private activityIndicatorMode: T3ActivityIndicatorMode =
     normalizeT3ActivityIndicatorMode(getT3Config().activityIndicatorMode);
@@ -222,7 +224,7 @@ export class T3Layer implements Layer {
   private dashboardCards() {
     return { audioExpanded: this.audioExpanded, activeCard: this.dashboardCard,
       sessions: state.awaitingSessions.map(session => ({ id: `pending:${resourceKey(session.id, session.environmentId)}`,
-        title: `${session.title}${session.environmentLabel ? ' · ' + session.environmentLabel : ''}` })),
+        title: `${session.hasPendingUserInput ? '? ' : ''}${session.title}${session.environmentLabel ? ' · ' + session.environmentLabel : ''}` })),
       audioNotice: this.audioNotice, audioPlaying: this.audioPlaying, audioMedia: hostState?.media };
   }
   private homeRect(): CardRect { return dashboardTargets(this.viewWidth, this.viewHeight, this.dashboardCards(), this.selected).find(row => row.id === this.returnFocus) || this.fullRect(); }
@@ -253,7 +255,7 @@ export class T3Layer implements Layer {
   }
 
   private matchesAlertConversation(alert: T3Alert): boolean {
-    if (alert.kind === 't3') return this.screen === 'reader' && Boolean(alert.threadId) &&
+    if (alert.kind === 't3') return ['reader', 'question', 'plan-review'].includes(this.screen) && Boolean(alert.threadId) &&
       state.selectedThreadId === alert.threadId && state.selectedEnvironmentId === alert.environmentId && state.transcript?.session.id === alert.threadId;
     if (this.screen !== 'notification') return false;
     const current = this.currentNotification();
@@ -372,6 +374,14 @@ export class T3Layer implements Layer {
       return;
     }
     if (acknowledgeBack) shell.respondToBack(false);
+    if (this.screen === 'question' || this.screen === 'plan-review') {
+      // Back walks the answer set: review -> last question -> ... -> first
+      // question -> the conversation that asked them.
+      const plan = state.getPlan(state.selectedThreadId);
+      const previous = this.screen === 'plan-review' ? (plan?.request.questions.length ?? 0) - 1 : this.questionIndex - 1;
+      if (plan && !plan.locked && previous >= 0) { this.openPlanQuestion(previous); return; }
+      if (!this.returnWindowId) { this.go('reader', false); return; }
+    }
     if (['session-model', 'session-reasoning'].includes(this.screen)) {
       this.sessionControlPending = false;
       this.sessionControlError = '';
@@ -381,7 +391,7 @@ export class T3Layer implements Layer {
     }
     const draftCreation = this.creation;
     if (['draft', 'compose'].includes(this.screen)) { this.draft = ''; this.draftMode = undefined; this.draftIsDictated = false; this.draftLocked = false; this.dictatingAnswer = false; this.reviewedReplyDestination = null; this.creation = null; }
-    if (this.returnWindowId && ['reader', 'notification', 'question-text', 'choices', 'plan-review'].includes(this.screen)) {
+    if (this.returnWindowId && ['reader', 'notification', 'question', 'plan-review'].includes(this.screen)) {
       const id = this.returnWindowId;
       const visitId = this.notificationVisitId;
       // Consume the visit before yielding to IPC. A delayed acknowledgement
@@ -398,7 +408,7 @@ export class T3Layer implements Layer {
     if (this.screen === 'reader') {
       // Replies, steering and plan edits are internal to this thread visit.
       // Back leaves the visit instead of restoring a reader's earlier page.
-      const internal: Screen[] = ['reader', 'actions', 'compose', 'draft', 'questions', 'question-text', 'choices',
+      const internal: Screen[] = ['reader', 'actions', 'compose', 'draft', 'questions', 'question',
         'plan-review', 'proposed-plan', 'plan-approve', 'session-reasoning', 'session-model', 'new-project', 'new-model', 'new-reasoning', 'new-summary'];
       while (this.history.length && internal.includes(this.history[this.history.length - 1].screen)) this.history.pop();
     }
@@ -429,6 +439,11 @@ export class T3Layer implements Layer {
 
   receiveText(text: string, dictated = false): void {
     if (!text.trim() || state.busy || this.draftLocked) return;
+    if (this.screen === 'question' && this.question()) {
+      this.creation = null; this.dictatingAnswer = true; this.draft = text.trim(); this.draftIsDictated = dictated; this.reviewedReplyDestination = null;
+      this.go('draft');
+      return;
+    }
     if (!['compose', 'draft', 'reader', 'actions'].includes(this.screen)) { this.creation = null; this.dictatingAnswer = false; this.go('new-project'); return; }
     this.draft = text.trim();
     this.draftIsDictated = dictated;
@@ -450,7 +465,7 @@ export class T3Layer implements Layer {
       const question = this.question();
       if (question) state.setAnswer(state.selectedThreadId, { questionId: question.id, optionIndexes: [], text: this.draft });
       this.dictatingAnswer = false; this.draft = '';
-      this.history = this.history.filter(item => !['question-text', 'choices', 'compose', 'draft'].includes(item.screen));
+      this.history = this.history.filter(item => !['question', 'plan-review', 'compose', 'draft'].includes(item.screen));
       this.nextPlanQuestion();
       return;
     }
@@ -592,7 +607,7 @@ export class T3Layer implements Layer {
       'session-reasoning': 'Session reasoning', 'session-model': 'Session model', 'proposed-plan': 'Proposed plan', 'plan-approve': 'Approve and implement?',
       dashboard: 'T3 Assistant', 'phone-settings': 'Settings', projects: 'Projects', sessions: 'Sessions', reader: state.transcript?.session.title || 'Conversation',
       actions: 'Conversation', 'new-project': 'New conversation', 'new-model': 'Choose a model', 'new-reasoning': 'Reasoning', 'new-summary': 'New session',
-      compose: this.creation ? 'New message' : 'Reply', draft: 'Review draft', inbox: 'Notifications', notification: 'Notification', questions: 'Plan questions', 'question-text': this.question()?.header || 'Question', choices: this.question()?.header || 'Choose an answer', 'plan-review': 'Review answers',
+      compose: this.creation ? 'New message' : 'Reply', draft: 'Review draft', inbox: 'Notifications', notification: 'Notification', questions: 'Plan questions', question: this.question()?.header || 'Question', 'plan-review': 'Review answers',
     };
     return titles[this.screen];
   }
@@ -642,7 +657,7 @@ export class T3Layer implements Layer {
         })),
       ];
       if (this.dashboardCard === 'sessions') return [
-        ...state.awaitingSessions.map(session => ({ id: `pending:${resourceKey(session.id, session.environmentId)}`, title: session.title,
+        ...state.awaitingSessions.map(session => ({ id: `pending:${resourceKey(session.id, session.environmentId)}`, title: `${session.hasPendingUserInput ? '? ' : ''}${session.title}`,
           action: () => { this.selected = 'sessions'; this.openThread(resourceKey(session.id, session.environmentId)); } })),
         { id: 'sessions-all', title: 'Sessions', action: () => { this.selected = 'sessions'; this.projectId = ''; this.go('sessions'); } },
       ];
@@ -684,15 +699,39 @@ export class T3Layer implements Layer {
     if (this.screen === 'inbox') return visibleT3Alerts().map(alert => ({
       id: alert.id, title: alert.title, detail: alert.body, action: async () => { await openT3Alert(alert); },
     }));
-    if (this.screen === 'choices') {
+    if (this.screen === 'question') {
+      const plan = state.getPlan(state.selectedThreadId);
       const question = this.question();
-      if (!question) return [];
+      if (!plan || plan.locked || !question) return [];
+      const saved = plan.answers.find(answer => answer.questionId === question.id);
       const accept = (indexes: number[]) => { state.setAnswer(state.selectedThreadId, { questionId: question.id, optionIndexes: indexes, text: '' }); this.nextPlanQuestion(); };
       return [
-        ...question.options.map((option, index) => ({ id: `option-${index}`, title: `${question.multiSelect ? `${this.checked.includes(index) ? '[x]' : '[ ]'} ` : ''}${option.label}`, detail: option.description,
-          action: () => { if (question.multiSelect) { this.checked = this.checked.includes(index) ? this.checked.filter(i => i !== index) : [...this.checked, index]; this.repaint(); } else accept([index]); } })),
-        ...(question.multiSelect ? [{ id: 'accept', title: 'Use selected answers', disabled: !this.checked.length, action: () => accept(this.checked) }] : []),
-        { id: 'dictate', title: 'Dictate your own answer', action: () => { this.dictatingAnswer = true; this.creation = null; this.draft = ''; this.go('compose'); this.record(); } },
+        ...question.options.map((option, index): Row => ({ id: `option-${index}`, title: option.label, detail: option.description,
+          mark: question.multiSelect ? 'check' : 'radio',
+          checked: question.multiSelect ? this.checked.includes(index) : Boolean(saved && !saved.text.trim() && saved.optionIndexes.includes(index)),
+          action: () => {
+            if (!question.multiSelect) { accept([index]); return; }
+            this.checked = this.checked.includes(index) ? this.checked.filter(i => i !== index) : [...this.checked, index].sort((a, b) => a - b);
+            this.repaint();
+          } })),
+        ...(question.multiSelect ? [{ id: 'accept', title: this.checked.length ? `Done · ${this.checked.length} selected` : 'Done',
+          detail: this.checked.length ? 'Save the checked answers.' : 'Check at least one answer first.', disabled: !this.checked.length, action: () => accept(this.checked) }] : []),
+        { id: 'dictate', title: saved?.text.trim() ? `Dictated: ${saved.text.trim()}` : 'Dictate answer', mark: 'mic',
+          detail: saved?.text.trim() || 'Speak your own answer instead.',
+          action: () => { this.dictatingAnswer = true; this.creation = null; this.draft = ''; this.go('compose'); this.record(); } },
+      ];
+    }
+    if (this.screen === 'plan-review') {
+      const plan = state.getPlan(state.selectedThreadId);
+      if (!plan || plan.locked) return [];
+      const answered = plan.request.questions.filter(question => this.hasAnswer(plan, question)).length;
+      const total = plan.request.questions.length;
+      return [
+        ...plan.request.questions.map((question, index) => ({ id: `review-${index}`, title: `${index + 1}. ${question.header}: ${this.answerLabel(plan, question) || 'Not answered'}`,
+          detail: question.question, action: () => this.openPlanQuestion(index) })),
+        { id: 'submit', title: answered === total ? 'Submit answers' : `Submit answers · ${answered}/${total}`, disabled: answered !== total,
+          detail: plan.notice || (answered === total ? 'Nothing is sent until you tap.' : 'Answer every question first.'),
+          action: async () => { await state.submitPlan(state.selectedThreadId); } },
       ];
     }
     return [];
@@ -718,20 +757,8 @@ export class T3Layer implements Layer {
     }
     if (this.screen === 'phone-settings') return 'Check your phone\n\nManage your T3 connection, assistant, models, and dictation in T3 Assistant settings on your phone.\n\nDouble-tap to return.';
     if (this.screen === 'new-summary') return `${state.projects.find(project => project.id === this.creation?.projectId && project.environmentId === this.creation?.environmentId)?.title || 'New session'}\n\n${this.pickedModel?.name || ''}\nReasoning: ${this.pickedModel?.reasoningChoices.find(choice => choice.id === this.creation?.modelSelection?.reasoningId)?.label || 'Provider default'}\nSpeed: Normal`;
-    if (this.screen === 'question-text') {
-      const question = this.question();
-      return question?.question || 'This question has been resolved.';
-    }
     if (this.screen === 'compose') return state.demo ? 'Use Dictate to try a sample draft, or type into this app from the phone keyboard.' : 'Dictate using the microphone, or type into this app from the phone keyboard. Review dictated text on the capture card before sending.';
     if (this.screen === 'draft') return this.draftIsDictated ? reflowDictationText(this.draft) : this.draft;
-    if (this.screen === 'plan-review') {
-      const draft = state.getPlan(state.selectedThreadId);
-      if (!draft) return 'This request has been resolved.';
-      return draft.request.questions.map((question, index) => {
-        const answer = draft.answers.find(a => a.questionId === question.id);
-        return `${index + 1}. ${question.question}\n${answer?.text || answer?.optionIndexes.map(i => question.options[i]?.label).join('; ') || 'Not answered'}`;
-      }).join('\n\n') + `\n\n${draft.notice || (draft.answers.length === draft.request.questions.length ? 'All answers ready. Tap here to submit.' : 'Answer every question before submitting.')}`;
-    }
     if (!state.transcript) return state.error || 'Loading conversation…';
     const activity = (state.transcript.liveActivities || []).map(item => `${item.completedAt ? 'Done' : 'Working'} · ${item.label}`).join('\n');
     return state.transcript.turns.map(turn => [
@@ -744,26 +771,167 @@ export class T3Layer implements Layer {
     const plan = state.getPlan(state.selectedThreadId);
     if (!plan || plan.locked) return;
     const unanswered = plan.request.questions.findIndex(question => !plan.answers.some(answer => answer.questionId === question.id));
-    this.questionIndex = index === undefined ? Math.max(0, unanswered) : (index + plan.request.questions.length) % plan.request.questions.length;
-    this.go(index === undefined && unanswered < 0 ? 'plan-review' : 'question-text', false);
+    if (index === undefined && unanswered < 0) { this.openPlanReview(); return; }
+    this.openPlanQuestion(index ?? Math.max(0, unanswered));
   }
 
-  private planPages(): { title: string; text: string }[] {
+  private openPlanQuestion(index: number): void {
     const plan = state.getPlan(state.selectedThreadId);
-    if (!plan) return [{ title: 'T3', text: 'This request has been resolved.' }];
-    if (plan.locked) return [{ title: 'CHECKING SUBMISSION', text: plan.notice || 'Answers are locked to prevent duplicates.' }];
-    const pages = (text: string) => paginateText(text, this.pageBox());
+    const count = plan?.request.questions.length ?? 0;
+    if (!plan || plan.locked || !count) return;
+    this.questionIndex = ((index % count) + count) % count;
+    const saved = plan.answers.find(answer => answer.questionId === plan.request.questions[this.questionIndex].id);
+    this.checked = saved?.text.trim() ? [] : [...(saved?.optionIndexes || [])];
+    this.go('question', false);
+    this.selected = this.defaultChoiceFocus();
+  }
+
+  private openPlanReview(): void {
+    this.go('plan-review', false);
+    this.selected = this.defaultChoiceFocus();
+  }
+
+  /** Reopen the pending answer set from its conversation. */
+  private resumePlanQuestions(): void {
+    const plan = state.getPlan(state.selectedThreadId);
+    if (!plan) return;
+    if (plan.locked) this.go('plan-review', false); else this.nextPlanQuestion();
+  }
+
+  private hasAnswer(plan: PlanDraft, question: PlanQuestion): boolean {
+    return plan.answers.some(answer => answer.questionId === question.id && (answer.text.trim() || answer.optionIndexes.length));
+  }
+
+  private answerLabel(plan: PlanDraft, question: PlanQuestion): string {
+    const answer = plan.answers.find(item => item.questionId === question.id);
+    return answer?.text.trim() || answer?.optionIndexes.map(index => question.options[index]?.label).filter(Boolean).join('; ') || '';
+  }
+
+  /** Question text followed by bracket-focused answer rows, as on the dashboard cards.
+   * Only the content column scrolls; the heading and focused-row detail stay put. */
+  private choiceLayout() {
+    const font = getDefaultSmallFont();
+    const step = cardLineStep(font);
+    const rect = this.fullRect();
+    const textWidth = this.viewWidth - 37;
+    const rows = this.rows();
+    const question = this.screen === 'question' ? this.question() : null;
+    const lines = question ? wrapText(font, question.question, textWidth) : [];
+    const rowHeight = Math.max(32, font.lineHeight + 12);
+    const top = 42;
+    const footerTop = this.viewHeight - 16 - font.lineHeight - step;
+    const bottom = footerTop - 10;
+    const visible = Math.max(rowHeight, bottom - top);
+    const rowsTop = lines.length ? lines.length * step + 8 : 0;
+    const maxOffset = Math.max(0, rowsTop + rows.length * rowHeight - visible);
+    // Offset at which the first answer becomes visible. Anything above it is
+    // question text the reader must be able to scroll back to.
+    const firstRowOffset = rows.length ? Math.min(maxOffset, Math.max(0, rowsTop + rowHeight - visible)) : 0;
+    const page = Math.max(step, (Math.floor(visible / step) - 1) * step);
+    const focus = rows.findIndex(row => row.id === this.selected);
+    const offset = this.selected === QUESTION_BODY
+      ? Math.max(0, Math.min(this.scroll, firstRowOffset))
+      : focus >= 0 ? Math.min(maxOffset, Math.max(0, rowsTop + (focus + 1) * rowHeight - visible)) : 0;
+    const rowY = (index: number) => top + rowsTop + index * rowHeight - offset;
+    const rowVisible = (index: number) => rowY(index) >= top - 1 && rowY(index) + rowHeight <= bottom + 1;
+    return { font, step, rect, textWidth, rows, lines, rowHeight, top, bottom, footerTop, firstRowOffset, page, offset, rowY, rowVisible };
+  }
+
+  private defaultChoiceFocus(): string {
+    const plan = state.getPlan(state.selectedThreadId);
+    const layout = this.choiceLayout();
+    if (layout.firstRowOffset > 0) { this.scroll = 0; return QUESTION_BODY; }
+    if (!plan) return layout.rows[0]?.id || '';
     if (this.screen === 'plan-review') {
-      const content = plan.request.questions.flatMap((question, index) => {
-        const answer = plan.answers.find(answer => answer.questionId === question.id);
-        return pages(`${index + 1}. ${question.question}\nAnswer: ${answer?.text || answer?.optionIndexes.map(option => question.options[option]?.label).join('; ') || 'Not answered'}`);
-      });
-      return [...content.map((text, index) => ({ title: `REVIEW | ${index + 1}/${content.length}`, text })), { title: `SUBMIT ${plan.answers.length}/${plan.request.questions.length} ANSWERS`, text: `${plan.answers.length === plan.request.questions.length ? 'Ready to submit all answers.' : 'Answer every question first.'}\n${plan.notice || 'Nothing has been sent.'}` }];
+      const missing = plan.request.questions.findIndex(question => !this.hasAnswer(plan, question));
+      return missing < 0 ? 'submit' : `review-${missing}`;
     }
     const question = this.question();
-    if (!question) return [{ title: 'QUESTION', text: 'This request has been resolved.' }];
-    const content = pages(question.question);
-    return content.map((text, index) => ({ title: `QUESTION ${this.questionIndex + 1}/${plan.request.questions.length} | ${index + 1}/${content.length}`, text }));
+    const saved = question && plan.answers.find(answer => answer.questionId === question.id);
+    if (saved?.text.trim()) return 'dictate';
+    if (saved?.optionIndexes.length) return `option-${saved.optionIndexes[0]}`;
+    return layout.rows[0]?.id || '';
+  }
+
+  private moveChoiceFocus(direction: 1 | -1): void {
+    const layout = this.choiceLayout();
+    const ids = layout.rows.filter(row => !row.section).map(row => row.id);
+    if (!ids.length) return;
+    if (this.selected === QUESTION_BODY) {
+      if (direction < 0) { this.scroll = Math.max(0, this.scroll - layout.page); return; }
+      const next = this.scroll + layout.page;
+      if (next < layout.firstRowOffset) this.scroll = next; else this.selected = ids[0];
+      return;
+    }
+    const index = ids.indexOf(this.selected);
+    if (direction < 0 && index <= 0 && layout.firstRowOffset > 0) {
+      this.selected = QUESTION_BODY;
+      this.scroll = Math.floor((layout.firstRowOffset - 1) / layout.page) * layout.page;
+      return;
+    }
+    this.selected = ids[Math.max(0, Math.min(ids.length - 1, index < 0 ? 0 : index + direction))];
+  }
+
+  private paintChoiceCard(image: GrayImage): void {
+    const plan = state.getPlan(state.selectedThreadId);
+    paintCardFace(image, this.fullRect());
+    let layout = this.choiceLayout();
+    const { font, textWidth } = layout;
+    const lineStep = layout.step;
+    if (!plan || plan.locked || !layout.rows.length) {
+      const title = plan?.locked ? 'CHECKING SUBMISSION' : this.screen === 'plan-review' ? 'REVIEW ANSWERS' : 'QUESTION';
+      const text = plan?.locked ? plan.notice || 'Answers are locked to prevent duplicates.' : 'This request has been resolved.';
+      image.drawText(font, 16, 10, truncateText(font, title, textWidth), CARD_TEXT_BRIGHTNESS);
+      wrapText(font, text, textWidth).forEach((line, index) => image.drawText(font, 16, layout.top + index * lineStep, line, CARD_TEXT_BRIGHTNESS));
+      return;
+    }
+    const focusable = layout.rows.filter(row => !row.section).map(row => row.id);
+    if (!(this.selected === QUESTION_BODY && layout.firstRowOffset > 0) && !focusable.includes(this.selected)) {
+      this.selected = this.defaultChoiceFocus();
+      layout = this.choiceLayout();
+    }
+    const question = this.question();
+    const count = plan.request.questions.length;
+    const title = this.screen === 'plan-review'
+      ? `REVIEW | ${plan.request.questions.filter(item => this.hasAnswer(plan, item)).length}/${count} ANSWERED`
+      : `QUESTION ${this.questionIndex + 1}/${count} | ${(question?.header || '').toUpperCase()}${question?.multiSelect ? ' | SELECT ANY' : ''}`;
+    image.drawText(font, 16, 10, truncateText(font, title, textWidth), CARD_TEXT_BRIGHTNESS);
+    layout.lines.forEach((line, index) => {
+      const y = layout.top + index * lineStep - layout.offset;
+      if (y >= layout.top && y + font.lineHeight <= layout.bottom) image.drawText(font, 16, y, line, CARD_TEXT_BRIGHTNESS);
+    });
+    const marked = layout.rows.some(row => row.mark);
+    const textX = marked ? 46 : 32;
+    const right = layout.rect.width - 12;
+    const bracketHeight = layout.rowHeight - 8;
+    layout.rows.forEach((row, index) => {
+      if (!layout.rowVisible(index)) return;
+      const rowY = layout.rowY(index);
+      const centerY = rowY + Math.round(layout.rowHeight / 2);
+      const selected = row.id === this.selected;
+      const value = row.disabled ? 85 : selected ? CARD_TEXT_BRIGHTNESS : 165;
+      if (selected) paintFocusBrackets(image, 8, right, centerY - Math.round(bracketHeight / 2), bracketHeight);
+      if (row.mark) this.paintChoiceMark(image, row, centerY, value);
+      image.drawText(font, textX, rowY + Math.round((layout.rowHeight - font.lineHeight) / 2),
+        truncateText(font, row.title, right - 8 - textX), value);
+    });
+    const focused = layout.rows.find(row => row.id === this.selected);
+    const detail = this.selected === QUESTION_BODY ? 'Scroll down for the answers.' : focused?.detail || '';
+    image.fillRect(16, layout.footerTop - 6, textWidth, 1, 95);
+    const detailLines = detail ? wrapText(font, detail, textWidth) : [];
+    const footer = detailLines.length > 2 ? [detailLines[0], truncateText(font, detailLines.slice(1).join(' '), textWidth)] : detailLines;
+    footer.forEach((line, index) => image.drawText(font, 16, layout.footerTop + index * lineStep, line, 140));
+  }
+
+  private paintChoiceMark(image: GrayImage, row: Row, centerY: number, value: number): void {
+    if (row.mark === 'mic') {
+      const icon = renderIcon('mic', 18);
+      if (icon) image.drawImage(icon, 21, centerY - 9);
+      return;
+    }
+    const radius = row.mark === 'radio' ? 6 : 2;
+    image.drawRoundedRect(24, centerY - 6, 12, 12, value, radius, 2);
+    if (row.checked) image.fillRoundedRect(27, centerY - 3, 6, 6, value, row.mark === 'radio' ? 3 : 1);
   }
 
   private readerPage(): { title: string; text: string; activity?: { line: number; label: string } } {
@@ -814,7 +982,7 @@ export class T3Layer implements Layer {
     const pending = state.getPlan(state.selectedThreadId);
     const identity = pending ? `${state.selectedThreadId}:${pending.request.requestId}:${pending.request.revision}` : '';
     if (this.screen === 'reader' && identity && identity !== this.planIdentity) { this.planIdentity = identity; this.nextPlanQuestion(); }
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; updateReaderVisibility(true); }
+    if (['question', 'plan-review'].includes(this.screen) && !pending) { this.motion = null; this.screen = 'reader'; this.scroll = 0; updateReaderVisibility(true); }
     const slide = this.slide;
     if (slide) {
       // Lay out each complete page once, then move its retained glyphs and pixels.
@@ -907,24 +1075,8 @@ export class T3Layer implements Layer {
         text: row?.detail || 'You are all caught up.', counter: `${row ? index + 1 : 0}/${rows.length}` });
       return image;
     }
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen)) {
-      paintCardFace(image, this.fullRect());
-      let card: { title: string; text: string };
-      if (this.screen === 'choices' && !pending?.locked) {
-        const choices = rows.flatMap(row => paginateText(`${row.title}\n${row.detail || ''}`, this.pageBox()).map(text => ({ row, text })));
-        this.optionPage = Math.max(0, Math.min(this.optionPage, choices.length - 1));
-        const choice = choices[this.optionPage];
-        this.selected = choice?.row.id || '';
-        this.pageCount = choices.length;
-        card = { title: `ANSWER ${this.questionIndex + 1}/${pending?.request.questions.length || 1} | ${this.optionPage + 1}/${choices.length}`, text: choice?.text || 'No answers available.' };
-      } else {
-        const pages = this.planPages(); this.pageCount = pages.length;
-        this.scroll = Math.max(0, Math.min(this.scroll, pages.length - 1));
-        this.atReaderEnd = this.scroll === pages.length - 1;
-        card = pages[this.scroll];
-      }
-      image.drawText(font, 16, 10, truncateText(font, card.title, textWidth), CARD_TEXT_BRIGHTNESS);
-      card.text.split('\n').forEach((line, index) => image.drawText(font, 16, 42 + index * (cardLineStep(font)), line, CARD_TEXT_BRIGHTNESS));
+    if (this.screen === 'question' || this.screen === 'plan-review') {
+      this.paintChoiceCard(image);
       return image;
     }
     // Sessions and the transcript use the lens itself as their canvas. Their
@@ -932,7 +1084,7 @@ export class T3Layer implements Layer {
     // card edge around them.
     if (this.screen !== 'sessions' && this.screen !== 'reader') paintCardFace(image, this.fullRect());
     const top = y + 42;
-    const reader = ['reader', 'draft', 'new-summary', 'plan-review', 'question-text', 'phone-settings', 'notification', 'proposed-plan', 'plan-approve'].includes(this.screen);
+    const reader = ['reader', 'draft', 'new-summary', 'phone-settings', 'notification', 'proposed-plan', 'plan-approve'].includes(this.screen);
     let title = this.title().toUpperCase();
     if (reader) {
       let text = this.body();
@@ -975,10 +1127,7 @@ export class T3Layer implements Layer {
       rows.slice(this.scroll, this.scroll + count).forEach((row, offset) => {
         const rowY = top + offset * this.rowHeight;
         const selected = row.id === this.selected;
-        if (selected) {
-          image.drawRoundedRect(x + 8, rowY - 3, width - 21, this.rowHeight, 210, 4, 3);
-          paintSelectionChevron(image, x + 16, rowY + font.lineHeight / 2);
-        }
+        if (selected) paintFocusBrackets(image, x + 8, width - 15, rowY - 3, font.lineHeight + 6);
         image.drawText(font, x + 32, rowY, truncateText(font, row.title, textWidth - 16), row.section ? 130 : row.disabled ? 85 : selected ? CARD_TEXT_BRIGHTNESS : 165);
       });
       if (!rows.length) image.drawText(font, x + 16, top, truncateText(font, state.error || 'Nothing here yet.', textWidth), 170);
@@ -1008,10 +1157,10 @@ export class T3Layer implements Layer {
       if (this.screen === 'notification') await this.dismissSelectedNotification(true); else this.back();
       return;
     }
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen) && state.getPlan(state.selectedThreadId)?.locked) return;
+    if (['question', 'plan-review'].includes(this.screen) && state.getPlan(state.selectedThreadId)?.locked) return;
     const direction = event.type === 'scroll-down' || event.type === 'swipe-down' ? 1 : event.type === 'scroll-up' || event.type === 'swipe-up' ? -1 : 0;
     if (direction) {
-      if (this.screen === 'choices') { this.optionPage = Math.max(0, Math.min(this.pageCount - 1, this.optionPage + direction)); return; }
+      if (this.screen === 'question' || this.screen === 'plan-review') { this.moveChoiceFocus(direction); return; }
       const rows = this.rows().filter(row => !row.section);
       if (rows.length) { const index = Math.max(0, rows.findIndex(row => row.id === this.selected)); this.selected = rows[this.screen === 'dashboard' || this.screen === 'inbox' ? (index + direction + rows.length) % rows.length : Math.max(0, Math.min(rows.length - 1, index + direction))].id; }
       else this.scroll = Math.max(0, Math.min(this.pageCount - 1, this.scroll + direction));
@@ -1029,15 +1178,14 @@ export class T3Layer implements Layer {
       return;
     }
     if (this.screen === 'notification') { this.replyToCurrentNotification(); return; }
-    if (this.screen === 'question-text') { this.checked = [...(state.getPlan(state.selectedThreadId)?.answers.find(answer => answer.questionId === this.question()?.id)?.optionIndexes || [])]; this.optionPage = 0; this.go('choices', false); return; }
-    if (this.screen === 'reader') { this.startCompose(); return; }
+    if (this.screen === 'question' && this.selected === QUESTION_BODY) { this.moveChoiceFocus(1); return; }
+    if (this.screen === 'reader') { if (state.getPlan(state.selectedThreadId)) this.resumePlanQuestions(); else this.startCompose(); return; }
     if (this.screen === 'new-summary') { this.startCompose(this.creation); return; }
     if (this.screen === 'compose') { this.record(); return; }
     if (this.screen === 'draft') {
       await this.submitDraft();
       return;
     }
-    if (this.screen === 'plan-review') { if (this.atReaderEnd) await state.submitPlan(state.selectedThreadId); else this.scroll = Math.min(this.pageCount - 1, this.scroll + 1); return; }
     const row = this.rows().find(row => row.id === this.selected) || this.rows()[0];
     if (row && !row.disabled) await row.action();
   }
@@ -1057,7 +1205,16 @@ export class T3Layer implements Layer {
       await this.handleInput({ type: 'click' } as InputEvent); return true;
     }
     if (!contains(this.fullRect())) return false;
-    if (!rows.length || this.screen === 'choices') { await this.handleInput({ type: 'click' } as InputEvent); return true; }
+    if (this.screen === 'question' || this.screen === 'plan-review') {
+      const layout = this.choiceLayout();
+      const index = layout.rows.findIndex((_row, i) => layout.rowVisible(i) && y >= layout.rowY(i) && y < layout.rowY(i) + layout.rowHeight);
+      const row = layout.rows[index];
+      if (!row || row.section) return true;
+      this.selected = row.id;
+      if (!row.disabled) await row.action();
+      return true;
+    }
+    if (!rows.length) { await this.handleInput({ type: 'click' } as InputEvent); return true; }
     const offset = Math.floor((y - 42) / this.rowHeight);
     const visibleCount = Math.max(1, Math.floor(this.pageBox().height / this.rowHeight));
     const index = this.scroll + offset;
@@ -1103,15 +1260,16 @@ export class T3Layer implements Layer {
       ] : [];
     }
     if (['compose', 'draft', 'phone-settings'].includes(this.screen)) return [];
-    if (['question-text', 'choices', 'plan-review'].includes(this.screen)) return state.getPlan(state.selectedThreadId)?.locked ? [] : [
+    if (['question', 'plan-review'].includes(this.screen)) return state.getPlan(state.selectedThreadId)?.locked ? [] : [
       { label: 'Next question', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.nextPlanQuestion(this.questionIndex + 1); } },
       { label: 'Previous question', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.nextPlanQuestion(this.questionIndex - 1); } },
-      { label: 'Review answers', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.go('plan-review', false); } },
+      { label: 'Review answers', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openPlanReview(); } },
     ];
     if (this.screen === 'inbox') return visibleT3Alerts().length ? [{ label: 'Dismiss notification', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.dismissSelectedNotification(); } }] : [];
     const selectedSession = this.screen === 'sessions' ? state.sessions.find(session => resourceKey(session.id, session.environmentId) === this.selected) : this.screen === 'reader' ? state.transcript?.session : null;
     const canSettle = selectedSession && !['running', 'starting'].includes(selectedSession.status) && !state.plans.has(resourceKey(selectedSession.id, selectedSession.environmentId));
     return [
+      ...(this.screen === 'reader' && state.getPlan(state.selectedThreadId) ? [{ label: 'Answer questions', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.resumePlanQuestions(); } }] : []),
       ...(this.screen === 'reader' && state.transcript?.pendingProposedPlan ? [{ label: 'Review plan', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openProposedPlan(); } }] : []),
       ...(this.screen === 'reader' && this.canChangeSession() && state.transcript?.session.modelSelection ? [
         { label: 'Change model', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openModel(); } },

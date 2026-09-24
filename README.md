@@ -1,6 +1,6 @@
 # T3 for Faceclaw
 
-A standalone Android APK for the general Faceclaw host. It contains the T3 client, reviewed conversation/plan workflows, bridge pairing settings, and optional customizations extracted from the personal T3 fork. The [T3 computer bridge](https://github.com/DeeJanuz/t3-code-assistant-bridge) remains the backend. The host and SDK live in the [Faceclaw fork](https://github.com/DeeJanuz/faceclaw).
+A standalone Android APK for the general Faceclaw host. It contains the T3 client, reviewed conversation/plan workflows, bridge pairing settings, and optional customizations extracted from the personal T3 fork. The [T3 computer bridge](https://github.com/DeeJanuz/faceclaw-t3-bridge) remains the backend. The host and SDK live in the [Faceclaw fork](https://github.com/DeeJanuz/faceclaw).
 
 The Android package is `com.faceclaw.t3`. It uses the same mutually approved Faceclaw SDK service boundary as Signal. Installing the APK does not grant it control of Faceclaw. Approve its host and individual customization features in Faceclaw, then choose per-feature priority there. APK-authored settings can enable bundles or individual features; different features can have different winners.
 
@@ -28,7 +28,7 @@ The debug APK is for isolated testing. Use your own stable signing identity for 
 
 Dashboard weather refreshes automatically while T3 is visible on the glasses, using Faceclaw's location permission. The host fetches weather on first display and every 30 minutes, with a one-minute retry delay after failures. Opening the host Weather app is not required. Hidden dashboards do not start new weather requests; they refresh when visible again if the cached result is due. This requires a host build with dashboard weather refresh support.
 
-The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. The bridge's [`scripts/faceclaw-dev-server.mjs`](https://github.com/DeeJanuz/t3-code-assistant-bridge/blob/main/scripts/faceclaw-dev-server.mjs) provides an isolated integration fixture.
+The phone preview uses the same extracted T3 layer stack as the glasses APK surface. Sample data is synthetic; its prompts do not go to a live bridge. The bridge's [`scripts/faceclaw-dev-server.mjs`](https://github.com/DeeJanuz/faceclaw-t3-bridge/blob/main/scripts/faceclaw-dev-server.mjs) provides an isolated integration fixture.
 
 Frame conversion uses one bulk JavaScript-to-Android buffer transfer for both the preview and host surfaces. The [emulator pixel benchmark](tests/android/README.md) checks pixel fidelity and buffer bounds and compares transfer time with the former per-pixel path.
 
@@ -71,7 +71,7 @@ While viewing an idle T3 conversation, long press to open the app actions menu a
 
 ## Multiple T3 computers
 
-Use the [bridge federation setup](https://github.com/DeeJanuz/t3-code-assistant-bridge/blob/main/docs/peers.md) to pair the bridges on your computers. This APK routes sessions, projects, models, plan answers, and actions by environment ID. Lists show the owning computer and unavailable peers. Changing the phone's host clears the old workspace and subscriptions; it does not replay actions or switch hosts automatically. Legacy assistant settings still select the host's local primary project.
+Use the [bridge federation setup](https://github.com/DeeJanuz/faceclaw-t3-bridge/blob/main/docs/peers.md) to pair the bridges on your computers. This APK routes sessions, projects, models, plan answers, and actions by environment ID. Lists show the owning computer and unavailable peers. Changing the phone's host clears the old workspace and subscriptions; it does not replay actions or switch hosts automatically. Legacy assistant settings still select the host's local primary project.
 
 ## Current transport build
 

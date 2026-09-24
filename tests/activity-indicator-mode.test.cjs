@@ -1,13 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const vm = require('node:vm');
-const ts = require('typescript');
 
+const vm = require('node:vm');
+
+const { transpile } = require('./helpers/transpile.cjs');
 const moduleValue = { exports: {} };
-const source = ts.transpileModule(fs.readFileSync('app/t3/activity-indicator-mode.ts', 'utf8'), {
-  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
-}).outputText;
+const source = transpile('app/t3/activity-indicator-mode.ts');
 vm.runInNewContext(source, { module: moduleValue, exports: moduleValue.exports });
 const activity = moduleValue.exports;
 

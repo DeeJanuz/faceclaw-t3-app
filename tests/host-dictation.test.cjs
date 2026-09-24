@@ -1,30 +1,58 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
+
 const vm = require('node:vm');
-const ts = require('typescript');
+const { transpile } = require('./helpers/transpile.cjs');
 function setup(available = true) {
   let event;
-  const requests = [], finishes = [], cancels = [], ids = [];
+  const requests = [],
+    finishes = [],
+    cancels = [],
+    ids = [];
   const service = {
-    requestCaptureDictation(...args) { requests.push(args); return available; },
-    finishCaptureDictation(id) { finishes.push(id); },
-    cancelCaptureDictation(id) { cancels.push(id); },
+    requestCaptureDictation(...args) {
+      requests.push(args);
+      return available;
+    },
+    finishCaptureDictation(id) {
+      finishes.push(id);
+    },
+    cancelCaptureDictation(id) {
+      cancels.push(id);
+    },
   };
   const module = { exports: {} };
-  const source = ts.transpileModule(fs.readFileSync('app/native/voice-control.ts', 'utf8'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
-  }).outputText;
-  vm.runInNewContext(source, { module, exports: module.exports, require(name) {
-    assert.equal(name, '../extensions/host');
-    return { sdkControls: () => ({supports: () => false}), nativeService: () => service, onHostEvent: listener => { event = listener; }, setOwnCaptureId: id => ids.push(id) };
-  } });
-  return { bridge: module.exports.voiceControlBridge, requests, finishes, cancels, ids, event: (...args) => event(...args) };
+  const source = transpile('app/native/voice-control.ts');
+  vm.runInNewContext(source, {
+    module,
+    exports: module.exports,
+    require(name) {
+      assert.equal(name, '../extensions/host');
+      return {
+        sdkControls: () => ({ supports: () => false }),
+        nativeService: () => service,
+        onHostEvent: (listener) => {
+          event = listener;
+        },
+        setOwnCaptureId: (id) => ids.push(id),
+      };
+    },
+  });
+  return {
+    bridge: module.exports.voiceControlBridge,
+    requests,
+    finishes,
+    cancels,
+    ids,
+    event: (...args) => event(...args),
+  };
 }
 test('T3 requests host dictation and receives only its own host transcript', () => {
-  const s = setup(), text = [], statuses = [];
-  s.bridge.onTranscript(value => text.push(value.text));
-  s.bridge.onStatus(value => statuses.push(value.status));
+  const s = setup(),
+    text = [],
+    statuses = [];
+  s.bridge.onTranscript((value) => text.push(value.text));
+  s.bridge.onStatus((value) => statuses.push(value.status));
   s.bridge.startCapture();
   const [id, label, ownTranscription] = s.requests[0];
   assert.equal(label, 'Dictate T3 message');
@@ -42,8 +70,9 @@ test('T3 requests host dictation and receives only its own host transcript', () 
   assert.equal(s.ids.at(-1), '');
 });
 test('legacy successful close spelling remains compatible', () => {
-  const s = setup(), statuses = [];
-  s.bridge.onStatus(value => statuses.push(value.status));
+  const s = setup(),
+    statuses = [];
+  s.bridge.onStatus((value) => statuses.push(value.status));
   s.bridge.startCapture();
   const id = s.requests[0][0];
   s.event('capture-dictation-closed', { requestId: id, reason: 'completed' });
@@ -51,8 +80,9 @@ test('legacy successful close spelling remains compatible', () => {
   assert.equal(s.ids.at(-1), '');
 });
 test('failed capture close reports unavailable and releases ownership', () => {
-  const s = setup(), statuses = [];
-  s.bridge.onStatus(value => statuses.push(value.status));
+  const s = setup(),
+    statuses = [];
+  s.bridge.onStatus((value) => statuses.push(value.status));
   s.bridge.startCapture();
   const id = s.requests[0][0];
   s.event('capture-dictation-closed', { requestId: id, reason: 'transcript-timeout' });

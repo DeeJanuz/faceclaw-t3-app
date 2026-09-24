@@ -16,9 +16,13 @@ test('Hub regex literals avoid ICU properties and retain Unicode character membe
     ts.forEachChild(node, visit);
   }
   visit(source);
-  const compile = literal => new RegExp(literal.slice(1, literal.lastIndexOf('/')), literal.slice(literal.lastIndexOf('/') + 1).replace('g', ''));
-  const dash = compile(literals.find(value => value.includes('_\\s')));
-  const control = compile(literals.find(value => value.includes('\\u0000-\\u001f')));
+  const compile = (literal) =>
+    new RegExp(
+      literal.slice(1, literal.lastIndexOf('/')),
+      literal.slice(literal.lastIndexOf('/') + 1).replace('g', ''),
+    );
+  const dash = compile(literals.find((value) => value.includes('_\\s')));
+  const control = compile(literals.find((value) => value.includes('\\u0000-\\u001f')));
   for (let cp = 0; cp <= 0x10ffff; cp++) {
     const ch = String.fromCodePoint(cp);
     assert.equal(dash.test(ch), /[\p{Dash_Punctuation}_\s]/u.test(ch), 'dash U+' + cp.toString(16));

@@ -236,7 +236,7 @@ export function initializeT3Notifications(launch: () => Promise<void>): void {
   // echoed as a close token.
   state.onArrival(alert => presentArrival(alert));
   presentExternalArrival = presentArrival;
-  onT3NotificationRemoved(id => { if (!state.demo) { state.removeAlert(id); shell.closeNotificationPreview(id); } });
+  onT3NotificationRemoved(id => { if (!state.demo) { state.acknowledgeAlert(id); state.removeAlert(id); shell.closeNotificationPreview(id); } });
   onAndroidNotificationRemoved(key => {
     for (const alert of state.alerts.filter(a => a.kind === 'phone' && a.threadId === key)) { state.removeAlert(alert.id); shell.closeNotificationPreview(alert.id); }
     // Notifications restored from Android after restart may have no arrival cache.
@@ -341,7 +341,10 @@ export async function dismissT3Alert(alert: T3Alert): Promise<boolean> {
       if (!members.length) return false;
       if (!await dismissNotifications(members.map(notification=>({key:notification.key,postTime:notification.postTime})))) return false;
     }
-  } else if (!state.demo) dismissT3Notification(alert.id);
+  } else {
+    if (!state.demo) dismissT3Notification(alert.id);
+    state.acknowledgeAlert(alert.id);
+  }
   externalArrivals.delete(alert.groupId || alert.threadId);
   state.removeAlert(alert.id);
   shell.closeNotificationPreview(alert.id);

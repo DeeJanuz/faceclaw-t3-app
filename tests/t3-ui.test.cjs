@@ -2807,6 +2807,20 @@ test('viewed completion receipts survive restart, isolate computers and pairing,
   assert.deepEqual(state.awaitingSessions, [one]);
 });
 
+test('dismissing a completion alert clears only that turn from the dashboard', () => {
+  const state = new T3Workspace({});
+  const session = completedSession('same', 'one');
+  const question = { ...completedSession('asking', 'old'), hasPendingUserInput: true };
+  state.applySessions([session, question]);
+  state.acknowledgeAlert('t3:["computer-a","same"]:stale');
+  state.acknowledgeAlert('t3:["computer-a","asking"]:input:');
+  assert.equal(state.awaitingSessions.length, 2, 'stale turns and questions stay');
+  state.acknowledgeAlert('t3:["computer-a","same"]:one');
+  assert.deepEqual(state.awaitingSessions, [question]);
+  state.applySessions([completedSession('same', 'two', 2), question]);
+  assert.equal(state.awaitingSessions.length, 2, 'a newer turn returns');
+});
+
 test('only displaying a visible completed transcript clears its dashboard entry', () => {
   const h = setup();
   const session = completedSession('same', 'one');

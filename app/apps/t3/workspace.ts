@@ -73,6 +73,10 @@ function sanitizeTokenUsage(value: unknown): SessionTokenUsage | undefined {
   };
 }
 
+function completionAlertId(session: SessionSummary): string {
+  return `t3:${resourceKey(session.id, session.environmentId)}:${session.completedTurn?.id}`;
+}
+
 /** Shared across window lifetimes: closed windows still receive agent alerts. */
 export class T3Workspace {
   projects: ProjectSummary[] = [];
@@ -159,6 +163,12 @@ export class T3Workspace {
     }
     try { if (!this.demo) this.viewedStorage?.save([...this.viewedTurns]); } catch { /* Retain the acknowledgement in memory. */ }
     this.changed();
+  }
+
+  /** Dismissing a completion alert acknowledges that same turn; questions stay until answered. */
+  acknowledgeAlert(id: string): void {
+    const session = this.sessions.find(session => session.completedTurn && completionAlertId(session) === id);
+    if (session) this.markSessionViewed(session);
   }
 
   constructor(private api: T3Api) {}
@@ -312,7 +322,7 @@ export class T3Workspace {
         const timestamp = Date.parse(session.completedTurn!.completedAt);
         if (Number.isFinite(timestamp) && Date.now() - timestamp < 30_000) {
           this.addAlert({
-            id: `t3:${resourceKey(session.id, session.environmentId)}:${completion}`, environmentId: session.environmentId, kind: 't3', threadId: session.id,
+            id: completionAlertId(session), environmentId: session.environmentId, kind: 't3', threadId: session.id,
             title: session.projectTitle, body: session.title, createdAt: timestamp,
           });
         }

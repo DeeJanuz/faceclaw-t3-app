@@ -741,8 +741,11 @@ function notificationHarness(sources = [], requestReply = () => Promise.resolve(
       listeners.change.push(listener);
     },
     removeAlert() {},
+    acknowledgeAlert: (id) => acknowledged.push(id),
     fail() {},
   };
+  const acknowledged = [];
+  let phoneRemoval;
   const posted = [];
   const closed = [];
   const previews = [];
@@ -793,7 +796,9 @@ function notificationHarness(sources = [], requestReply = () => Promise.resolve(
       initializeT3PhoneNotifications() {},
       postT3Notification: (notification) => posted.push(notification.id),
       dismissT3Notification: (id) => dismissed.push(id),
-      onT3NotificationRemoved() {},
+      onT3NotificationRemoved: (listener) => {
+        phoneRemoval = listener;
+      },
       onT3ThreadOpenRequested: (listener) => {
         nativeClick = listener;
       },
@@ -822,9 +827,20 @@ function notificationHarness(sources = [], requestReply = () => Promise.resolve(
     posted,
     closed,
     previews,
+    acknowledged,
+    phoneRemoval: (id) => phoneRemoval(id),
     nativeClick: () => nativeClick,
   };
 }
+test('dismissing a T3 completion alert on the glasses or phone acknowledges its session', async () => {
+  const h = notificationHarness();
+  h.api.initializeT3Notifications(async () => {});
+  const alert = { id: 't3:thread:turn', kind: 't3', threadId: 'thread' };
+  h.state.alerts = [alert];
+  assert.equal(await h.api.dismissT3Alert(alert), true);
+  h.phoneRemoval('t3:other:turn');
+  assert.deepEqual(h.acknowledged, ['t3:thread:turn', 't3:other:turn']);
+});
 test('stale notification overlay cannot open or dismiss after mode switch', async () => {
   const h = notificationHarness();
   let resolve;

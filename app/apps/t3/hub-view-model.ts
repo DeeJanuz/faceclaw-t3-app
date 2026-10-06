@@ -233,6 +233,7 @@ export interface PageBox {
   lineHeight?: number
 }
 
+/** Metadata describes the first visible line; the transcript flows across message boundaries. */
 export interface TranscriptPage {
   text: string
   speakerLabel: string
@@ -245,6 +246,61 @@ export interface TranscriptPage {
   turnNumber: number
   turnCount: number
   durationLabel: string
+  /** Assistant messages with at least one line on this page. */
+  assistantMessageIds: string[]
+}
+
+type PageMeta = Omit<TranscriptPage, 'text' | 'activeActivity' | 'activeActivityLabel' | 'assistantMessageIds'>
+
+// Markdown tables survive plainText as tagged rows so pagination can measure
+// their columns with the native font. Laid-out table lines carry pixel offsets.
+const TABLE_HEADER = '\u001c'
+const TABLE_ROW = '\u001d'
+const FIELD = '\u001e'
+const POSITIONED = '\u001f'
+const LAYOUT_MARKS = /[\u001c-\u001f]/g
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/
+
+/** One drawn piece of a reader line. `rule` underlines `rule` pixels from `x`. */
+export interface LineSegment {
+  x: number
+  text: string
+  rule: number
+}
+
+/** Plain lines are one segment at x=0; table lines place each cell in its column. */
+export function lineSegments(line: string): LineSegment[] {
+  if (!line.startsWith(POSITIONED)) return [{ x: 0, text: line, rule: 0 }]
+  return line.slice(1).split(POSITIONED).filter(Boolean).map((part) => {
+    const [x = '0', rule = '0', ...text] = part.split(FIELD)
+    return { x: Number(x) || 0, rule: Number(rule) || 0, text: text.join(FIELD) }
+  })
+}
+
+function positionedLine(segments: readonly LineSegment[]): string {
+  return POSITIONED + segments
+    .map((segment) => [Math.round(segment.x), Math.round(segment.rule), segment.text].join(FIELD))
+    .join(POSITIONED)
+}
+
+interface LayoutLine {
+  text: string
+  /** Header lines repeated when a page opens inside this table's body. */
+  tableHeader?: readonly string[]
+  /** Lines starting here that belong on one page when they fit. */
+  keep?: number
+  /** A wrapped continuation of the previous table row. */
+  continuation?: boolean
+}
+
+interface FlowLine extends LayoutLine {
+  meta: PageMeta
+}
+
+interface PageRange {
+  start: number
+  end: number
+  lines: string[]
 }
 
 export type ActivityMarkerKind = 'thinking' | 'tool'
@@ -351,21 +407,21 @@ export function selectResponsePage(
   baselineMessageIds: ReadonlySet<string>,
   working: boolean,
 ): ResponsePageSelection {
-  const responsePages = pages.filter((page) => (
-    page.role === 'assistant'
-    && page.messageId.length > 0
-    && !baselineMessageIds.has(page.messageId)
-  ))
-  const latestResponsePage = responsePages[responsePages.length - 1]
-  if (!latestResponsePage) {
+  const responses = pages
+    .map((page, pageIndex) => ({
+      pageIndex,
+      ids: page.assistantMessageIds.filter((id) => id.length > 0 && !baselineMessageIds.has(id)),
+    }))
+    .filter((page) => page.ids.length > 0)
+  const latest = responses[responses.length - 1]
+  if (!latest) {
     return { pageIndex: Math.max(0, pages.length - 1), hasResponseText: false }
   }
-  if (working) {
-    return { pageIndex: pages.lastIndexOf(latestResponsePage), hasResponseText: true }
-  }
-  const finalMessageId = latestResponsePage.messageId
+  if (working) return { pageIndex: latest.pageIndex, hasResponseText: true }
+  // Open where the final response starts, even when that page also ends the prompt.
+  const finalMessageId = latest.ids[latest.ids.length - 1]!
   return {
-    pageIndex: pages.findIndex((page) => page.messageId === finalMessageId),
+    pageIndex: pages.findIndex((page) => page.assistantMessageIds.includes(finalMessageId)),
     hasResponseText: true,
   }
 }
@@ -386,40 +442,60 @@ export function paginateTranscript(
       turnNumber: 0,
       turnCount: 0,
       durationLabel: '',
+      assistantMessageIds: [],
     }]
   }
+  const flow: FlowLine[] = []
+  appendTurns(flow, turns, turns.length, box)
+  return flowPages(flow, box)
+}
 
-  return turns.flatMap((turn, index) => {
+/** Messages share pages; a speaker label opens each change of speaker. */
+function appendTurns(flow: FlowLine[], turns: readonly TranscriptTurn[], turnCount: number, box: PageBox): void {
+  let speaker = ''
+  turns.forEach((turn, index) => {
     const durationLabel = turn.separatorLabel.trim().toUpperCase() || formatDuration(turn.durationSeconds)
+    const position = { turnNumber: index + 1, turnCount, durationLabel }
     if (turn.messages.length === 0) {
-      return [{
-        text: '(empty)',
-        speakerLabel: 'T3',
-        messageId: '',
-        role: 'assistant',
-        streaming: false,
+      appendFlowBlock(flow, '(empty)', false, {
+        ...position, speakerLabel: 'T3', messageId: '', role: 'assistant', streaming: false,
         messageUpdatedAt: turn.endedAt ?? turn.startedAt,
-        activeActivity: null,
-        turnNumber: index + 1,
-        turnCount: turns.length,
-        durationLabel,
-      }]
+      }, box)
+      speaker = ''
+      return
     }
-    return turn.messages.flatMap((message) => {
-      const content = plainText(message.text) || '(empty)'
-      return paginateText(content, box).map((page) => ({
-        text: page,
-        speakerLabel: transcriptRoleLabel(message.role),
-        messageId: message.id,
-        role: message.role,
-        streaming: message.streaming,
-        messageUpdatedAt: message.updatedAt,
-        activeActivity: null,
-        turnNumber: index + 1,
-        turnCount: turns.length,
-        durationLabel,
-      }))
-    })
+    for (const message of turn.messages) {
+      const label = transcriptRoleLabel(message.role)
+      appendFlowBlock(flow, `${label}\n${plainText(message.text) || '(empty)'}`, label !== speaker, {
+        ...position, speakerLabel: label, messageId: message.id, role: message.role,
+        streaming: message.streaming, messageUpdatedAt: message.updatedAt,
+      }, box)
+      speaker = label
+    }
+  })
+}
+
+/** `text` opens with a speaker label line; `labelled` keeps it, otherwise it is dropped. */
+function appendFlowBlock(flow: FlowLine[], text: string, labelled: boolean, meta: PageMeta, box: PageBox): void {
+  const body = labelled ? text : text.slice(text.indexOf('\n') + 1)
+  const lines = layoutSource(body, box)
+  // Keep a speaker label on the page with its first line of text.
+  if (labelled && lines.length > 1) lines[0]!.keep = 1 + (lines[1]!.keep ?? 1)
+  if (flow.length) flow.push({ text: '', meta })
+  for (const line of lines) flow.push({ ...line, meta })
+}
+
+function flowPages(flow: readonly FlowLine[], box: PageBox): TranscriptPage[] {
+  const capacity = pageCapacity(box)
+  const ranges = paginateLines(flow, capacity, true)
+  backfillLastPage(flow, ranges, capacity)
+  return ranges.map((range) => {
+    const content = flow.slice(range.start, range.end)
+    const first = content.find((line) => line.text.trim()) ?? content[0]!
+    const assistantMessageIds = [...new Set(content
+      .filter((line) => line.meta.role === 'assistant' && line.meta.messageId)
+      .map((line) => line.meta.messageId))]
+    return { ...first.meta, text: range.lines.join('\n'), activeActivity: null, assistantMessageIds }
   })
 }
 
@@ -431,25 +507,21 @@ export function paginateTranscriptWithLiveTurn(
 ): TranscriptPage[] {
   if (liveActivity === null || turns.length === 0) return paginateTranscript(turns, box)
 
-  const settledPages = turns.length > 1
-    ? paginateTranscript(turns.slice(0, -1), box)
-      .map((page) => ({ ...page, turnCount: turns.length }))
-    : []
+  const flow: FlowLine[] = []
+  appendTurns(flow, turns.slice(0, -1), turns.length, box)
   const turn = turns[turns.length - 1]!
-  const userPages = turn.messages
-    .filter((message) => message.role === 'user')
-    .flatMap((message) => paginateText(`YOU\n${plainText(message.text) || '(empty)'}`, box).map((text) => ({
-      text,
+  for (const message of turn.messages.filter((item) => item.role === 'user')) {
+    appendFlowBlock(flow, `YOU\n${plainText(message.text) || '(empty)'}`, true, {
       speakerLabel: 'YOU',
       messageId: message.id,
-      role: 'user' as const,
+      role: 'user',
       streaming: false,
       messageUpdatedAt: message.updatedAt,
-      activeActivity: null,
       turnNumber: turns.length,
       turnCount: turns.length,
       durationLabel: 'WORKING',
-    })))
+    }, box)
+  }
   const timeline = [
     ...turn.messages
       .filter((message) => message.role !== 'user')
@@ -511,30 +583,24 @@ export function paginateTranscriptWithLiveTurn(
     const previous = blocks[index - 1]!
     return `${previous.activity || block.activity ? '\n' : '\n\n'}${block.text}`
   }).join('')
-  const liveTexts = paginateText(content, box)
   const liveMessageTime = turn.messages.reduce(
     (latest, message) => Math.max(latest, timestamp(message.updatedAt)),
     timestamp(liveActivity.updatedAt),
   )
-  const livePages = liveTexts.map((text) => ({
-    text,
+  appendFlowBlock(flow, `LIVE\n${content}`, false, {
     speakerLabel: 'LIVE',
     messageId: `live:${turn.id}`,
-    role: 'assistant' as const,
+    role: 'assistant',
     streaming: true,
     messageUpdatedAt: new Date(liveMessageTime || Date.now()).toISOString(),
-    activeActivity: text.includes(
-      activeActivityMarker(activeMarker ?? 'thinking', 0, activeMarkerLabel).trimEnd(),
-    )
-      ? activeMarker
-      : null,
-    activeActivityLabel: activeMarker === 'tool' ? activeMarkerLabel : null,
     turnNumber: turns.length,
     turnCount: turns.length,
     durationLabel: 'WORKING',
-  }))
-
-  return [...settledPages, ...userPages, ...livePages]
+  }, box)
+  const marker = activeActivityMarker(activeMarker ?? 'thinking', 0, activeMarkerLabel).trimEnd()
+  return flowPages(flow, box).map((page) => page.text.includes(marker)
+    ? { ...page, activeActivity: activeMarker, activeActivityLabel: activeMarker === 'tool' ? activeMarkerLabel : null }
+    : page)
 }
 
 /** Rounded compact counts are display-only; the protocol keeps exact integers. */
@@ -607,28 +673,223 @@ export function paginateMessageText(source: string, box: PageBox): string[] {
 }
 
 export function paginateText(source: string, box: PageBox): string[] {
-  const maxLines = Math.max(1, Math.floor(box.height / (box.lineHeight ?? box.font.lineHeight + 4)))
-  const lines = wrapText(box.font, source.replace(/\r\n?/g, '\n'), box.width, {
-    preserveLeadingWhitespace: true,
-  })
-  const pages: string[] = []
-  for (let offset = 0; offset < lines.length; offset += maxLines) pages.push(lines.slice(offset, offset + maxLines).join('\n'))
+  const pages = paginateLines(layoutSource(source, box), pageCapacity(box)).map((page) => page.lines.join('\n'))
   return pages.length > 0 ? pages : ['(empty)']
 }
 
+/** Lines whose glyph boxes fit in `box.height` at the measured line pitch. */
+function pageCapacity(box: PageBox): number {
+  const pitch = box.lineHeight ?? box.font.lineHeight + 4
+  return Math.max(1, Math.floor((box.height - box.font.lineHeight) / pitch) + 1)
+}
+
+function layoutSource(source: string, box: PageBox): LayoutLine[] {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n')
+  const output: LayoutLine[] = []
+  let prose: string[] = []
+  const flush = () => {
+    if (!prose.length) return
+    for (const text of wrapText(box.font, prose.join('\n'), box.width, { preserveLeadingWhitespace: true })) output.push({ text })
+    prose = []
+  }
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!
+    if (line.startsWith(TABLE_HEADER)) {
+      const [alignments = '', ...header] = line.slice(1).split(FIELD)
+      const rows: string[][] = []
+      while (lines[index + 1]?.startsWith(TABLE_ROW)) rows.push(lines[++index]!.slice(1).split(FIELD))
+      flush()
+      output.push(...tableLayout(alignments, header, rows, box))
+    } else {
+      prose.push(line.startsWith(TABLE_ROW) ? line.slice(1).split(FIELD).join(' | ') : line.replace(LAYOUT_MARKS, ''))
+    }
+  }
+  flush()
+  return output
+}
+
+/** A table body page repeats the header unless it would crowd out the rows. */
+function repeatedHeader(line: LayoutLine | undefined, capacity: number): readonly string[] {
+  const header = line?.tableHeader ?? []
+  return header.length < capacity - 1 ? header : []
+}
+
+function pageLines(lines: readonly LayoutLine[], start: number, end: number, capacity: number): string[] {
+  return [...repeatedHeader(lines[start], capacity), ...lines.slice(start, end).map((line) => line.text)]
+}
+
+function paginateLines(lines: readonly LayoutLine[], capacity: number, trimPageTops = false): PageRange[] {
+  const pages: PageRange[] = []
+  let index = 0
+  while (index < lines.length) {
+    if (trimPageTops && pages.length && !lines[index]!.text.trim()) { index++; continue }
+    const start = index
+    let used = repeatedHeader(lines[start], capacity).length
+    while (index < lines.length && used < capacity) {
+      const line = lines[index]!
+      const keep = line.keep ?? 1
+      // Move a table row (or a label and its text) to the next page when it
+      // would split here but fits whole on a fresh page.
+      if (index > start && keep > capacity - used && keep <= capacity - repeatedHeader(line, capacity).length) break
+      used++
+      index++
+    }
+    pages.push({ start, end: index, lines: pageLines(lines, start, index, capacity) })
+  }
+  return pages
+}
+
+/** Fill a short final page with the lines before it, so the newest text always fills the lens. */
+function backfillLastPage(lines: readonly LayoutLine[], pages: PageRange[], capacity: number): void {
+  const last = pages[pages.length - 1]
+  if (pages.length < 2 || !last || last.lines.length >= capacity) return
+  let start = last.start
+  const fits = (from: number) => pageLines(lines, from, last.end, capacity).length <= capacity
+  // Never open the page on a blank line or inside a wrapped table row.
+  const settle = () => { while (start < last.start && (lines[start]!.continuation || !lines[start]!.text.trim())) start++ }
+  while (start > 0 && fits(start - 1)) start--
+  settle()
+  while (start < last.start && !fits(start)) { start++; settle() }
+  pages[pages.length - 1] = { start, end: last.end, lines: pageLines(lines, start, last.end, capacity) }
+}
+
+/** Columns keep their natural width when the table fits; wide columns share the rest. */
+function fitColumns(natural: readonly number[], available: number, minimum: number): number[] | null {
+  if (natural.reduce((sum, width) => sum + width, 0) <= available) return [...natural]
+  const widths = [...natural]
+  let open = natural.map((_, index) => index)
+  let remaining = available
+  while (open.length) {
+    const share = remaining / open.length
+    const fitting = open.filter((index) => natural[index]! <= share)
+    if (!fitting.length) {
+      for (const index of open) widths[index] = Math.floor(share)
+      break
+    }
+    for (const index of fitting) remaining -= natural[index]!
+    open = open.filter((index) => natural[index]! > share)
+  }
+  return open.every((index) => widths[index]! >= minimum) ? widths : null
+}
+
+/** Lay rows into measured pixel columns. Long cells wrap inside their own column. */
+function columnLines(rows: readonly (readonly string[])[], alignments: string, box: PageBox, underlineFirst: boolean): string[][] | null {
+  const font = box.font
+  const columns = Math.max(0, ...rows.map((row) => row.length))
+  const gap = Math.max(8, Math.ceil(font.measureText('   ')))
+  const natural = Array.from({ length: columns }, (_, column) =>
+    Math.ceil(Math.max(0, ...rows.map((row) => font.measureText(row[column] ?? '')))))
+  const widths = fitColumns(natural, box.width - gap * (columns - 1), Math.ceil(font.measureText('00000')))
+  if (!widths) return null
+  const offsets = widths.map((_, column) => widths.slice(0, column).reduce((sum, width) => sum + width + gap, 0))
+  return rows.map((row, rowIndex) => {
+    const wrapped = widths.map((width, column) => row[column] ? wrapText(font, row[column]!, width) : [''])
+    const height = Math.max(1, ...wrapped.map((cell) => cell.length))
+    return Array.from({ length: height }, (_, lineIndex) => {
+      const segments: LineSegment[] = []
+      widths.forEach((width, column) => {
+        const text = wrapped[column]![lineIndex] ?? ''
+        const slack = Math.max(0, width - font.measureText(text))
+        const align = alignments[column]
+        if (text) segments.push({ x: offsets[column]! + (align === 'r' ? slack : align === 'c' ? slack / 2 : 0), text, rule: 0 })
+        if (underlineFirst && rowIndex === 0 && lineIndex === height - 1 && width > 0) segments.push({ x: offsets[column]!, text: '', rule: width })
+      })
+      return positionedLine(segments)
+    })
+  })
+}
+
+function tableLayout(alignments: string, header: readonly string[], rows: readonly (readonly string[])[], box: PageBox): LayoutLine[] {
+  const laid = columnLines([header, ...rows], alignments, box, true)
+  if (!laid) return recordLayout(header, rows, box)
+  const [headerLines = [], ...bodyRows] = laid
+  const lines: LayoutLine[] = headerLines.map((text, index) => ({
+    text, continuation: index > 0, keep: index === 0 ? headerLines.length + (bodyRows[0]?.length ?? 0) : undefined,
+  }))
+  for (const row of bodyRows) {
+    row.forEach((text, index) => lines.push({
+      text, tableHeader: headerLines, continuation: index > 0, keep: index === 0 ? row.length : undefined,
+    }))
+  }
+  return lines
+}
+
+/** Too many columns for the lens: each row becomes aligned label/value pairs. */
+function recordLayout(header: readonly string[], rows: readonly (readonly string[])[], box: PageBox): LayoutLine[] {
+  const lines: LayoutLine[] = []
+  rows.forEach((row, rowIndex) => {
+    if (rowIndex > 0) lines.push({ text: '' })
+    const pairs = header.map((label, column) => [label, row[column] ?? ''])
+    const laid = columnLines(pairs, 'll', box, false)
+    if (!laid) {
+      for (const [label, value] of pairs) {
+        for (const text of wrapText(box.font, `${label}: ${value}`, box.width)) lines.push({ text })
+      }
+      return
+    }
+    for (const field of laid) field.forEach((text, index) => lines.push({ text, continuation: index > 0, keep: index === 0 ? field.length : undefined }))
+  })
+  return lines
+}
+
+function tableCells(line: string): string[] | null {
+  const trimmed = line.trim()
+  if (!trimmed.includes('|')) return null
+  const cells: string[] = []
+  let cell = ''
+  for (let index = 0; index < trimmed.length; index++) {
+    const character = trimmed[index]!
+    if (character === '\\' && trimmed[index + 1] === '|') { cell += '|'; index++ }
+    else if (character === '|') { cells.push(cell); cell = '' }
+    else cell += character
+  }
+  cells.push(cell)
+  if (trimmed.startsWith('|')) cells.shift()
+  if (/(?:^|[^\\])\|$/.test(trimmed)) cells.pop()
+  return cells.length ? cells.map((value) => value.trim()) : null
+}
+
+/** GitHub table delimiter row: one l/c/r alignment per header column, or null. */
+function tableAlignments(line: string, columns: number): string | null {
+  if (!line.includes('|') || !TABLE_DELIMITER.test(line)) return null
+  const cells = tableCells(line)
+  if (cells?.length !== columns) return null
+  return cells.map((cell) => cell.endsWith(':') ? (cell.startsWith(':') ? 'c' : 'r') : 'l').join('')
+}
+
+function inlinePlainText(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[*_~`]/g, '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+}
+
 export function plainText(markdown: string): string {
+  const lines = markdown.replace(LAYOUT_MARKS, '').replace(/\r\n?/g, '\n').split('\n')
+  const output: string[] = []
   let inCode = false
-  return markdown.replace(/\r\n?/g, '\n').split('\n').map(line => {
-    if (/^\s*```/.test(line)) { inCode = !inCode; return null }
-    if (inCode) return line
-    return line
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-      .replace(/^#{1,6}[ \t]+/, '')
-      .replace(/^[ \t]*[-*+][ \t]+/, '- ')
-      .replace(/[*_~`]/g, '')
-      .replace(/<[^>]+>/g, '')
-  }).filter(line => line !== null).join('\n')
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!
+    if (/^\s*```/.test(line)) { inCode = !inCode; continue }
+    if (inCode) { output.push(line); continue }
+    const header = tableCells(line)
+    const alignments = header && index + 1 < lines.length ? tableAlignments(lines[index + 1]!, header.length) : null
+    if (header && alignments) {
+      output.push(`${TABLE_HEADER}${alignments}${FIELD}${header.map(inlinePlainText).join(FIELD)}`)
+      index++
+      for (let row = lines[index + 1]; row !== undefined && row.trim() && !/^\s*```/.test(row); row = lines[index + 1]) {
+        const cells = tableCells(row)
+        if (!cells) break
+        output.push(TABLE_ROW + header.map((_, column) => inlinePlainText(cells[column] ?? '')).join(FIELD))
+        index++
+      }
+      continue
+    }
+    output.push(inlinePlainText(line.replace(/^#{1,6}[ \t]+/, '').replace(/^[ \t]*[-*+][ \t]+/, '- ')))
+  }
+  return output.join('\n')
 }
 
 function formatTranscriptMessage(message: TranscriptTurn['messages'][number]): string {

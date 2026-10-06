@@ -323,3 +323,104 @@ test('session tracker keeps model and token counters before optional reader meta
     assert.equal(hub.formatSessionTokens(value), expected);
   }
 });
+
+const tableBox = { font, width: 300, height: 17 + 21 * 5, lineHeight: 21 };
+// Values built inside the VM context are compared as plain JSON.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const rowSegments = (page) => plain(page.split('\n').map((line) => hub.lineSegments(line).filter((segment) => segment.text)));
+
+test('markdown tables render in measured pixel columns with alignment and a header rule', () => {
+  const plain = hub.plainText('Totals\n\n| Name | Count |\n|:-----|------:|\n| **alpha** | 3 |\n| beta \\| two | 1234 |\n\nDone');
+  const [page] = hub.paginateText(plain, { ...tableBox, height: 17 + 21 * 9 });
+  const lines = page.split('\n');
+  assert.equal(lines[0], 'Totals');
+  const rows = rowSegments(page).slice(2, 5);
+  assert.deepEqual(rows.map((row) => row.map((segment) => segment.text)), [['Name', 'Count'], ['alpha', '3'], ['beta | two', '1234']]);
+  assert.ok(rows.every((row) => row[0].x === 0), 'left column starts at the text edge');
+  const rightEdges = rows.map((row) => row[1].x + font.measureText(row[1].text));
+  assert.ok(rightEdges.every((edge) => Math.abs(edge - rightEdges[0]) <= 1), `right-aligned column edges match: ${rightEdges}`);
+  assert.ok(rows.every((row) => row[1].x > font.measureText('beta | two')), 'second column clears the widest first cell');
+  assert.ok(hub.lineSegments(lines[2]).some((segment) => segment.rule > 0), 'header row is underlined');
+  assert.equal(lines.at(-1), 'Done');
+});
+
+test('long table cells wrap inside their own column instead of breaking alignment', () => {
+  const plain = hub.plainText(`| Key | Description |\n|---|---|\n| a | ${'word '.repeat(30).trim()} |\n| b | short |`);
+  const pages = hub.paginateText(plain, { ...tableBox, height: 17 + 21 * 20 });
+  const rows = rowSegments(pages[0]);
+  const descriptionX = rows[0][1].x;
+  const wrapped = rows.filter((row) => row.some((segment) => segment.x === descriptionX));
+  assert.ok(wrapped.length > 3, 'the description wraps over several lines');
+  for (const row of rows) for (const segment of row) {
+    assert.ok(segment.x === 0 || segment.x === descriptionX, `segment ${segment.text} stays in a column`);
+    assert.ok(segment.x + font.measureText(segment.text) <= tableBox.width + 0.5, 'cells stay inside the lens width');
+  }
+});
+
+test('a table continuing onto another page repeats its header and never splits a row', () => {
+  const body = Array.from({ length: 12 }, (_, index) => `| row ${index} | ${index % 3 ? 'value' : 'value that wraps onto a second line'} |`).join('\n');
+  const pages = hub.paginateText(hub.plainText(`| Item | Value |\n|---|---|\n${body}`), { font, width: 180, height: 17 + 21 * 4, lineHeight: 21 });
+  assert.ok(pages.length > 2);
+  const header = pages[0].split('\n')[0];
+  for (const page of pages) {
+    assert.equal(page.split('\n')[0], header, 'every page opens with the table header');
+    const firstRow = rowSegments(page)[1];
+    assert.ok(firstRow?.some((segment) => segment.x === 0 && /^row/.test(segment.text)), 'a page never opens inside a wrapped row');
+  }
+  const items = plain(pages).flatMap((page) => rowSegments(page).flatMap((row) => row.filter((segment) => /^row \d+$/.test(segment.text)).map((segment) => segment.text)));
+  assert.deepEqual(items, Array.from({ length: 12 }, (_, index) => `row ${index}`));
+});
+
+test('tables too wide for the lens become aligned label/value records', () => {
+  const columns = Array.from({ length: 10 }, (_, index) => `Column${index}`);
+  const plain = hub.plainText(`| ${columns.join(' | ')} |\n|${columns.map(() => '---').join('|')}|\n| ${columns.map((_, index) => `v${index}`).join(' | ')} |`);
+  const pages = hub.paginateText(plain, { ...tableBox, height: 17 + 21 * 20 });
+  const rows = rowSegments(pages[0]).filter((row) => row.length);
+  assert.equal(rows.length, 10);
+  const valueX = rows[0][1].x;
+  rows.forEach((row, index) => assert.deepEqual(row.map((segment) => [segment.x, segment.text]), [[0, `Column${index}`], [valueX, `v${index}`]]));
+});
+
+test('pipes inside fenced code and lone separator rules stay plain text', () => {
+  const source = '```\n| a | b |\n|---|---|\n```\nNot a table\n---';
+  assert.equal(hub.plainText(source), '| a | b |\n|---|---|\nNot a table\n---');
+  assert.ok(hub.paginateText(hub.plainText(source), tableBox).every((page) => page.split('\n').every((line) => hub.lineSegments(line).length === 1)));
+});
+
+const turn = (id, messages) => ({ id, startedAt: '', endedAt: '', durationSeconds: 3, separatorLabel: '', messages });
+const message = (id, role, text) => ({ id, role, text, streaming: false, createdAt: '', updatedAt: '' });
+
+test('transcript pages flow across short messages so every page fills the lens', () => {
+  const turns = Array.from({ length: 4 }, (_, index) => turn(`t${index}`, [
+    message(`u${index}`, 'user', `Question ${index}`),
+    message(`a${index}a`, 'assistant', 'I will check that.'),
+    message(`a${index}b`, 'assistant', 'Found the file.'),
+    message(`a${index}c`, 'assistant', 'Done.'),
+  ]));
+  const box = { font, width: 300, height: 17 + 21 * 6, lineHeight: 21 };
+  const pages = hub.paginateTranscript(turns, box);
+  assert.ok(pages.length > 1);
+  // Per-message pages held one or two lines each; flowing pages fill the lens
+  // except where the next line would open a page on a blank separator.
+  assert.ok(pages.length <= 6, `16 messages share ${pages.length} pages`);
+  for (const page of pages) assert.ok(page.text.split('\n').length >= 6, 'every page, including the last, is full');
+  assert.ok(pages.every((page) => page.text.split('\n')[0].trim()), 'no page opens on a blank separator');
+  const all = pages.map((page) => page.text).join('\n');
+  assert.equal((all.match(/^T3$/gm) || []).length >= 4, true);
+  assert.ok(!/T3\nI will check that\.\n\nT3/.test(all), 'consecutive assistant messages share one label');
+  assert.equal(pages.at(-1).text.split('\n').at(-1), 'Done.');
+  const latest = hub.selectResponsePage(pages, new Set(['a3a', 'a3b']), false);
+  assert.ok(pages[latest.pageIndex].assistantMessageIds.includes('a3c'));
+});
+
+test('a live turn flows after settled text and keeps its activity marker on the final page', () => {
+  const turns = [
+    turn('done', [message('u0', 'user', 'First'), message('a0', 'assistant', 'Short answer.')]),
+    turn('live', [message('u1', 'user', 'Second question')]),
+  ];
+  const box = { font, width: 300, height: 17 + 21 * 5, lineHeight: 21 };
+  const pages = hub.paginateTranscriptWithLiveTurn(turns, [], { phase: 'thinking', updatedAt: '' }, box);
+  assert.equal(pages.at(-1).activeActivity, 'thinking');
+  assert.equal(pages.at(-1).text.split('\n').length, 6);
+  assert.ok(pages.slice(0, -1).every((page) => page.activeActivity === null));
+});

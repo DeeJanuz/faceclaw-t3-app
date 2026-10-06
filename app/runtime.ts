@@ -134,12 +134,18 @@ export async function deliverInput(event:string|InputEvent):Promise<void>{
  const current=getApp();const input=typeof event==='string'?{type:event,source:'ring',timestampMs:Date.now()} as InputEvent:event;const type=input.type;
  if(type==='long-press' && current.claimsNotificationDismissGesture()){await current.handleInput(input);return;}
  if(type==='long-press'){
+  // A repeated hold keeps the open menu instead of stacking another one.
+  if(current.stack.topMatches(layer=>layer instanceof WindowMenuLayer)){current.requestRender();return;}
   current.stack.push(new WindowMenuLayer('App actions',appActionItems(current.menuItems(),()=>shell.sleepAtAppRoot(),()=>{
    nativeService()?.requestSystemMenu();
   })));
   current.requestRender();return;
  }
  if(type==='short-then-long-press'){voiceControlBridge.cancelCapture();while(!current.stack.isAtBase())current.stack.pop();sendHostAction('ui.launcher','close-surface');current.requestRender();return;}
+ // A menu, capture card or other stacked layer consumes back by closing
+ // itself. Answer the host's pending back now; an unanswered back is treated
+ // as root back after 500ms and turns the display off.
+ if((type==='double-click'||type==='swipe-left')&&!current.stack.isAtBase())shell.respondToBack(false);
  await current.handleInput(input);
 }
 export function receiveTypedText(text:string):void{getApp().receiveTextInput(text);}
@@ -350,6 +356,11 @@ export function initializeAppRuntime():void{
        layer.handleInput(input);
       },0);
      }else settle(deliverInput(input));
+    }
+    else if(feature==='ui.app-menu'&&(input.type==='double-click'||input.type==='swipe-left')){
+     // The provider menu is the base of its surface stack, so a local pop
+     // cannot close it. Back asks the host to remove the surface.
+     sendHostAction(feature,'close-surface');
     }
     else{const surface=surfaces.get(feature);if(surface?.stack){if(input.type==='pointer-click'&&Number.isInteger(input.x)&&Number.isInteger(input.y)&&input.x>=0&&input.y>=0&&input.x<surface.width&&input.y<surface.height)settle(surface.stack.hitTest(input.x,input.y).then(()=>renderSurface(feature)));else settle(surface.stack.handleInput(input).then(()=>renderSurface(feature)));}}
    }

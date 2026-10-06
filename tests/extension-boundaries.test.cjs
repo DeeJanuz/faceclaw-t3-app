@@ -717,10 +717,11 @@ test('own System actions delegates to the host system menu without substituting 
     requested = 0,
     slept = 0;
   const pushed = [];
+  class WindowMenuLayer {}
   imports['./ui/layers'] = { noopLayerActions: {} };
   imports['./apps/t3/t3-app'] = {
     createT3AppWindow: () => ({
-      stack: { push: (layer) => pushed.push(layer) },
+      stack: { push: (layer) => pushed.push(layer), topMatches: (match) => pushed.length > 0 && match(pushed.at(-1)) },
       claimsNotificationDismissGesture: () => false,
       menuItems: () => [],
       requestRender() {},
@@ -728,7 +729,7 @@ test('own System actions delegates to the host system menu without substituting 
   };
   imports['./apps/t3/notifications-ui'] = { initializeT3Notifications() {} };
   imports['./ui/window-menu'] = {
-    WindowMenuLayer: class {},
+    WindowMenuLayer,
     appActionItems: (_items, _sleep, system) => {
       systemActions = system;
       return [];
@@ -742,6 +743,62 @@ test('own System actions delegates to the host system menu without substituting 
   assert.equal(requested, 1);
   assert.equal(slept, 0);
   assert.equal(pushed.length, 1);
+  await api.deliverInput('long-press');
+  assert.equal(pushed.length, 1, 'a repeated hold keeps the open menu instead of stacking another');
+});
+
+function runtimeHarness() {
+  const source = fs.readFileSync('app/runtime.ts', 'utf8'),
+    imports = {};
+  for (const match of source.matchAll(/from\s*['"]([^'"]+)['"]/g)) imports[match[1]] = {};
+  const h = { responses: [], handled: [], actions: [], overlays: 1, hostListener: null };
+  imports['./ui/layers'] = { noopLayerActions: {} };
+  imports['./apps/t3/t3-app'] = {
+    createT3AppWindow: () => ({
+      stack: { isAtBase: () => h.overlays === 0, topMatches: () => false, push() {} },
+      claimsNotificationDismissGesture: () => false,
+      menuItems: () => [],
+      async handleInput(input) {
+        h.handled.push(input.type);
+        if (input.type === 'double-click' && h.overlays) h.overlays--;
+      },
+      requestRender() {},
+    }),
+  };
+  imports['./apps/t3/notifications-ui'] = { initializeT3Notifications() {} };
+  imports['./ui/shell/shell'] = { shell: { respondToBack: (atRoot) => h.responses.push(atRoot) }, localShellEvents: new Set() };
+  imports['./extensions/host'] = {
+    nativeService: () => null,
+    onHostEvent: (listener) => {
+      h.hostListener = listener;
+    },
+    onHostState: () => () => {},
+    sendHostAction: (feature, action) => {
+      h.actions.push(`${feature}:${action}`);
+      return true;
+    },
+  };
+  h.api = load('app/runtime.ts', imports);
+  return h;
+}
+
+test('back over a stacked T3 layer is acknowledged so the host does not treat it as root back', async () => {
+  const h = runtimeHarness();
+  await h.api.deliverInput({ type: 'double-click', source: 'ring', timestampMs: 0 });
+  assert.deepEqual(h.responses, [false], 'the menu or card consumed back; the host must not sleep the display');
+  assert.deepEqual(h.handled, ['double-click']);
+  await h.api.deliverInput({ type: 'double-click', source: 'ring', timestampMs: 0 });
+  assert.deepEqual(h.responses, [false], 'at the base layer the T3 screen answers back itself');
+  assert.deepEqual(h.handled, ['double-click', 'double-click']);
+});
+
+test('back closes the provider-drawn App actions surface whose menu cannot pop locally', () => {
+  const h = runtimeHarness();
+  h.api.initializeAppRuntime();
+  h.hostListener('extension-event', { feature: 'ui.app-menu', type: 'input', data: { input: { type: 'double-click' } } });
+  assert.deepEqual(h.actions, ['ui.app-menu:close-surface']);
+  h.hostListener('extension-event', { feature: 'ui.app-menu', type: 'input', data: { input: { type: 'scroll-down' } } });
+  assert.deepEqual(h.actions, ['ui.app-menu:close-surface'], 'other input stays with the menu');
 });
 
 test('reply pre-dispatch rejection differs from a send with an unknown outcome', async () => {

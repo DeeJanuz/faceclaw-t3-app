@@ -2,9 +2,8 @@ import { limitTranslationStep } from '@faceclaw/motion';
 import { resourceKey } from './resource';
 import { CARD_TEXT_BRIGHTNESS, cardLineStep } from '../../ui/card-presentation';
 import { paintActivityIndicator } from './activity-indicator';
-import { RenderingComparisonLayer } from "../developer/rendering-comparison";
 import { notificationCardRect, paintNotificationCard } from '../../ui/shell/notification-card';
-import { buildSessionRows, reflowDictationText, paginateMessageText, paginateText, paginateTranscriptWithLiveTurn, retainTranscriptPage, selectResponsePage, transcriptPageHeader, activeActivityMarker, extractActiveActivityLine, type TranscriptPage, type PageBox } from './hub-view-model';
+import { buildSessionRows, lineSegments, plainText, reflowDictationText, paginateMessageText, paginateText, paginateTranscriptWithLiveTurn, retainTranscriptPage, selectResponsePage, transcriptPageHeader, activeActivityMarker, extractActiveActivityLine, type TranscriptPage, type PageBox } from './hub-view-model';
 import { WindowMotion, cardRect, paintCardFace, paintCardContents, paintFocusBrackets, CARD_MOTION_MS, type CardRect } from './card-motion';
 import { openT3Alert, dismissT3Alert, visibleT3Alerts, findT3Alert, getT3NotificationReply, openT3NotificationApp } from "./notifications-ui";
 import { Frame } from '@nativescript/core';
@@ -230,9 +229,10 @@ export class T3Layer implements Layer {
   private homeRect(): CardRect { return dashboardTargets(this.viewWidth, this.viewHeight, this.dashboardCards(), this.selected).find(row => row.id === this.returnFocus) || this.fullRect(); }
   private fullRect(): CardRect { return { x: 0, y: 0, width: this.viewWidth - 5, height: this.viewHeight - 5 }; }
   private dropdownRect(): CardRect { return notificationCardRect({ x: 0, y: 0, width: this.viewWidth, height: 288 }); }
+  /** Text starts at y=42; without a footer it may run to 10px above the lens edge. */
   private pageBox(footer = false): PageBox {
     const font = getDefaultSmallFont();
-    return { font, width: this.viewWidth - 37, height: this.viewHeight - 62 - (footer ? font.lineHeight + 16 : 0), lineHeight: cardLineStep(font) };
+    return { font, width: this.viewWidth - 37, height: this.viewHeight - (footer ? 78 + font.lineHeight : 52), lineHeight: cardLineStep(font) };
   }
   // The capture overlay has already collapsed; publish only the restored app.
   private cancelCompose(): void { if (this.screen === 'compose') this.back(false); }
@@ -743,7 +743,7 @@ export class T3Layer implements Layer {
   }
 
   private body(): string {
-    if (this.screen === 'proposed-plan') return this.reviewedPlan?.plan.planMarkdown || 'This plan is no longer available.';
+    if (this.screen === 'proposed-plan') return this.reviewedPlan ? plainText(this.reviewedPlan.plan.planMarkdown) || '(empty)' : 'This plan is no longer available.';
     if (this.screen === 'plan-approve') {
       const review = this.reviewedPlan;
       if (!review) return 'This plan is no longer available.';
@@ -1105,7 +1105,11 @@ export class T3Layer implements Layer {
       lines.forEach((line, index) => {
         if (activity?.line === index) paintActivityIndicator(image, font, x + 16, top + index * step,
           textWidth, step, activity.label, t3ActivityIndicatorFrame(this.activityIndicatorMode, presentationNow()));
-        else image.drawText(font, x + 16, top + index * step, line, CARD_TEXT_BRIGHTNESS);
+        else for (const segment of lineSegments(line)) {
+          // Table cells sit at measured column offsets; header rules underline each column.
+          if (segment.text) image.drawText(font, x + 16 + segment.x, top + index * step, segment.text, CARD_TEXT_BRIGHTNESS);
+          if (segment.rule) image.fillRect(x + 16 + segment.x, top + index * step + font.lineHeight + 1, segment.rule, 1, 150);
+        }
       });
       if (this.screen === 'draft' && (this.draftLocked || state.error)) image.drawText(font, x + 16, height - font.lineHeight - 16, truncateText(font, state.error || 'SENDING TO T3 CODE', textWidth), 180);
       if (this.screen === 'notification') {
@@ -1275,7 +1279,6 @@ export class T3Layer implements Layer {
         { label: 'Change model', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openModel(); } },
         { label: 'Change reasoning', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.openReasoning(); } },
       ] : []),
-      { label: 'Display comparison', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); ctx.stack.push(new RenderingComparisonLayer()); } },
       { label: 'Ask assistant', onSelect: (ctx: LayerContext) => { ctx.stack.pop(); this.askAssistant(); } },
       ...(canSettle ? [{ label: 'Settle session', onSelect: async (ctx: LayerContext) => { ctx.stack.pop(); await state.settle(selectedSession.id, selectedSession.environmentId); } }] : []),
     ];

@@ -200,7 +200,6 @@ function setup(animationClock, raster = false, t3Config = {}) {
         '../../ui/card-presentation': face,
         '../../graphics/textwrap': { truncateText: (_font, text) => text },
       }),
-      '../developer/rendering-comparison': { RenderingComparisonLayer: class {} },
       './notifications-ui': {
         openT3Alert() {},
         openT3NotificationApp: (id) => {

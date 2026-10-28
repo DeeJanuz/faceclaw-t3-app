@@ -4,7 +4,7 @@ import { invokeExternalNotification, hasExternalNotification, invalidateExternal
 import { getT3Config, onT3ConfigChanged } from "../../t3/config";
 import { allowsT3PhoneNotification, onT3NotificationAppsChanged, readT3NotificationPreviewSeconds } from '../../t3/notification-preferences';
 import { shell } from '../../ui/shell/shell';
-import { readActiveNotifications, dismissNotification,dismissNotifications, requestNotificationReply, onAndroidNotificationRemoved, onAndroidNotificationsChanged, type AndroidNotification } from '../../native/notification-icons';
+import { readActiveNotifications, dismissNotification,dismissNotifications, requestNotificationReply, openNotification, onAndroidNotificationRemoved, onAndroidNotificationsChanged, type AndroidNotification } from '../../native/notification-icons';
 import { setNotificationOpenRoute } from '../../ui/notification-routing';
 import { initializeT3PhoneNotifications, postT3Notification, dismissT3Notification, onT3NotificationRemoved, onT3ThreadOpenRequested } from '../../t3/notifications';
 import { t3Workspace as state, connectT3 } from './runtime';
@@ -118,12 +118,14 @@ async function restorePreview(presentationId: string): Promise<void> {
   if (typeof shell.abortNotificationPreview === 'function') shell.abortNotificationPreview(presentationId);
 }
 
-/** Opens the posting app at the alert's own target, releasing the host preview first. */
+/**
+ * Opens the posting app at the alert's own target, then releases the preview. The open must come
+ * first: a keep-awake handoff spends the tap's gesture, and the host refuses an open without one.
+ */
 async function openExternalApp(alert: T3Alert, presentationId?: string): Promise<boolean> {
-  if (presentationId && !await shell.handoffNotificationPreview(alert.id, presentationId)) return false;
-  if (invokeExternalNotification(alert.threadId, 0, alert.createdAt)) return true;
-  if (presentationId) await restorePreview(presentationId);
-  return false;
+  if (!await openNotification(alert.threadId, alert.createdAt)) return false;
+  if (presentationId && !await shell.handoffNotificationPreview(alert.id, presentationId)) shell.closeNotificationPreview(alert.id, false, presentationId);
+  return true;
 }
 
 async function openNotificationUi(notificationKey?: string, returnToSleep = false, presentationId?: string, hostPresentationId?: string): Promise<boolean> {

@@ -116,7 +116,7 @@ test('popup handoff retires extension rendering and admits the next arrival', as
   assert.equal(arrivals, 1, 'completed reader must not leave the arrival gate closed');
 });
 
-function notificationsHarness({ reply = false, invokeResult = true, handoff = true, reopen = true } = {}) {
+function notificationsHarness({ reply = false, hostOpens = true, handoff = true } = {}) {
   const source = fs.readFileSync('app/apps/t3/notifications-ui.ts', 'utf8'),
     imports = {},
     calls = [];
@@ -138,16 +138,22 @@ function notificationsHarness({ reply = false, invokeResult = true, handoff = tr
   imports['./resource'] = { resourceKey: (a) => a };
   imports['../../extensions/host'] = { ownsFeature: () => true };
   imports['../../native/external-notifications'] = {
-    invokeExternalNotification: (key, action, version) => {
-      calls.push(['app-open', key, action, version]);
-      return invokeResult;
-    },
+    invokeExternalNotification: () => calls.push(['unacknowledged-open']),
     hasExternalNotification: () => true,
     invalidateExternalNotificationReplies() {},
   };
   imports['../../t3/config'] = { getT3Config: () => ({ notificationOverride: true, bridgeUrl: 'b', pairingFingerprint: 'f' }), onT3ConfigChanged() {} };
   imports['../../t3/notification-preferences'] = { allowsT3PhoneNotification: () => true, onT3NotificationAppsChanged() {}, readT3NotificationPreviewSeconds: () => 5 };
-  imports['../../native/notification-icons'] = { readActiveNotifications: () => active, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} };
+  imports['../../native/notification-icons'] = {
+    readActiveNotifications: () => active,
+    // The host answers asynchronously and refuses a version that is no longer current.
+    openNotification: async (key, version) => {
+      calls.push(['app-open', key, version]);
+      return hostOpens && active.some((item) => item.key === key && item.postTime === version);
+    },
+    onAndroidNotificationRemoved() {},
+    onAndroidNotificationsChanged() {},
+  };
   imports['../../ui/notification-routing'] = { setNotificationOpenRoute() {} };
   imports['../../t3/notifications'] = {};
   imports['./runtime'] = { t3Workspace: state, connectT3: async () => {} };
@@ -161,26 +167,22 @@ function notificationsHarness({ reply = false, invokeResult = true, handoff = tr
       },
       ensureWindowOpen: async () => true,
       isNotificationPreviewCurrent: () => true,
-      reopenNotificationPreview: async (presentationId) => {
-        calls.push(['reopen', presentationId]);
-        return reopen;
-      },
-      abandonNotificationVisit: async (presentationId) => calls.push(['abandon', presentationId]),
-      abortNotificationPreview: (presentationId) => calls.push(['abort', presentationId]),
+      closeNotificationPreview: (id, restore, presentationId) => calls.push(['close', id, restore, presentationId]),
     },
   };
   const module = { exports: {} };
   vm.runInNewContext(transpileSource(source), { module, exports: module.exports, require: (name) => imports[name] });
-  return { ui: module.exports, calls, repost: (postTime) => (active = [notification(postTime)]) };
+  return { ui: module.exports, calls, repost: (postTime) => (active = [notification(postTime)]), notification };
 }
 
-test('an app alert the reader cannot reply to opens that app from the preview', async () => {
+test('an app alert the reader cannot reply to opens that app, then hands off the preview', async () => {
   const { ui, calls } = notificationsHarness();
   const [alert] = ui.visibleT3Alerts();
   assert.equal(await ui.openT3Alert(alert, false, 'local-1', 'host-1'), true);
+  // Opening first: the keep-awake handoff spends the tap gesture the host's open needs.
   assert.deepEqual(calls, [
+    ['app-open', 'apk:com.faceclaw.grok:bot-scarlet', 100],
     ['handoff', alert.id, 'local-1'],
-    ['app-open', 'apk:com.faceclaw.grok:bot-scarlet', 0, 100],
   ]);
 });
 
@@ -192,19 +194,21 @@ test('an app alert with an in-reader reply still opens the reader', async () => 
   assert.deepEqual(calls.at(-1), ['reader', alert.id]);
 });
 
-test('a failed app open restores the preview, and abandons it when that fails too', async () => {
-  const restored = notificationsHarness({ invokeResult: false });
-  const [alert] = restored.ui.visibleT3Alerts();
-  assert.equal(await restored.ui.openT3Alert(alert, false, 'local-1', 'host-1'), false);
-  assert.deepEqual(restored.calls.slice(-1), [['reopen', 'local-1']]);
-
-  const lost = notificationsHarness({ invokeResult: false, reopen: false });
-  assert.equal(await lost.ui.openT3Alert(lost.ui.visibleT3Alerts()[0], false, 'local-1', 'host-1'), false);
-  assert.deepEqual(lost.calls.slice(-3), [['reopen', 'local-1'], ['abandon', 'local-1'], ['abort', 'local-1']]);
-
-  const refused = notificationsHarness({ handoff: false });
+test('a refused app open leaves the preview in place; a refused handoff after an open closes it', async () => {
+  const refused = notificationsHarness({ hostOpens: false });
   assert.equal(await refused.ui.openT3Alert(refused.ui.visibleT3Alerts()[0], false, 'local-1', 'host-1'), false);
-  assert.equal(refused.calls.some(([kind]) => kind === 'app-open' || kind === 'reopen'), false);
+  assert.deepEqual(refused.calls.map(([kind]) => kind), ['app-open']);
+
+  const opened = notificationsHarness({ handoff: false });
+  const [alert] = opened.ui.visibleT3Alerts();
+  assert.equal(await opened.ui.openT3Alert(alert, false, 'local-1', 'host-1'), true);
+  assert.deepEqual(opened.calls.slice(-1), [['close', alert.id, false, 'local-1']]);
+});
+
+test('an inbox tap with no preview just opens the app', async () => {
+  const { ui, calls } = notificationsHarness();
+  assert.equal(await ui.openT3Alert(ui.visibleT3Alerts()[0]), true);
+  assert.deepEqual(calls.map(([kind]) => kind), ['app-open']);
 });
 
 test('a tap on an alert whose notification was reposted opens nothing', async () => {
@@ -213,4 +217,14 @@ test('a tap on an alert whose notification was reposted opens nothing', async ()
   repost(200);
   assert.equal(await ui.openT3Alert(alert, false, 'local-1', 'host-1'), false);
   assert.deepEqual(calls, []);
+});
+
+test('the open carries the alert version, so the host refuses a superseded one', async () => {
+  const { ui, calls, repost } = notificationsHarness();
+  const [stale] = ui.visibleT3Alerts();
+  repost(200);
+  const [fresh] = ui.visibleT3Alerts();
+  // The inbox lists the newer post; an open built from the old one must not reach it.
+  assert.equal(await ui.openT3Alert({ ...stale, id: fresh.id }, false, 'local-1', 'host-1'), false);
+  assert.deepEqual(calls, [['app-open', stale.threadId, 100]]);
 });

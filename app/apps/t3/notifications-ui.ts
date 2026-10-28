@@ -119,13 +119,11 @@ async function restorePreview(presentationId: string): Promise<void> {
 }
 
 /**
- * Opens the posting app at the alert's own target, then releases the preview. The open must come
- * first: a keep-awake handoff spends the tap's gesture, and the host refuses an open without one.
+ * Opens the posting app at the alert's own target. The host closes the named preview keep-awake
+ * before the alert leaves its list, so T3 only retires its local card once the open resolves.
  */
-async function openExternalApp(alert: T3Alert, presentationId?: string): Promise<boolean> {
-  if (!await openNotification(alert.threadId, alert.createdAt)) return false;
-  if (presentationId && !await shell.handoffNotificationPreview(alert.id, presentationId)) shell.closeNotificationPreview(alert.id, false, presentationId);
-  return true;
+function openExternalApp(alert: T3Alert, hostPresentationId?: string): Promise<boolean> {
+  return openNotification(alert.threadId, alert.createdAt, hostPresentationId);
 }
 
 async function openNotificationUi(notificationKey?: string, returnToSleep = false, presentationId?: string, hostPresentationId?: string): Promise<boolean> {
@@ -298,7 +296,7 @@ export async function openT3Alert(alert: T3Alert, returnToSleep = false, present
   if (alert.kind === 'phone' ? !findT3Alert(alert.id) : !state.alerts.includes(alert)) return false;
   if (alert.kind === "phone" && alert.threadId.startsWith("apk:") && getT3Config().notificationOverride !== true) return invokeExternalNotification(alert.threadId, 0);
   // The reader adds nothing to an app alert it can't reply to, so the tap goes straight to that app.
-  if (alert.kind === 'phone' && alert.threadId.startsWith('apk:') && !state.demo && !getT3NotificationReply(alert.id)) return openExternalApp(alert, presentationId);
+  if (alert.kind === 'phone' && alert.threadId.startsWith('apk:') && !state.demo && !getT3NotificationReply(alert.id)) return openExternalApp(alert, hostPresentationId);
   const pairing = pairingIdentity();
   const demo = state.demo;
   if (alert.kind === 'phone') {

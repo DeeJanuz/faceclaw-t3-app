@@ -298,6 +298,27 @@ test('notification cancellation waits for host result instead of treating local 
   resolve({ ok: true });
   assert.equal(await pending, true);
 });
+test('a notification open names the host preview it closes only when there is one', async () => {
+  const calls = [];
+  const api = load('app/native/notification-icons.ts', {
+    '../extensions/host': {
+      hostState: { notifications: [notification()] },
+      ownsFeature: () => true,
+      requestHostAction: async (...args) => {
+        calls.push(args);
+        return { ok: true };
+      },
+      onHostState: () => () => {},
+      sendHostAction: () => true,
+    },
+  });
+  assert.equal(await api.openNotification('apk:opaque-id', 7, 'host-lease'), true);
+  assert.equal(await api.openNotification('apk:opaque-id', 7), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['ui.notifications', 'notification-open', { id: 'apk:opaque-id', version: 7, presentationId: 'host-lease' }],
+    ['ui.notifications', 'notification-open', { id: 'apk:opaque-id', version: 7 }],
+  ]);
+});
 test('review cancellation targets its bound request without reusing its transport id or exposing reply text', async () => {
   const calls = [],
     timers = [],

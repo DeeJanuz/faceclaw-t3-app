@@ -116,7 +116,7 @@ test('popup handoff retires extension rendering and admits the next arrival', as
   assert.equal(arrivals, 1, 'completed reader must not leave the arrival gate closed');
 });
 
-function notificationsHarness({ reply = false, hostOpens = true, handoff = true } = {}) {
+function notificationsHarness({ reply = false, hostOpens = true } = {}) {
   const source = fs.readFileSync('app/apps/t3/notifications-ui.ts', 'utf8'),
     imports = {},
     calls = [];
@@ -147,8 +147,8 @@ function notificationsHarness({ reply = false, hostOpens = true, handoff = true 
   imports['../../native/notification-icons'] = {
     readActiveNotifications: () => active,
     // The host answers asynchronously and refuses a version that is no longer current.
-    openNotification: async (key, version) => {
-      calls.push(['app-open', key, version]);
+    openNotification: async (key, version, presentationId) => {
+      calls.push(['app-open', key, version, presentationId]);
       return hostOpens && active.some((item) => item.key === key && item.postTime === version);
     },
     onAndroidNotificationRemoved() {},
@@ -163,7 +163,7 @@ function notificationsHarness({ reply = false, hostOpens = true, handoff = true 
       foregroundWindow: () => undefined,
       handoffNotificationPreview: async (id, presentationId) => {
         calls.push(['handoff', id, presentationId]);
-        return handoff;
+        return true;
       },
       ensureWindowOpen: async () => true,
       isNotificationPreviewCurrent: () => true,
@@ -175,15 +175,13 @@ function notificationsHarness({ reply = false, hostOpens = true, handoff = true 
   return { ui: module.exports, calls, repost: (postTime) => (active = [notification(postTime)]), notification };
 }
 
-test('an app alert the reader cannot reply to opens that app, then hands off the preview', async () => {
+test('an app alert the reader cannot reply to opens that app and lets the host close its preview', async () => {
   const { ui, calls } = notificationsHarness();
   const [alert] = ui.visibleT3Alerts();
   assert.equal(await ui.openT3Alert(alert, false, 'local-1', 'host-1'), true);
-  // Opening first: the keep-awake handoff spends the tap gesture the host's open needs.
-  assert.deepEqual(calls, [
-    ['app-open', 'apk:com.faceclaw.grok:bot-scarlet', 100],
-    ['handoff', alert.id, 'local-1'],
-  ]);
+  // The host closes the named preview keep-awake before the alert leaves its list.
+  // A second close from T3 would find no surface, and a default one would sleep the display.
+  assert.deepEqual(calls, [['app-open', 'apk:com.faceclaw.grok:bot-scarlet', 100, 'host-1']]);
 });
 
 test('an app alert with an in-reader reply still opens the reader', async () => {
@@ -194,15 +192,10 @@ test('an app alert with an in-reader reply still opens the reader', async () => 
   assert.deepEqual(calls.at(-1), ['reader', alert.id]);
 });
 
-test('a refused app open leaves the preview in place; a refused handoff after an open closes it', async () => {
+test('a refused app open leaves the preview in place', async () => {
   const refused = notificationsHarness({ hostOpens: false });
   assert.equal(await refused.ui.openT3Alert(refused.ui.visibleT3Alerts()[0], false, 'local-1', 'host-1'), false);
   assert.deepEqual(refused.calls.map(([kind]) => kind), ['app-open']);
-
-  const opened = notificationsHarness({ handoff: false });
-  const [alert] = opened.ui.visibleT3Alerts();
-  assert.equal(await opened.ui.openT3Alert(alert, false, 'local-1', 'host-1'), true);
-  assert.deepEqual(opened.calls.slice(-1), [['close', alert.id, false, 'local-1']]);
 });
 
 test('an inbox tap with no preview just opens the app', async () => {
@@ -226,5 +219,5 @@ test('the open carries the alert version, so the host refuses a superseded one',
   const [fresh] = ui.visibleT3Alerts();
   // The inbox lists the newer post; an open built from the old one must not reach it.
   assert.equal(await ui.openT3Alert({ ...stale, id: fresh.id }, false, 'local-1', 'host-1'), false);
-  assert.deepEqual(calls, [['app-open', stale.threadId, 100]]);
+  assert.deepEqual(calls, [['app-open', stale.threadId, 100, 'host-1']]);
 });

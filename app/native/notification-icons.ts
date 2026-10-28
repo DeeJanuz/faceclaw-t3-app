@@ -7,7 +7,7 @@ export async function dismissNotifications(items:{key:string;postTime:number}[])
  try{const result=ownsFeature('ui.notifications')?await requestHostAction('ui.notifications','notification-dismiss-group',{items}):await requestOwnNotificationAction('dismiss-group','',0,items);return result?.ok!==false;}catch{return false;}
 }
 export async function dismissNotification(key:string,version?:number):Promise<boolean>{const item=readActiveNotifications().find(n=>n.key===key);if(!item)return false;return dismissNotifications([{key,postTime:version??item.postTime}]);}
-export async function openNotification(key:string,version?:number):Promise<boolean>{const item=readActiveNotifications().find(n=>n.key===key);if(!item)return false;try{const result=ownsFeature('ui.notifications')?await requestHostAction('ui.notifications','notification-open',{id:key,version:version??item.postTime}):await requestOwnNotificationAction('open',key,version??item.postTime);return result?.ok!==false;}catch{return false;}}
+export async function openNotification(key:string,version?:number,presentationId?:string):Promise<boolean>{const item=readActiveNotifications().find(n=>n.key===key);if(!item)return false;try{const result=ownsFeature('ui.notifications')?await requestHostAction('ui.notifications','notification-open',{id:key,version:version??item.postTime,...(presentationId?{presentationId}:{})}):await requestOwnNotificationAction('open',key,version??item.postTime);return result?.ok!==false;}catch{return false;}}
 export function requestNotificationReply(key:string,version:number,actionIndex:number,current:()=>boolean=()=>true):Promise<any>{
  if(!current())return Promise.reject(new Error('NOTIFICATION_REVIEW_STALE'));
  const callId=`review-${Date.now()}-${++reviewSequence}`;

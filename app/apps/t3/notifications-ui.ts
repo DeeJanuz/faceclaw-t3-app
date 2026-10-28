@@ -4,7 +4,7 @@ import { invokeExternalNotification, hasExternalNotification, invalidateExternal
 import { getT3Config, onT3ConfigChanged } from "../../t3/config";
 import { allowsT3PhoneNotification, onT3NotificationAppsChanged, readT3NotificationPreviewSeconds } from '../../t3/notification-preferences';
 import { shell } from '../../ui/shell/shell';
-import { readActiveNotifications, dismissNotification,dismissNotifications, requestNotificationReply, onAndroidNotificationRemoved, onAndroidNotificationsChanged, type AndroidNotification } from '../../native/notification-icons';
+import { readActiveNotifications, dismissNotification,dismissNotifications, requestNotificationReply, openNotification, onAndroidNotificationRemoved, onAndroidNotificationsChanged, type AndroidNotification } from '../../native/notification-icons';
 import { setNotificationOpenRoute } from '../../ui/notification-routing';
 import { initializeT3PhoneNotifications, postT3Notification, dismissT3Notification, onT3NotificationRemoved, onT3ThreadOpenRequested } from '../../t3/notifications';
 import { t3Workspace as state, connectT3 } from './runtime';
@@ -110,6 +110,22 @@ export function getT3NotificationReply(id: string): { isCurrent: () => boolean; 
  return {isCurrent,async review(current=()=>true){if(requested||!isCurrent()||!current())return 'rejected';requested=true;try{const result=await requestNotificationReply(notification.key,notification.postTime,action.index,()=>current()&&pairingIdentity()===pairing&&getT3Config().notificationOverride===true);return ['sent','draft-saved','unknown','rejected'].includes(result.status)?result.status:'unknown';}catch(error){return ['NOTIFICATION_REVIEW_STALE','HOST_CAPABILITY_UNAVAILABLE','HOST_ACTION_UNAVAILABLE','HOST_ACTION_DUPLICATE'].includes(error instanceof Error?error.message:'')?'rejected':'unknown';}}};
 }
 
+/** Puts a handed-off preview back after its destination failed to open, or retires it. */
+async function restorePreview(presentationId: string): Promise<void> {
+  if (typeof shell.reopenNotificationPreview !== 'function') return;
+  if (await shell.reopenNotificationPreview(presentationId)) return;
+  if (typeof shell.abandonNotificationVisit === 'function') await shell.abandonNotificationVisit(presentationId);
+  if (typeof shell.abortNotificationPreview === 'function') shell.abortNotificationPreview(presentationId);
+}
+
+/**
+ * Opens the posting app at the alert's own target. The host closes the named preview keep-awake
+ * before the alert leaves its list, and that close event retires the local card.
+ */
+function openExternalApp(alert: T3Alert, hostPresentationId?: string): Promise<boolean> {
+  return openNotification(alert.threadId, alert.createdAt, hostPresentationId);
+}
+
 async function openNotificationUi(notificationKey?: string, returnToSleep = false, presentationId?: string, hostPresentationId?: string): Promise<boolean> {
   if (openingNotification) { notificationTrace('open-rejected reason=already-opening', true); return false; }
   openingNotification = true;
@@ -155,13 +171,7 @@ async function openNotificationUi(notificationKey?: string, returnToSleep = fals
     if (pairing === pairingIdentity() && !state.demo) state.fail(new Error('T3_NOTIFICATION_OPEN_FAILED'));
     return false;
   } finally {
-    if (handedOff && !opened && presentationId && typeof shell.reopenNotificationPreview === 'function') {
-      const restored = await shell.reopenNotificationPreview(presentationId);
-      if (!restored) {
-        if (typeof shell.abandonNotificationVisit === 'function') await shell.abandonNotificationVisit(presentationId);
-        if (typeof shell.abortNotificationPreview === 'function') shell.abortNotificationPreview(presentationId);
-      }
-    }
+    if (handedOff && !opened && presentationId) await restorePreview(presentationId);
     openingNotification = false;
   }
 }
@@ -285,6 +295,8 @@ export function handlePhoneNotification(key: string, hostPresentationId?: string
 export async function openT3Alert(alert: T3Alert, returnToSleep = false, presentationId?: string, hostPresentationId?: string): Promise<boolean> {
   if (alert.kind === 'phone' ? !findT3Alert(alert.id) : !state.alerts.includes(alert)) return false;
   if (alert.kind === "phone" && alert.threadId.startsWith("apk:") && getT3Config().notificationOverride !== true) return invokeExternalNotification(alert.threadId, 0);
+  // The reader adds nothing to an app alert it can't reply to, so the tap goes straight to that app.
+  if (alert.kind === 'phone' && alert.threadId.startsWith('apk:') && !state.demo && !getT3NotificationReply(alert.id)) return openExternalApp(alert, hostPresentationId);
   const pairing = pairingIdentity();
   const demo = state.demo;
   if (alert.kind === 'phone') {
@@ -314,13 +326,7 @@ export async function openT3Alert(alert: T3Alert, returnToSleep = false, present
     dismissT3Alert(alert);
     return true;
   } finally {
-    if (handedOff && !opened && presentationId && typeof shell.reopenNotificationPreview === 'function') {
-      const restored = await shell.reopenNotificationPreview(presentationId);
-      if (!restored) {
-        if (typeof shell.abandonNotificationVisit === 'function') await shell.abandonNotificationVisit(presentationId);
-        if (typeof shell.abortNotificationPreview === 'function') shell.abortNotificationPreview(presentationId);
-      }
-    }
+    if (handedOff && !opened && presentationId) await restorePreview(presentationId);
   }
 }
 

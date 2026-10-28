@@ -192,16 +192,19 @@ test('an app alert with an in-reader reply still opens the reader', async () => 
   assert.deepEqual(calls.at(-1), ['reader', alert.id]);
 });
 
-test('a refused app open leaves the preview in place', async () => {
+test('a refused app open makes no close or handoff from T3', async () => {
   const refused = notificationsHarness({ hostOpens: false });
   assert.equal(await refused.ui.openT3Alert(refused.ui.visibleT3Alerts()[0], false, 'local-1', 'host-1'), false);
   assert.deepEqual(refused.calls.map(([kind]) => kind), ['app-open']);
 });
 
-test('an inbox tap with no preview just opens the app', async () => {
-  const { ui, calls } = notificationsHarness();
-  assert.equal(await ui.openT3Alert(ui.visibleT3Alerts()[0]), true);
-  assert.deepEqual(calls.map(([kind]) => kind), ['app-open']);
+test('an inbox tap, or a preview the host has not leased yet, just opens the app', async () => {
+  for (const args of [[], [false, 'local-1', undefined]]) {
+    const { ui, calls } = notificationsHarness();
+    const [alert] = ui.visibleT3Alerts();
+    assert.equal(await ui.openT3Alert(alert, ...args), true);
+    assert.deepEqual(calls, [['app-open', alert.threadId, 100, undefined]]);
+  }
 });
 
 test('a tap on an alert whose notification was reposted opens nothing', async () => {

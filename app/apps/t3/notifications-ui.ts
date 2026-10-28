@@ -120,7 +120,7 @@ async function restorePreview(presentationId: string): Promise<void> {
 
 /**
  * Opens the posting app at the alert's own target. The host closes the named preview keep-awake
- * before the alert leaves its list, so T3 only retires its local card once the open resolves.
+ * before the alert leaves its list, and that close event retires the local card.
  */
 function openExternalApp(alert: T3Alert, hostPresentationId?: string): Promise<boolean> {
   return openNotification(alert.threadId, alert.createdAt, hostPresentationId);
